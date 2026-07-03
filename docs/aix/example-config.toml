@@ -1,0 +1,50 @@
+# aix example configuration
+# Copy to ~/.config/aix/aix.toml and fill in your values.
+
+# Optional: profile selected when no --profile flag is given and stdin is
+# not a TTY (e.g. in scripts). Remove to always prompt interactively.
+default_profile = "work"
+
+# Optional: .env files loaded before the CLI runs. The real process
+# environment always wins — these files only fill in missing vars.
+# env_files = ["~/.config/aix/secrets.env"]
+
+# ---------------------------------------------------------------------------
+# Endpoint — describes the AI gateway this config targets
+# ---------------------------------------------------------------------------
+
+[endpoint]
+# api_format controls which SDK-compatible env vars are emitted.
+#
+#   "anthropic"  →  ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL   (5 vars total)
+#   "openai"     →  OPENAI_API_KEY    + OPENAI_BASE_URL      (5 vars total)
+#   "both"       →  both pairs above                          (7 vars total)
+#
+# AIX_PROFILE, AIX_API_KEY, AIX_BASE_URL are always emitted.
+# Use "anthropic" for tools that read ANTHROPIC_* (claude, pi).
+# Use "openai"    for tools that read OPENAI_*    (openai-python, LangChain).
+# Use "both"      when you run both kinds of tools from one shell session.
+api_format = "anthropic"
+
+# Where to find the gateway URL. Supported secret sources:
+#   { env  = "VAR_NAME" }           — read from environment variable
+#   { file = "/run/secrets/url" }   — read from file (trailing newline stripped)
+#   { command = "op read ..." }     — stdout of a command
+#   "https://gateway.example.com"   — literal value (avoid for secrets)
+base_url = { env = "AIX_BASE_URL" }
+
+# ---------------------------------------------------------------------------
+# Profiles — named sets of credentials
+# ---------------------------------------------------------------------------
+
+[profiles.work]
+label   = "Work"                        # shown in interactive picker
+api_key = { env = "AIX_API_KEY" }
+
+[profiles.local]
+label   = "Local (no auth)"
+api_key = "sk-no-key"                   # literal — fine for a local dev gateway
+
+# [profiles.personal]
+# label   = "Personal"
+# api_key = { file = "/run/secrets/aix/personal" }
