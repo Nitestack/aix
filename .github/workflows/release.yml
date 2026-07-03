@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build x86_64-unknown-linux-gnu
+        run: cross build --release --target x86_64-unknown-linux-gnu
+
+      - name: Build aarch64-unknown-linux-gnu
+        run: cross build --release --target aarch64-unknown-linux-gnu
+
+      - name: Stage Linux artifacts
+        run: |
+          mkdir -p stage
+          cp target/x86_64-unknown-linux-gnu/release/aix stage/aix-x86_64-unknown-linux-gnu
+          cp target/aarch64-unknown-linux-gnu/release/aix stage/aix-aarch64-unknown-linux-gnu
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: stage/
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build aarch64-apple-darwin
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build x86_64-apple-darwin
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Stage macOS artifacts
+        run: |
+          mkdir -p stage
+          cp target/aarch64-apple-darwin/release/aix stage/aix-aarch64-apple-darwin
+          cp target/x86_64-apple-darwin/release/aix stage/aix-x86_64-apple-darwin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-binaries
+          path: stage/
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build x86_64-pc-windows-msvc
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Stage Windows artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path stage
+          Copy-Item target\x86_64-pc-windows-msvc\release\aix.exe stage\aix-x86_64-pc-windows-msvc.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binary
+          path: stage/
+
+  release:
+    name: Release
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upsert latest release
+        run: |
+          gh release delete latest --yes 2>/dev/null || true
+          git tag -f latest ${{ github.sha }}
+          git push -f origin latest
+          gh release create latest \
+            --title "Latest" \
+            --notes "Latest build from \`main\` at ${{ github.sha }}." \
+            artifacts/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
