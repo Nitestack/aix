@@ -2,20 +2,22 @@
 
 ## Repo overview
 
-This is a Nix configuration repository (NixOS + home-manager) for a WSL workstation.
-The `aix` tool is being extracted from inline Nix shell scripts into a standalone **Rust CLI**.
+`aix` is a **Rust CLI** and **home-manager module** for managing AI gateway profiles.
+The CLI resolves API keys and gateway URLs from configurable secret sources and injects them into subprocesses or the current shell.
+The Nix layer provides a declarative home-manager module for configuration and secret wiring.
 
-Current layout (evolving):
+Current layout:
 ```
-docs/aix/          — design docs for the Rust extraction
-modules/home/        — home-manager modules (Nix)
-configurations/      — NixOS host configurations
-tools/aix/         — future home of the Rust CLI source
+src/               — Rust CLI source
+tests/             — integration tests
+nix/               — example and generated configs for Nix deployments
+modules/home/      — home-manager module (planned; not yet written)
+docs/              — design docs and architecture
 ```
 
 ## Ground rules
 
-- **Do not touch unrelated Nix modules.** Changes outside `modules/home/aix.nix`, `modules/home/pi-coding-agent/`, or the Rust paths require explicit user approval.
+- **Do not touch unrelated files.** Changes outside `modules/home/aix.nix`, `src/`, `tests/`, `nix/`, or `flake.nix` require explicit user approval.
 - Prefer small commits and small diffs. One logical change per commit.
 - Run `cargo fmt && cargo clippy` before claiming Rust work is done.
 - Run `nixfmt` or `alejandra` on any Nix files you edit.
@@ -36,5 +38,5 @@ When adding dependencies, prefer crates that compile without OS-specific build t
 ## Scoped rules
 
 Additional path-scoped guidance lives in `.claude/rules/`:
-- `aix-rust.md` — Rust CLI conventions (active for `tools/aix/**`, `crates/aix/**`, `Cargo.*`)
-- `aix-nix.md` — Nix integration conventions (active for Nix module paths)
+- `aix-rust.md` — Rust CLI conventions (active for `src/**`, `tests/**`, `Cargo.*`)
+- `aix-nix.md` — Nix integration conventions (active for `modules/home/aix.nix`, `nix/**`, `flake.nix`)
