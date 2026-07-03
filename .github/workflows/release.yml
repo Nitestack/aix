@@ -106,12 +106,56 @@ jobs:
 
       - name: Upsert latest release
         run: |
+          SHORT="${{ github.sha }}"
+          SHORT="${SHORT:0:7}"
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}"
+          cat > release-notes.md << EOF
+          ## aix — latest build
+
+          Built from [\`main\`](${REPO_URL}/commits/main) at commit [\`${SHORT}\`](${REPO_URL}/commit/${{ github.sha }}).
+
+          > **Rolling release** — rebuilt and replaced on every push to \`main\`. There is no semantic versioning; this tag always points to the current tip of \`main\`.
+
+          ---
+
+          ## Downloads
+
+          Pick the binary for your platform:
+
+          | File | Platform |
+          |------|----------|
+          | \`aix-x86_64-unknown-linux-gnu\` | Linux x86_64 (most desktop/server Linux) |
+          | \`aix-aarch64-unknown-linux-gnu\` | Linux aarch64 (ARM64 — Raspberry Pi, AWS Graviton, etc.) |
+          | \`aix-aarch64-apple-darwin\` | macOS Apple Silicon (M1 / M2 / M3 / M4) |
+          | \`aix-x86_64-apple-darwin\` | macOS Intel |
+          | \`aix-x86_64-pc-windows-msvc.exe\` | Windows x86_64 |
+
+          ---
+
+          ## Quick install
+
+          **Linux / macOS** — substitute \`TARGET\` with the filename for your platform:
+
+          \`\`\`sh
+          curl -Lo aix ${REPO_URL}/releases/latest/download/aix-TARGET
+          chmod +x aix
+          sudo mv aix /usr/local/bin/
+          \`\`\`
+
+          **Windows (PowerShell):**
+
+          \`\`\`powershell
+          Invoke-WebRequest -Uri ${REPO_URL}/releases/latest/download/aix-x86_64-pc-windows-msvc.exe -OutFile aix.exe
+          \`\`\`
+
+          See the [README](${REPO_URL}/blob/main/README.md) for configuration and usage.
+          EOF
           gh release delete latest --yes 2>/dev/null || true
           git tag -f latest ${{ github.sha }}
           git push -f origin latest
           gh release create latest \
             --title "Latest" \
-            --notes "Latest build from \`main\` at ${{ github.sha }}." \
+            --notes-file release-notes.md \
             artifacts/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
