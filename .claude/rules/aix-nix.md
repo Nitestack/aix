@@ -1,9 +1,9 @@
 ---
 paths:
   - "modules/home/aix.nix"
-  - "modules/home/pi-coding-agent/**"
-  - "configurations/nixos/wslstation/**"
-  - "configurations/home/wsl.nix"
+  - "nix/**"
+  - "flake.nix"
+  - "flake.lock"
 ---
 
 # aix Nix integration — conventions
@@ -41,9 +41,7 @@ Pass the path to the CLI via `AIX_API_KEY` or `--secret-cmd cat /run/secrets/aix
 
 ## WSL considerations
 
-- The WSL host config lives in `configurations/nixos/wslstation/`.
 - Do not add WSL-specific hacks to generic home-manager modules — gate them with `lib.optionalAttrs pkgs.stdenv.isLinux`.
-- Preserve `wsl.nix` imports; do not remove or rename existing module references without checking dependents.
 
 ## Formatting
 
@@ -54,6 +52,6 @@ alejandra modules/home/aix.nix
 
 ## What NOT to change here
 
-- Do not modify `configurations/nixos/wslstation/hardware-configuration.nix`.
-- Do not touch other `modules/home/` files (vim, git, etc.) unless the task explicitly targets them.
-- Do not add new `imports` to `configurations/home/wsl.nix` without user approval.
+- Do not touch other `modules/home/` files unrelated to `aix` unless the task explicitly targets them.
+- Do not modify `nix/` example configs by hand — they are generated from deployment configs.
+- Do not add new flake inputs to `flake.nix` without user approval.
