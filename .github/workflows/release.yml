@@ -104,6 +104,11 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Stage installer scripts
+        run: |
+          cp scripts/install.sh artifacts/install.sh
+          cp scripts/install.ps1 artifacts/install.ps1
+
       - name: Upsert latest release
         run: |
           SHORT="${{ github.sha }}"
@@ -134,19 +139,19 @@ jobs:
 
           ## Quick install
 
-          **Linux / macOS** — substitute \`TARGET\` with the filename for your platform:
+          **Linux / macOS:**
 
           \`\`\`sh
-          curl -Lo aix ${REPO_URL}/releases/latest/download/aix-TARGET
-          chmod +x aix
-          sudo mv aix /usr/local/bin/
+          curl -fsSL ${REPO_URL}/releases/latest/download/install.sh | sh
           \`\`\`
 
           **Windows (PowerShell):**
 
           \`\`\`powershell
-          Invoke-WebRequest -Uri ${REPO_URL}/releases/latest/download/aix-x86_64-pc-windows-msvc.exe -OutFile aix.exe
+          irm ${REPO_URL}/releases/latest/download/install.ps1 | iex
           \`\`\`
+
+          Both installers place the binary in a user-local directory and add it to your PATH automatically. Override the install location by setting \`AIX_INSTALL_DIR\` before running.
 
           See the [README](${REPO_URL}/blob/main/README.md) for configuration and usage.
           EOF
