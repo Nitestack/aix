@@ -48,19 +48,19 @@ nixos-rebuild switch --flake .#your-host
 ### Via Cargo
 
 ```bash
-cargo install --path tools/aix
+cargo install --path .
 ```
 
-Or from the workspace root:
+Or build without installing:
 
 ```bash
-cargo build --release -p aix
+cargo build --release
 # binary is at target/release/aix
 ```
 
 ### Prebuilt binaries
 
-Prebuilt binaries for Linux x86_64 and aarch64 will be attached to GitHub Releases once a release pipeline is set up.
+Prebuilt binaries for Linux x86_64 and aarch64 are attached to each GitHub Release.
 
 ---
 
