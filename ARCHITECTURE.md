@@ -2,7 +2,7 @@
 
 ## Manual verification before release
 
-These scenarios require a real interactive environment and cannot be covered by automated tests. Verify each before tagging a release.
+These scenarios require a real interactive environment and cannot be covered by automated tests. Verify each before merging to `main` (pushes to main trigger a rolling `latest` release rebuild).
 
 - [ ] **Interactive profile selector** — run `aix exec` (or `aix env`) with no `--profile` flag and no `default_profile` in a real TTY; confirm the `inquire` picker appears and selecting a profile works.
 - [ ] **`aix shell`** — run `aix shell <profile>` in a real shell; confirm the sub-shell launches with `AIX_PROFILE`, `AIX_API_KEY`, and `AIX_BASE_URL` set.

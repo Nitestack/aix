@@ -60,7 +60,7 @@ cargo build --release
 
 ### Prebuilt binaries
 
-Prebuilt binaries for Linux x86_64 and aarch64 are attached to each GitHub Release.
+Prebuilt binaries for Linux (x86_64, aarch64), macOS (arm64, x86_64), and Windows (x86_64) are attached to the rolling `latest` GitHub Release, rebuilt on every push to `main`.
 
 ---
 
@@ -311,24 +311,24 @@ Finds `claude` on `$PATH` and runs it with the profile environment set.
 ```bash
 # aix claude PROFILE -- CLAUDE_ARGS...
 
-# Run Claude with the work profile and the swtb model shorthand
-aix claude work -- --model swtb
+# Run Claude with the work profile
+aix claude work -- --model claude-opus-4
 
 # Pass through all claude flags
-aix claude work -- --model swtb --output-format json
+aix claude work -- --model claude-opus-4 --output-format json
 
 # Interactive profile picker (when both stdin and stdout are TTYs)
 aix claude -- --help
 ```
 
-### aix pi — Pi CLI wrapper
+### aix pi — Pi Coding Agent wrapper
 
-Finds `pi` on `$PATH` and runs it with the profile environment set.
+Finds `pi` (the Pi Coding Agent) on `$PATH` and runs it with the profile environment set.
 
 ```bash
 # aix pi PROFILE -- PI_ARGS...
 
-aix pi work -- --model swtb
+aix pi work -- --model claude-opus-4
 
 aix pi work -- chat --system "You are a helpful assistant."
 
@@ -377,18 +377,3 @@ If you use the Nix deployment, the generated config uses `file` sources pointing
 ### Secrets are zeroized after use
 
 Resolved secret values are held in memory types that zero their contents when dropped. They are never written to disk, printed in logs, or exposed via `--dry-run` output. Dry-run shows variable *names* only.
-
----
-
-## Manual verification before release
-
-The following scenarios require a real interactive environment and cannot be covered by automated tests.
-
-| Scenario | Command | What to confirm |
-|----------|---------|-----------------|
-| Interactive profile selector | `aix exec` with no `--profile` and no `default_profile` in a real TTY | `inquire` picker appears; selecting a profile works |
-| `aix shell` | `aix shell <profile>` | Sub-shell launches with `AIX_PROFILE`, `AIX_API_KEY`, `AIX_BASE_URL` set |
-| `aix claude` | `aix claude <profile> -- --version` (with `claude` installed) | `claude` receives the Anthropic env vars |
-| `aix pi` | `aix pi <profile> -- --version` (with `pi` installed) | `pi` receives the env vars |
-| PowerShell env | `aix env <profile> --format powershell \| Invoke-Expression` in PowerShell | `$env:AIX_PROFILE` is set |
-| Nushell env | `aix env <profile> --format json \| from json \| load-env` in Nushell | `$env.AIX_PROFILE` is set |
