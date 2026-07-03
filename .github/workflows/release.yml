@@ -9,7 +9,7 @@ jobs:
     name: Build Linux
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -32,7 +32,7 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/aix stage/aix-x86_64-unknown-linux-gnu
           cp target/aarch64-unknown-linux-gnu/release/aix stage/aix-aarch64-unknown-linux-gnu
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-binaries
           path: stage/
@@ -41,7 +41,7 @@ jobs:
     name: Build macOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -61,7 +61,7 @@ jobs:
           cp target/aarch64-apple-darwin/release/aix stage/aix-aarch64-apple-darwin
           cp target/x86_64-apple-darwin/release/aix stage/aix-x86_64-apple-darwin
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-binaries
           path: stage/
@@ -70,7 +70,7 @@ jobs:
     name: Build Windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -85,7 +85,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path stage
           Copy-Item target\x86_64-pc-windows-msvc\release\aix.exe stage\aix-x86_64-pc-windows-msvc.exe
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-binary
           path: stage/
@@ -97,9 +97,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
