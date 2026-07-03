@@ -1,7 +1,7 @@
 ---
 paths:
-  - "tools/aix/**"
-  - "crates/aix/**"
+  - "src/**"
+  - "tests/**"
   - "Cargo.toml"
   - "Cargo.lock"
 ---
@@ -25,19 +25,23 @@ Keep modules small. No god files.
 
 ## Config model
 
-Profiles are named sets of `(base_url, model, default_params)`.
-The active profile is chosen by `--profile` flag or `AIX_PROFILE` env var.
-Never embed a URL or model name as a compile-time constant in command logic.
+Profiles are named sets of `(label, api_key)`. Gateway config (`base_url`, `api_format`) lives in the `[endpoint]` block.
+The active profile is chosen by `--profile` flag, a positional argument, or the `default_profile` config key.
+Never embed a URL, key, or profile name as a compile-time constant in command logic.
 
 Example config shape (TOML):
 ```toml
-[profiles.default]
-base_url = "https://ai.example.com/v1"
-model    = "gpt-4o"
+[endpoint]
+base_url   = { env = "AIX_BASE_URL" }
+api_format = "anthropic"   # "anthropic" | "openai" | "both"
 
-[profiles.fast]
-base_url = "https://ai.example.com/v1"
-model    = "gpt-4o-mini"
+[profiles.work]
+label   = "Work"
+api_key = { env = "AIX_WORK_KEY" }
+
+[profiles.personal]
+label   = "Personal"
+api_key = { file = "/run/secrets/aix/personal" }
 ```
 
 ## Secret resolution order
