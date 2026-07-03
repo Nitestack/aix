@@ -62,6 +62,50 @@ cargo build --release
 
 Prebuilt binaries for Linux (x86_64, aarch64), macOS (arm64, x86_64), and Windows (x86_64) are attached to the rolling `latest` GitHub Release, rebuilt on every push to `main`.
 
+#### Installer scripts (recommended)
+
+The quickest way to install — the script auto-detects your platform, downloads the right binary, and wires up your `PATH`.
+
+**Linux / macOS:**
+
+```sh
+curl -fsSL https://github.com/Nitestack/aix/releases/latest/download/install.sh | sh
+```
+
+Installs to `~/.local/bin` by default. Adds the directory to your shell rc file (`~/.zshrc`, `~/.bashrc`, `~/.config/fish/config.fish`, or `~/.profile`). Restart your terminal or source the rc file after installing.
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://github.com/Nitestack/aix/releases/latest/download/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\Programs\aix` by default. Adds the directory to the user `Path` environment variable. Restart your terminal after installing.
+
+**Custom install location:**
+
+Set `AIX_INSTALL_DIR` before running either script to override the default destination:
+
+```sh
+AIX_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/Nitestack/aix/releases/latest/download/install.sh | sh
+```
+
+```powershell
+$env:AIX_INSTALL_DIR = 'C:\Tools\aix'; irm https://github.com/Nitestack/aix/releases/latest/download/install.ps1 | iex
+```
+
+#### Manual download
+
+To place the binary yourself, download the appropriate asset directly from the [latest release](https://github.com/Nitestack/aix/releases/latest):
+
+| Platform | Asset name |
+|----------|-----------|
+| Linux x86_64 | `aix-x86_64-unknown-linux-gnu` |
+| Linux aarch64 | `aix-aarch64-unknown-linux-gnu` |
+| macOS arm64 | `aix-aarch64-apple-darwin` |
+| macOS x86_64 | `aix-x86_64-apple-darwin` |
+| Windows x86_64 | `aix-x86_64-pc-windows-msvc.exe` |
+
 ---
 
 ## Config path resolution
