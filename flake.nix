@@ -23,10 +23,10 @@
         # Only Rust-relevant files — avoids dirty rebuilds from doc/Nix changes.
         src = craneLib.cleanCargoSource ./.;
 
-        # Resolve name/version from the workspace member's Cargo.toml so crane
+        # Resolve name/version from Cargo.toml so crane
         # doesn't warn about a missing version in the workspace root manifest.
         crateInfo = craneLib.crateNameFromCargoToml {
-          cargoToml = ./tools/aix/Cargo.toml;
+          cargoToml = ./Cargo.toml;
         };
 
         commonArgs = {
@@ -39,7 +39,7 @@
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
         # The Rust CLI.  Package attribute is "aix-rs"; binary name is "aix"
-        # (set by [[bin]] in tools/aix/Cargo.toml).
+        # (set by [[bin]] in Cargo.toml).
         aix-rs = craneLib.buildPackage (
           commonArgs
           // {
