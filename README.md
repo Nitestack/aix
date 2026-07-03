@@ -251,6 +251,18 @@ aix env work --format fish | source
 aix env work --format powershell | Invoke-Expression
 ```
 
+### Windows Command Prompt (cmd.exe)
+
+```cmd
+REM Save to a temp file and call it in the current session
+aix env work --format cmd > "%TEMP%\aix-env.cmd" && call "%TEMP%\aix-env.cmd"
+
+REM Use default profile
+aix env --format cmd > "%TEMP%\aix-env.cmd" && call "%TEMP%\aix-env.cmd"
+```
+
+> **Note:** Values containing `%` are safe — the output doubles them to `%%` so `SET` interprets them correctly. Values containing `"` use a `""` encoding that works on modern Windows 10/11 cmd.exe but is not guaranteed on all NT versions. If your API key or base URL contains a literal double-quote (rare in practice), use `--format powershell` instead.
+
 ### Inspect without loading (JSON)
 
 ```bash

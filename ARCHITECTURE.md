@@ -10,6 +10,7 @@ These scenarios require a real interactive environment and cannot be covered by 
 - [ ] **`aix pi` with `pi` installed** — run `aix pi <profile> -- --version`; confirm pi receives the env vars.
 - [ ] **PowerShell env output** — run `aix env <profile> --format powershell` in a real PowerShell session and pipe to `Invoke-Expression`; confirm `$env:AIX_PROFILE` is set.
 - [ ] **Nushell env loading** — run `aix env <profile> --format nu` in a real Nushell session and source the output; confirm `$env.AIX_PROFILE` is set.
+- [ ] **cmd.exe env output** — run `aix env <profile> --format cmd > "%TEMP%\aix-env.cmd" && call "%TEMP%\aix-env.cmd"` in a real cmd.exe session; confirm `%AIX_PROFILE%` is set.
 
 ---
 
