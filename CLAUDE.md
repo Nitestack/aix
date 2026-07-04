@@ -10,14 +10,13 @@ Current layout:
 ```
 src/               — Rust CLI source
 tests/             — integration tests
-nix/               — example and generated configs for Nix deployments
-modules/home/      — home-manager module (planned; not yet written)
+nix/               — Nix: home-manager module (home-manager.nix) + example deployment configs
 docs/              — design docs and architecture
 ```
 
 ## Ground rules
 
-- **Do not touch unrelated files.** Changes outside `modules/home/aix.nix`, `src/`, `tests/`, `nix/`, or `flake.nix` require explicit user approval.
+- **Do not touch unrelated files.** Changes outside `nix/`, `src/`, `tests/`, or `flake.nix` require explicit user approval.
 - Prefer small commits and small diffs. One logical change per commit.
 - Run `cargo fmt && cargo clippy` before claiming Rust work is done.
 - Run `nixfmt` or `alejandra` on any Nix files you edit.

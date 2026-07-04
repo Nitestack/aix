@@ -1,6 +1,5 @@
 ---
 paths:
-  - "modules/home/aix.nix"
   - "nix/**"
   - "flake.nix"
   - "flake.lock"
@@ -20,11 +19,14 @@ Nix is **not** responsible for CLI business logic. If you find logic in a Nix fi
 
 ## Module structure
 
-`modules/home/aix.nix` exposes home-manager options:
+`nix/home-manager.nix` exposes home-manager options:
 - `programs.aix.enable`
-- `programs.aix.profiles` — attrset of profile definitions → written to config.toml
-- `programs.aix.secretSource` — enum: `env | agenix | sops | cmd`
 - `programs.aix.package` — the Rust derivation (override point)
+- `programs.aix.defaultProfile` — optional default profile name
+- `programs.aix.endpoint` — submodule: `baseUrl`, `apiFormat`, `gateway`, `provider`
+- `programs.aix.profiles` — attrset of profile submodules (`label`, `apiKey`)
+
+Each secret field (`baseUrl`, `apiKey`) accepts a `secretSourceType`: a plain string (direct), `{ env = "VAR"; }`, `{ file = "/run/secrets/..."; }`, or `{ command = "..."; }`.
 
 Do not add options that duplicate CLI flags. Options are for stable deployment config, not ad-hoc overrides.
 
@@ -52,6 +54,5 @@ alejandra modules/home/aix.nix
 
 ## What NOT to change here
 
-- Do not touch other `modules/home/` files unrelated to `aix` unless the task explicitly targets them.
-- Do not modify `nix/` example configs by hand — they are generated from deployment configs.
+- Do not modify `nix/wslstation-config.toml` by hand — it is generated from deployment configs.
 - Do not add new flake inputs to `flake.nix` without user approval.
