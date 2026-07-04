@@ -103,6 +103,15 @@ pub enum AixError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("this command requires gateway = \"litellm\" in your endpoint config")]
+    NotLiteLlm,
+
+    #[error("gateway returned HTTP {status}: {body}")]
+    GatewayError { status: u16, body: String },
+
+    #[error("HTTP request failed: {0}")]
+    HttpError(#[from] reqwest::Error),
 }
 
 #[cfg(test)]
@@ -167,6 +176,25 @@ mod tests {
             program: "pi".to_string(),
         };
         assert!(e.to_string().contains("pi"), "got: {}", e);
+    }
+
+    #[test]
+    fn not_litellm_message_mentions_litellm_and_gateway() {
+        let e = AixError::NotLiteLlm;
+        let msg = e.to_string();
+        assert!(msg.contains("litellm"), "got: {msg}");
+        assert!(msg.contains("gateway"), "got: {msg}");
+    }
+
+    #[test]
+    fn gateway_error_message_includes_status_and_body() {
+        let e = AixError::GatewayError {
+            status: 403,
+            body: "Forbidden".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("403"), "got: {msg}");
+        assert!(msg.contains("Forbidden"), "got: {msg}");
     }
 
     #[test]
