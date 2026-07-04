@@ -57,12 +57,26 @@ fn config_help() {
 
 #[test]
 fn profiles_run_exits_nonzero() {
-    cmd().arg("profiles").assert().failure();
+    let home = assert_fs::TempDir::new().unwrap();
+    cmd()
+        .env("HOME", home.path())
+        .env_remove("AIX_CONFIG")
+        .env_remove("XDG_CONFIG_HOME")
+        .arg("profiles")
+        .assert()
+        .failure();
 }
 
 #[test]
 fn env_default_exits_nonzero() {
-    cmd().arg("env").assert().failure();
+    let home = assert_fs::TempDir::new().unwrap();
+    cmd()
+        .env("HOME", home.path())
+        .env_remove("AIX_CONFIG")
+        .env_remove("XDG_CONFIG_HOME")
+        .arg("env")
+        .assert()
+        .failure();
 }
 
 const VALID_TOML: &str = r#"
