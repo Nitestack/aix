@@ -9,7 +9,6 @@ fn cmd() -> Command {
 const CONFIG_DIRECT: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com"
-api_format = "anthropic"
 
 [profiles.swtb]
 api_key = "sk-swtb-key"
@@ -23,7 +22,6 @@ default_profile = "swtb"
 
 [endpoint]
 base_url = "https://ai.example.com"
-api_format = "anthropic"
 
 [profiles.swtb]
 api_key = "sk-swtb-key"
@@ -32,16 +30,6 @@ api_key = "sk-swtb-key"
 const CONFIG_OPENAI_COMPAT: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com"
-api_format = "both"
-
-[profiles.swtb]
-api_key = "sk-swtb-key"
-"#;
-
-const CONFIG_NO_ANTHROPIC: &str = r#"
-[endpoint]
-base_url = "https://ai.example.com"
-api_format = "openai"
 
 [profiles.swtb]
 api_key = "sk-swtb-key"
@@ -50,7 +38,6 @@ api_key = "sk-swtb-key"
 const CONFIG_SPECIAL_CHARS: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com?token=abc&id=1"
-api_format = "anthropic"
 
 [profiles.test]
 api_key = "sk-it's a test"
@@ -83,8 +70,6 @@ fn env_sh_contains_aix_vars() {
         s.contains("export ANTHROPIC_BASE_URL='https://ai.example.com'"),
         "got: {s}"
     );
-    // openai_env defaults to false
-    assert!(!s.contains("OPENAI_"), "got: {s}");
 }
 
 #[test]
@@ -148,7 +133,6 @@ fn env_json_produces_valid_json() {
         serde_json::from_slice(&out).expect("output must be valid JSON");
     assert_eq!(parsed["AIX_PROFILE"], "swtb");
     assert_eq!(parsed["ANTHROPIC_API_KEY"], "sk-swtb-key");
-    assert!(parsed.get("OPENAI_API_KEY").is_none());
 }
 
 #[test]
@@ -289,25 +273,6 @@ fn env_openai_compat_enabled_includes_openai_vars() {
     assert_eq!(parsed["OPENAI_BASE_URL"], "https://ai.example.com/v1");
 }
 
-#[test]
-fn env_no_anthropic_compat_omits_anthropic_vars() {
-    let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
-    file.write_str(CONFIG_NO_ANTHROPIC).unwrap();
-
-    let out = cmd()
-        .env("AIX_CONFIG", file.path())
-        .args(["env", "swtb", "--format", "json"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-
-    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    assert!(parsed.get("ANTHROPIC_API_KEY").is_none());
-    assert_eq!(parsed["OPENAI_API_KEY"], "sk-swtb-key");
-}
-
 // --- profile selection ---
 
 #[test]
@@ -381,13 +346,11 @@ fn env_no_config_file_exits_nonzero() {
 const CONFIG_NO_PROFILES: &str = r#"
 [endpoint]
 base_url = "https://example.com"
-api_format = "anthropic"
 "#;
 
 const CONFIG_EMPTY_PROFILES: &str = r#"
 [endpoint]
 base_url = "https://example.com"
-api_format = "anthropic"
 
 [profiles]
 "#;
@@ -443,7 +406,6 @@ default_profile = "swtb"
 
 [endpoint]
 base_url = "https://example.com"
-api_format = "anthropic"
 
 [profiles.swtb]
 label = "SWTB"
@@ -548,7 +510,6 @@ fn env_cmd_percent_in_url_is_doubled() {
     const CONFIG_PERCENT: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com?token=abc%20def"
-api_format = "anthropic"
 
 [profiles.test]
 api_key = "sk-key"

@@ -68,7 +68,6 @@ fn env_default_exits_nonzero() {
 const VALID_TOML: &str = r#"
 [endpoint]
 base_url = { env = "AIX_BASE_URL" }
-api_format = "anthropic"
 
 [profiles.work]
 api_key = { env = "AIX_API_KEY" }

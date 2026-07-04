@@ -32,7 +32,7 @@ pub fn run(
         &profile_name,
         api_key.expose_secret(),
         base_url.expose_secret(),
-        &cfg.endpoint.api_format,
+        &config::ApiFormat::Both,
     );
 
     print!("{}", format_vars(&vars, &format));

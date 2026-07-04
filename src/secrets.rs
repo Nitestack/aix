@@ -329,7 +329,9 @@ mod tests {
     fn resolve_env_missing() {
         let var = "AIX_TEST_SEC_RESOLVE_ENV_MISSING_X9Y8";
         std::env::remove_var(var);
-        let err = SecretSource(SourceKind::Env(var.to_string())).resolve().unwrap_err();
+        let err = SecretSource(SourceKind::Env(var.to_string()))
+            .resolve()
+            .unwrap_err();
         assert!(matches!(err, AixError::SecretMissingEnvVar { ref name } if name == var));
         let msg = err.to_string();
         assert!(msg.contains(var), "error must include var name");
@@ -372,9 +374,11 @@ mod tests {
 
     #[test]
     fn resolve_file_missing() {
-        let err = SecretSource(SourceKind::File(PathBuf::from("/nonexistent/aix-secret-xyz")))
-            .resolve()
-            .unwrap_err();
+        let err = SecretSource(SourceKind::File(PathBuf::from(
+            "/nonexistent/aix-secret-xyz",
+        )))
+        .resolve()
+        .unwrap_err();
         assert!(matches!(err, AixError::SecretFileRead { ref path, .. }
             if path.to_str().unwrap().contains("aix-secret-xyz")));
         let msg = err.to_string();
@@ -570,7 +574,10 @@ mod tests {
     fn dynamic_value_debug_shows_direct_value() {
         let dv = from_toml_dyn("value = \"Work\"").unwrap();
         let dbg = format!("{dv:?}");
-        assert!(dbg.contains("Work"), "direct label value must be visible in debug: {dbg}");
+        assert!(
+            dbg.contains("Work"),
+            "direct label value must be visible in debug: {dbg}"
+        );
     }
 
     #[test]

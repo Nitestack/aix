@@ -8,7 +8,6 @@
 default_profile = "swtb"
 
 [endpoint]
-api_format = "anthropic"
 base_url   = { file = "/run/secrets/aihub/base-url" }
 
 [profiles.adp]

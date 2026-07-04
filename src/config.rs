@@ -57,15 +57,10 @@ pub enum ApiFormat {
     Both,
 }
 
-// The gateway is a LiteLLM proxy that speaks the Anthropic Messages API
-// (and optionally OpenAI Chat Completions) but is not api.anthropic.com.
-// `api_format` declares which SDK env vars to emit so downstream tools
-// (claude, pi, etc.) reach the gateway without extra per-tool configuration.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
     pub base_url: SecretSource,
-    pub api_format: ApiFormat,
     pub provider: Option<Provider>,
     pub gateway: Option<Gateway>,
 }
@@ -235,7 +230,6 @@ default_profile = "work"
 
 [endpoint]
 base_url = { env = "AIX_BASE_URL" }
-api_format = "anthropic"
 provider = "litellm"
 
 [profiles.work]
@@ -252,7 +246,6 @@ default_profile: work
 endpoint:
   base_url:
     env: AIX_BASE_URL
-  api_format: anthropic
   provider: litellm
 profiles:
   work:
@@ -268,7 +261,6 @@ profiles:
   "default_profile": "work",
   "endpoint": {
     "base_url": { "env": "AIX_BASE_URL" },
-    "api_format": "anthropic",
     "provider": "litellm"
   },
   "profiles": {
@@ -281,7 +273,6 @@ profiles:
   default_profile: "work",
   endpoint: {
     base_url: { env: "AIX_BASE_URL" },
-    api_format: "anthropic",
     provider: "litellm",
   },
   profiles: {
@@ -292,7 +283,6 @@ profiles:
 
     fn assert_standard(cfg: &Config) {
         assert_eq!(cfg.default_profile.as_deref(), Some("work"));
-        assert_eq!(cfg.endpoint.api_format, ApiFormat::Anthropic);
         assert_eq!(
             cfg.endpoint.provider,
             Some(Provider::Known(KnownProvider::LiteLlm))
@@ -413,7 +403,6 @@ profiles:
 default_profile = "nonexistent"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 [profiles.work]
 api_key = "sk-test"
 "#;
@@ -430,7 +419,6 @@ api_key = "sk-test"
         let no_default = r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 [profiles.work]
 api_key = "sk-test"
 "#;
@@ -455,7 +443,6 @@ env_files = ["~/.config/aix/secrets.env", "/run/secrets/extra.env"]
 
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 
 [profiles.work]
 api_key = "sk-test"
@@ -518,7 +505,6 @@ anthropic_env = true
 
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 
 [profiles.work]
 api_key = "sk-test"
@@ -548,7 +534,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 
 [profiles.zzz]
 label = "Z profile"
@@ -572,7 +557,6 @@ api_key = "sk-a"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 
 [profiles.myprofile]
 api_key = "sk-test"
@@ -591,7 +575,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 
 [profiles.work]
 label = "Work account"
@@ -611,7 +594,6 @@ api_key = "sk-work"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 
 [profiles.alpha]
 label = "Shared"
@@ -637,7 +619,6 @@ api_key = "sk-b"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 
 [profiles.a]
 label = "Alpha"
@@ -652,53 +633,6 @@ api_key = "sk-b"
         assert!(validate(&cfg).is_ok());
     }
 
-    // --- ApiFormat ---
-
-    #[test]
-    fn api_format_anthropic_parses() {
-        let cfg: Config = toml::from_str(
-            r#"
-[endpoint]
-base_url = { env = "X" }
-api_format = "anthropic"
-[profiles.work]
-api_key = "sk-test"
-"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.endpoint.api_format, ApiFormat::Anthropic);
-    }
-
-    #[test]
-    fn api_format_openai_parses() {
-        let cfg: Config = toml::from_str(
-            r#"
-[endpoint]
-base_url = { env = "X" }
-api_format = "openai"
-[profiles.work]
-api_key = "sk-test"
-"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.endpoint.api_format, ApiFormat::OpenAi);
-    }
-
-    #[test]
-    fn api_format_both_parses() {
-        let cfg: Config = toml::from_str(
-            r#"
-[endpoint]
-base_url = { env = "X" }
-api_format = "both"
-[profiles.work]
-api_key = "sk-test"
-"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.endpoint.api_format, ApiFormat::Both);
-    }
-
     // --- Provider ---
 
     #[test]
@@ -707,7 +641,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 provider = "litellm"
 [profiles.work]
 api_key = "sk-test"
@@ -726,7 +659,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 provider = "my-future-provider"
 [profiles.work]
 api_key = "sk-test"
@@ -744,7 +676,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 [profiles.work]
 api_key = "sk-test"
 "#,
@@ -761,7 +692,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 gateway = "litellm"
 [profiles.work]
 api_key = "sk-test"
@@ -780,7 +710,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 gateway = "my-custom-gateway"
 [profiles.work]
 api_key = "sk-test"
@@ -798,25 +727,12 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 [profiles.work]
 api_key = "sk-test"
 "#,
         )
         .unwrap();
         assert_eq!(cfg.endpoint.gateway, None);
-    }
-
-    #[test]
-    fn api_format_unknown_rejected() {
-        let bad = r#"
-[endpoint]
-base_url = { env = "X" }
-api_format = "grpc"
-[profiles.work]
-api_key = "sk-test"
-"#;
-        assert!(toml::from_str::<Config>(bad).is_err());
     }
 
     // --- missing / empty profiles ---
@@ -826,7 +742,6 @@ api_key = "sk-test"
         let toml = r#"
 [endpoint]
 base_url = "https://example.com"
-api_format = "anthropic"
 "#;
         let cfg: Config = toml::from_str(toml).unwrap();
         assert!(cfg.profiles.is_empty());
@@ -838,7 +753,6 @@ api_format = "anthropic"
             r#"
 [endpoint]
 base_url = "https://example.com"
-api_format = "anthropic"
 "#,
         )
         .unwrap();
@@ -858,7 +772,6 @@ api_format = "anthropic"
             r#"
 [endpoint]
 base_url = "https://example.com"
-api_format = "anthropic"
 [profiles.swtb]
 label = "SWTB"
 api_key = "sk-a"
@@ -886,7 +799,6 @@ api_key = "sk-b"
             r#"
 [endpoint]
 base_url = "https://example.com"
-api_format = "anthropic"
 [profiles.swtb]
 label = "swtb"
 api_key = "sk-a"
@@ -907,7 +819,6 @@ api_key = "sk-a"
             r#"
 [endpoint]
 base_url = "https://example.com"
-api_format = "anthropic"
 [profiles.swtb]
 api_key = "sk-a"
 "#,
@@ -927,7 +838,6 @@ api_key = "sk-a"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 
 [profiles.a]
 api_key = "sk-a"
@@ -949,7 +859,6 @@ api_key = "sk-b"
             r#"
 [endpoint]
 base_url = { env = "X" }
-api_format = "anthropic"
 
 [profiles.work]
 api_key = "sk-work"
@@ -975,7 +884,6 @@ api_key = "sk-other"
             r#"
 [endpoint]
 base_url = {{ env = "X" }}
-api_format = "anthropic"
 [profiles.work]
 label = {{ env = "{var}" }}
 api_key = "sk-test"
@@ -996,7 +904,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = {{ env = "X" }}
-api_format = "anthropic"
 [profiles.work]
 label = {{ env = "{var}" }}
 api_key = "sk-test"
@@ -1014,7 +921,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = {{ env = "X" }}
-api_format = "anthropic"
 [profiles.work]
 label = {{ env = "{var}" }}
 api_key = "sk-test"
@@ -1036,7 +942,6 @@ api_key = "sk-test"
             r#"
 [endpoint]
 base_url = {{ env = "X" }}
-api_format = "anthropic"
 [profiles.work]
 label = {{ env = "{var}" }}
 api_key = "sk-test"

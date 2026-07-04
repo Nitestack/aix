@@ -19,7 +19,6 @@ default_profile = "work"
 
 [endpoint]
 base_url = "https://compat.example.com"
-api_format = "anthropic"
 provider = "litellm"
 gateway = "litellm"
 
@@ -36,7 +35,6 @@ const YAML: &str = r#"
 default_profile: work
 endpoint:
   base_url: "https://compat.example.com"
-  api_format: anthropic
   provider: litellm
   gateway: litellm
 profiles:
@@ -52,7 +50,6 @@ const JSON: &str = r#"{
   "default_profile": "work",
   "endpoint": {
     "base_url": "https://compat.example.com",
-    "api_format": "anthropic",
     "provider": "litellm",
     "gateway": "litellm"
   },
@@ -66,7 +63,6 @@ const JSON5: &str = r#"{
   default_profile: "work",
   endpoint: {
     base_url: "https://compat.example.com",
-    api_format: "anthropic",
     provider: "litellm",
     gateway: "litellm",
   },
@@ -160,34 +156,18 @@ fn all_formats_produce_correct_base_url() {
 }
 
 // ---------------------------------------------------------------------------
-// api_format rendering contract
+// env variable emission contract
 //
-// These tests encode the exact variable set emitted for each api_format value.
-// Adding a new ApiFormat variant must add a corresponding test here.
+// `aix env` / `aix shell` / `aix exec` always emit all 5 variables regardless
+// of the gateway config, because these commands don't know what tool will run.
+// Named-tool dispatch (`aix claude`, `aix pi`) selects the format by tool name.
 // ---------------------------------------------------------------------------
 
-const CONFIG_ANTHROPIC: &str = r#"
+const CONFIG_SIMPLE: &str = r#"
 [endpoint]
 base_url = "https://gw.example.com"
-api_format = "anthropic"
 [profiles.p]
-api_key = "sk-anthro"
-"#;
-
-const CONFIG_OPENAI: &str = r#"
-[endpoint]
-base_url = "https://gw.example.com"
-api_format = "openai"
-[profiles.p]
-api_key = "sk-oai"
-"#;
-
-const CONFIG_BOTH: &str = r#"
-[endpoint]
-base_url = "https://gw.example.com"
-api_format = "both"
-[profiles.p]
-api_key = "sk-both"
+api_key = "sk-test"
 "#;
 
 fn env_for(config: &str) -> serde_json::Value {
@@ -207,80 +187,8 @@ fn env_for(config: &str) -> serde_json::Value {
 }
 
 #[test]
-fn api_format_anthropic_emits_exactly_3_vars() {
-    let out = env_for(CONFIG_ANTHROPIC);
-    let keys: Vec<&str> = out
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(keys.len(), 3, "expected 3 vars, got: {keys:?}");
-}
-
-#[test]
-fn api_format_anthropic_emits_correct_var_names() {
-    let out = env_for(CONFIG_ANTHROPIC);
-    for key in ["AIX_PROFILE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] {
-        assert!(out.get(key).is_some(), "missing {key} for anthropic: {out}");
-    }
-    assert!(
-        out.get("AIX_API_KEY").is_none(),
-        "unexpected AIX_API_KEY: {out}"
-    );
-    assert!(
-        out.get("AIX_BASE_URL").is_none(),
-        "unexpected AIX_BASE_URL: {out}"
-    );
-    assert!(
-        out.get("OPENAI_API_KEY").is_none(),
-        "unexpected OPENAI_API_KEY: {out}"
-    );
-    assert!(
-        out.get("OPENAI_BASE_URL").is_none(),
-        "unexpected OPENAI_BASE_URL: {out}"
-    );
-}
-
-#[test]
-fn api_format_openai_emits_exactly_3_vars() {
-    let out = env_for(CONFIG_OPENAI);
-    let keys: Vec<&str> = out
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(keys.len(), 3, "expected 3 vars, got: {keys:?}");
-}
-
-#[test]
-fn api_format_openai_emits_correct_var_names() {
-    let out = env_for(CONFIG_OPENAI);
-    for key in ["AIX_PROFILE", "OPENAI_API_KEY", "OPENAI_BASE_URL"] {
-        assert!(out.get(key).is_some(), "missing {key} for openai: {out}");
-    }
-    assert!(
-        out.get("AIX_API_KEY").is_none(),
-        "unexpected AIX_API_KEY: {out}"
-    );
-    assert!(
-        out.get("AIX_BASE_URL").is_none(),
-        "unexpected AIX_BASE_URL: {out}"
-    );
-    assert!(
-        out.get("ANTHROPIC_API_KEY").is_none(),
-        "unexpected ANTHROPIC_API_KEY: {out}"
-    );
-    assert!(
-        out.get("ANTHROPIC_BASE_URL").is_none(),
-        "unexpected ANTHROPIC_BASE_URL: {out}"
-    );
-}
-
-#[test]
-fn api_format_both_emits_exactly_5_vars() {
-    let out = env_for(CONFIG_BOTH);
+fn env_always_emits_exactly_5_vars() {
+    let out = env_for(CONFIG_SIMPLE);
     let keys: Vec<&str> = out
         .as_object()
         .unwrap()
@@ -291,8 +199,8 @@ fn api_format_both_emits_exactly_5_vars() {
 }
 
 #[test]
-fn api_format_both_emits_all_var_names() {
-    let out = env_for(CONFIG_BOTH);
+fn env_always_emits_all_var_names() {
+    let out = env_for(CONFIG_SIMPLE);
     for key in [
         "AIX_PROFILE",
         "ANTHROPIC_API_KEY",
@@ -300,7 +208,7 @@ fn api_format_both_emits_all_var_names() {
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
     ] {
-        assert!(out.get(key).is_some(), "missing {key} for both: {out}");
+        assert!(out.get(key).is_some(), "missing {key}: {out}");
     }
     assert!(
         out.get("AIX_API_KEY").is_none(),
@@ -313,8 +221,8 @@ fn api_format_both_emits_all_var_names() {
 }
 
 #[test]
-fn api_format_both_openai_url_has_v1_suffix() {
-    let out = env_for(CONFIG_BOTH);
+fn env_openai_url_has_v1_suffix() {
+    let out = env_for(CONFIG_SIMPLE);
     let anthropic_url = out["ANTHROPIC_BASE_URL"].as_str().unwrap();
     let openai_url = out["OPENAI_BASE_URL"].as_str().unwrap();
     assert_eq!(openai_url, format!("{anthropic_url}/v1"));
@@ -329,7 +237,6 @@ fn api_format_both_openai_url_has_v1_suffix() {
 const CONFIG_SECRET_LEAK_CHECK: &str = r#"
 [endpoint]
 base_url = "https://gw.example.com"
-api_format = "anthropic"
 [profiles.p]
 api_key = "sk-SENTINEL-MUST-NOT-LEAK"
 "#;

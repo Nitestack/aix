@@ -8,7 +8,6 @@ fn cmd() -> Command {
 const CONFIG: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com"
-api_format = "anthropic"
 
 [profiles.swtb]
 api_key = "sk-swtb-key"
@@ -19,7 +18,6 @@ default_profile = "swtb"
 
 [endpoint]
 base_url = "https://ai.example.com"
-api_format = "anthropic"
 
 [profiles.swtb]
 api_key = "sk-swtb-key"

@@ -9,7 +9,6 @@ fn cmd() -> Command {
 const CONFIG: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com/v1"
-api_format = "anthropic"
 
 [profiles.work]
 label = "Work account"
@@ -24,7 +23,6 @@ api_key = "sk-fast"
 const CONFIG_NO_LABELS: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com/v1"
-api_format = "anthropic"
 
 [profiles.alpha]
 api_key = "sk-alpha"
@@ -38,7 +36,6 @@ api_key = "sk-beta"
 const CONFIG_LABEL_NONE_CLASH: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com/v1"
-api_format = "anthropic"
 
 [profiles.work]
 api_key = "sk-work"
@@ -52,7 +49,6 @@ api_key = "sk-other"
 const CONFIG_DUPLICATE_LABEL: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com/v1"
-api_format = "anthropic"
 
 [profiles.work]
 label = "Shared label"

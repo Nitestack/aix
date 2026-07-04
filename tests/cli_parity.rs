@@ -15,7 +15,6 @@ fn cmd() -> Command {
 const CONFIG_ENV_API_KEY: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com"
-api_format = "anthropic"
 
 [profiles.swtb]
 api_key = { env = "AIX_PARITY_TEST_API_KEY" }
@@ -25,7 +24,6 @@ api_key = { env = "AIX_PARITY_TEST_API_KEY" }
 const CONFIG_ENV_BASE_URL: &str = r#"
 [endpoint]
 base_url = { env = "AIX_PARITY_TEST_BASE_URL" }
-api_format = "anthropic"
 
 [profiles.swtb]
 api_key = "sk-direct-key"
@@ -35,7 +33,6 @@ api_key = "sk-direct-key"
 const CONFIG_DIRECT: &str = r#"
 [endpoint]
 base_url = "https://ai.example.com"
-api_format = "anthropic"
 
 [profiles.swtb]
 api_key = "sk-swtb-key"
@@ -147,8 +144,8 @@ fn exec_missing_base_url_exits_nonzero() {
 
 // ── env variable name parity ─────────────────────────────────────────────────
 //
-// For api_format = "anthropic" the CLI emits exactly 3 variables:
-//   AIX_PROFILE, ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL
+// The CLI always emits all 5 variables:
+//   AIX_PROFILE, ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, OPENAI_API_KEY, OPENAI_BASE_URL
 
 #[test]
 fn env_sh_exact_variable_set_matches_old_wrapper() {
@@ -170,7 +167,6 @@ fn env_sh_exact_variable_set_matches_old_wrapper() {
     }
     assert!(!s.contains("AIX_API_KEY"), "unexpected AIX_API_KEY: {s}");
     assert!(!s.contains("AIX_BASE_URL"), "unexpected AIX_BASE_URL: {s}");
-    assert!(!s.contains("OPENAI_"), "unexpected OPENAI_ variable: {s}");
 }
 
 #[test]
@@ -202,10 +198,6 @@ fn env_json_exact_key_set_matches_old_wrapper() {
     assert!(
         parsed.get("AIX_BASE_URL").is_none(),
         "unexpected AIX_BASE_URL"
-    );
-    assert!(
-        parsed.get("OPENAI_API_KEY").is_none(),
-        "unexpected OPENAI_API_KEY in JSON output"
     );
 }
 

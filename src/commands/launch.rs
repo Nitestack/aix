@@ -29,13 +29,13 @@ pub fn resolve_launch_env(
 
     let api_key = profile_entry.api_key.resolve()?;
     let base_url = cfg.endpoint.base_url.resolve()?;
-    let api_format = format_override.as_ref().unwrap_or(&cfg.endpoint.api_format);
+    let api_format = format_override.unwrap_or(config::ApiFormat::Both);
 
     let vars = collect_vars(
         &profile_name,
         api_key.expose_secret(),
         base_url.expose_secret(),
-        api_format,
+        &api_format,
     );
     Ok(LaunchEnv { vars })
 }
