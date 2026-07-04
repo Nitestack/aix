@@ -66,6 +66,14 @@ pub enum Command {
         /// Output raw JSON instead of formatted text
         #[arg(long)]
         json: bool,
+        /// Always fetch fresh data, bypassing the cache (result is still cached)
+        #[arg(long)]
+        no_cache: bool,
+    },
+    /// Manage the local response cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
     },
     /// Run any AI tool binary with profile environment set.
     /// Uses Anthropic credentials for `claude`, OpenAI credentials for everything else.
@@ -80,6 +88,12 @@ pub enum ConfigAction {
     Path,
     /// Validate the config file
     Validate,
+}
+
+#[derive(Subcommand)]
+pub enum CacheAction {
+    /// Delete all cached response files
+    Clear,
 }
 
 #[derive(ValueEnum, Clone, Debug)]

@@ -9,6 +9,7 @@ pub async fn run(
     positional_profile: Option<String>,
     config_path: Option<PathBuf>,
     json: bool,
+    _no_cache: bool,
 ) -> Result<()> {
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
