@@ -51,7 +51,11 @@ async fn run(cli: Cli) -> color_eyre::Result<()> {
             let effective_profile = profile.or(global_profile);
             commands::info::run(effective_profile, config_path, json).await
         }
-        Command::Spend { profile, json, limit } => {
+        Command::Spend {
+            profile,
+            json,
+            limit,
+        } => {
             let effective_profile = profile.or(global_profile);
             commands::spend::run(effective_profile, config_path, json, limit).await
         }

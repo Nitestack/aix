@@ -63,7 +63,13 @@ async fn info_json_flag_returns_raw_json() {
 
     let output = Command::cargo_bin("aix")
         .unwrap()
-        .args(["--config", config.to_str().unwrap(), "info", "test", "--json"])
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "info",
+            "test",
+            "--json",
+        ])
         .output()
         .unwrap();
 
