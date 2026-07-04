@@ -60,34 +60,28 @@ fn print_human(data: &serde_json::Value, api_key: &str) {
         .and_then(|v| v.as_array())
         .unwrap_or(&empty);
 
-    if let Some(key) = find_matching_key(keys, api_key) {
-        let label = key
-            .get("metadata")
-            .and_then(|m| m.get("key_name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("(unnamed)");
-        let key_name = key.get("key_name").and_then(|v| v.as_str()).unwrap_or("?");
+    let (spend, budget) = if let Some(key) = find_matching_key(keys, api_key) {
         let spend = key.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let budget = key.get("max_budget").and_then(|v| v.as_f64());
-
-        println!("Key:       {label}  ({key_name})");
-        if let Some(b) = budget {
-            let remaining = b - spend;
-            println!("Spend:     ${spend:.2}  /  ${b:.2}  (${remaining:.2} remaining)");
-        } else {
-            println!("Spend:     ${spend:.2}");
-        }
+        (spend, budget)
     } else {
-        // Fallback: no key match found, show user-level totals.
-        let spend = data.get("spend").and_then(|v| v.as_f64());
+        let spend = data.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let budget = data.get("max_budget").and_then(|v| v.as_f64());
-        match (spend, budget) {
-            (Some(s), Some(b)) => {
-                let remaining = b - s;
-                println!("Spend:     ${s:.2}  /  ${b:.2}  (${remaining:.2} remaining)");
-            }
-            (Some(s), None) => println!("Spend:     ${s:.2}"),
-            _ => println!("(no spend data available)"),
-        }
+        (spend, budget)
+    };
+
+    if let Some(b) = budget {
+        let remaining = b - spend;
+        let pct_used = (spend / b * 100.0).clamp(0.0, 100.0);
+        let pct_remaining = 100.0 - pct_used;
+
+        const BAR: usize = 40;
+        let filled = (pct_used / 100.0 * BAR as f64).round() as usize;
+        let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(BAR - filled));
+
+        println!("${spend:.2} of ${b:.2}  ·  ${remaining:.2} remaining ({pct_remaining:.0}%)");
+        println!("{bar}  {pct_used:.0}% used");
+    } else {
+        println!("${spend:.2} spent  (no budget set)");
     }
 }

@@ -54,13 +54,15 @@ async fn spend_shows_matching_key_by_suffix() {
         .args(["--config", config.to_str().unwrap(), "spend", "test"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Nhan Pham"))
-        .stdout(predicate::str::contains("sk-...ABCD"))
         .stdout(predicate::str::contains("41.53"))
         .stdout(predicate::str::contains("500.00"))
         .stdout(predicate::str::contains("458.47"))
         .stdout(predicate::str::contains("remaining"))
-        .stdout(predicate::str::contains("Someone Else").not());
+        .stdout(predicate::str::contains("█"))
+        .stdout(predicate::str::contains("% used"))
+        .stdout(predicate::str::contains("Someone Else").not())
+        .stdout(predicate::str::contains("Nhan Pham").not())
+        .stdout(predicate::str::contains("sk-...ABCD").not());
 }
 
 #[tokio::test]
@@ -85,7 +87,9 @@ async fn spend_falls_back_to_user_totals_when_no_key_match() {
         .assert()
         .success()
         .stdout(predicate::str::contains("99.00"))
-        .stdout(predicate::str::contains("200.00"));
+        .stdout(predicate::str::contains("200.00"))
+        .stdout(predicate::str::contains("█"))
+        .stdout(predicate::str::contains("% used"));
 }
 
 #[tokio::test]
