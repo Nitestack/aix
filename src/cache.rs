@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::config::CacheConfig;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -27,7 +25,11 @@ impl Cache {
             .unwrap_or_else(|_| {
                 ProjectDirs::from("", "", "aix")
                     .map(|d| d.cache_dir().to_path_buf())
-                    .unwrap_or_else(|| PathBuf::from(".cache/aix"))
+                    .unwrap_or_else(|| {
+                        std::env::var("HOME")
+                            .map(|h| PathBuf::from(h).join(".cache").join("aix"))
+                            .unwrap_or_else(|_| std::env::temp_dir().join("aix-cache"))
+                    })
             });
         Self {
             base_dir,
@@ -65,13 +67,14 @@ impl Cache {
             let dir = self.endpoint_dir(base_url);
             std::fs::create_dir_all(&dir)?;
             let user_id = derive_user_id(api_key, data);
+            // Load index BEFORE writing data file to narrow the TOCTOU window
+            let mut index = load_index(&dir);
             let entry = CacheEntry {
                 fetched_at: now_secs(),
                 data: data.clone(),
             };
             let json = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
             write_atomic(&dir.join(format!("{user_id}.json")), &json)?;
-            let mut index = load_index(&dir);
             index.insert(key_suffix(api_key), user_id.clone());
             if let Some(keys) = data.get("keys").and_then(|v| v.as_array()) {
                 for k in keys {
@@ -96,6 +99,7 @@ impl Cache {
                     std::fs::remove_file(file?.path())?;
                     count += 1;
                 }
+                // Non-empty dirs fail here; that's acceptable — files inside were already removed above
                 let _ = std::fs::remove_dir(&path);
             }
         }
@@ -107,7 +111,7 @@ impl Cache {
     }
 }
 
-fn key_suffix(api_key: &str) -> String {
+pub(crate) fn key_suffix(api_key: &str) -> String {
     let len = api_key.len();
     api_key[len.saturating_sub(4)..].to_string()
 }
@@ -132,12 +136,12 @@ fn save_index(dir: &Path, index: &HashMap<String, String>) -> std::io::Result<()
 }
 
 fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path)
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
