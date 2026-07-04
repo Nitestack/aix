@@ -9,7 +9,7 @@ pub fn run(config_path: Option<PathBuf>, json: bool) -> Result<()> {
     let cfg = config::load(&path)?;
     config::validate(&cfg)?;
 
-    let profiles = config::sorted_profiles(&cfg);
+    let profiles = config::sorted_profiles(&cfg)?;
 
     if json {
         print_json(&profiles)?;
@@ -25,8 +25,8 @@ struct ProfileEntry<'a> {
     label: &'a str,
 }
 
-fn print_json(profiles: &[(&str, &str)]) -> Result<()> {
-    let entries: Vec<ProfileEntry> = profiles
+fn print_json(profiles: &[(&str, String)]) -> Result<()> {
+    let entries: Vec<ProfileEntry<'_>> = profiles
         .iter()
         .map(|(name, label)| ProfileEntry { name, label })
         .collect();
@@ -36,9 +36,9 @@ fn print_json(profiles: &[(&str, &str)]) -> Result<()> {
     Ok(())
 }
 
-fn print_text(profiles: &[(&str, &str)]) {
+fn print_text(profiles: &[(&str, String)]) {
     for (name, label) in profiles {
-        if name == label {
+        if *name == label.as_str() {
             println!("{name}");
         } else {
             println!("{name}  ({label})");

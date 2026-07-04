@@ -200,11 +200,8 @@ pub(crate) fn resolve_profile(
 }
 
 fn select_profile_interactively(cfg: &config::Config) -> Result<String, AixError> {
-    let profiles = config::sorted_profiles(cfg);
-    let options: Vec<String> = profiles
-        .iter()
-        .map(|(_, label)| label.to_string())
-        .collect();
+    let profiles = config::sorted_profiles(cfg)?;
+    let options: Vec<String> = profiles.iter().map(|(_, label)| label.clone()).collect();
 
     let selected = inquire::Select::new("Select a profile:", options)
         .prompt()
@@ -213,7 +210,7 @@ fn select_profile_interactively(cfg: &config::Config) -> Result<String, AixError
     // validate() has already rejected duplicate labels, so this find is unambiguous.
     profiles
         .into_iter()
-        .find(|(_, label)| *label == selected.as_str())
+        .find(|(_, label)| label == selected.as_str())
         .map(|(name, _)| name.to_string())
         .ok_or_else(|| AixError::ProfileNotFound {
             name: selected,

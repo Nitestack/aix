@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::error::AixError;
-use crate::secrets::SecretSource;
+use crate::secrets::{DynamicValue, SecretSource};
 use directories::ProjectDirs;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -73,7 +73,7 @@ pub struct Endpoint {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
-    pub label: Option<String>,
+    pub label: Option<DynamicValue>,
     pub api_key: SecretSource,
 }
 
@@ -161,12 +161,15 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
     // The interactive selector uses this same set of labels; duplicates make selection ambiguous.
     let mut sorted_names: Vec<&str> = config.profiles.keys().map(String::as_str).collect();
     sorted_names.sort();
-    let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     for name in sorted_names {
-        let effective_label = config.profiles[name].label.as_deref().unwrap_or(name);
-        if let Some(&first) = seen.get(effective_label) {
+        let effective_label: String = match &config.profiles[name].label {
+            None => name.to_string(),
+            Some(dv) => dv.resolve()?,
+        };
+        if let Some(first) = seen.get(effective_label.as_str()) {
             return Err(AixError::DuplicateLabel {
-                label: effective_label.to_string(),
+                label: effective_label.clone(),
                 first: first.to_string(),
                 second: name.to_string(),
             });
@@ -180,14 +183,26 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
 /// Format a list of profile names (with optional label in parens) for use in error messages.
 /// Shows the names users can type, e.g. "  swtb\n  work  (Work account)".
 pub fn format_available_profiles(cfg: &Config) -> String {
-    let pairs = sorted_profiles(cfg);
+    let mut pairs: Vec<(&str, String)> = cfg
+        .profiles
+        .iter()
+        .map(|(name, profile)| {
+            let label = profile
+                .label
+                .as_ref()
+                .and_then(|dv| dv.resolve().ok())
+                .unwrap_or_else(|| name.to_string());
+            (name.as_str(), label)
+        })
+        .collect();
+    pairs.sort_by_key(|(name, _)| *name);
     if pairs.is_empty() {
         return "  (no profiles defined)".to_string();
     }
     pairs
         .iter()
         .map(|(name, label)| {
-            if name == label {
+            if *name == label.as_str() {
                 format!("  {name}")
             } else {
                 format!("  {name} ({label})")
@@ -197,17 +212,17 @@ pub fn format_available_profiles(cfg: &Config) -> String {
         .join("\n")
 }
 
-pub fn sorted_profiles(cfg: &Config) -> Vec<(&str, &str)> {
-    let mut pairs: Vec<(&str, &str)> = cfg
-        .profiles
-        .iter()
-        .map(|(name, profile)| {
-            let label = profile.label.as_deref().unwrap_or(name.as_str());
-            (name.as_str(), label)
-        })
-        .collect();
+pub fn sorted_profiles(cfg: &Config) -> Result<Vec<(&str, String)>, AixError> {
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    for (name, profile) in &cfg.profiles {
+        let label = match &profile.label {
+            None => name.to_string(),
+            Some(dv) => dv.resolve()?,
+        };
+        pairs.push((name.as_str(), label));
+    }
     pairs.sort_by_key(|(name, _)| *name);
-    pairs
+    Ok(pairs)
 }
 
 #[cfg(test)]
@@ -286,7 +301,10 @@ profiles:
         assert!(cfg.profiles.contains_key("work"));
         assert!(cfg.profiles.contains_key("local"));
         assert!(matches!(cfg.profiles["work"].api_key.0, SourceKind::Env(_)));
-        assert!(matches!(cfg.profiles["local"].api_key.0, SourceKind::Direct(_)));
+        assert!(matches!(
+            cfg.profiles["local"].api_key.0,
+            SourceKind::Direct(_)
+        ));
     }
 
     #[test]
@@ -542,7 +560,7 @@ api_key = "sk-a"
 "#,
         )
         .unwrap();
-        let pairs = sorted_profiles(&cfg);
+        let pairs = sorted_profiles(&cfg).unwrap();
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0].0, "aaa");
         assert_eq!(pairs[1].0, "zzz");
@@ -561,7 +579,7 @@ api_key = "sk-test"
 "#,
         )
         .unwrap();
-        let pairs = sorted_profiles(&cfg);
+        let pairs = sorted_profiles(&cfg).unwrap();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].0, "myprofile");
         assert_eq!(pairs[0].1, "myprofile");
@@ -581,7 +599,7 @@ api_key = "sk-work"
 "#,
         )
         .unwrap();
-        let pairs = sorted_profiles(&cfg);
+        let pairs = sorted_profiles(&cfg).unwrap();
         assert_eq!(pairs[0].1, "Work account");
     }
 
@@ -946,6 +964,89 @@ api_key = "sk-other"
         assert!(
             matches!(err, AixError::DuplicateLabel { ref label, .. } if label == "work"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn sorted_profiles_with_env_label() {
+        let var = "AIX_TEST_SORTED_PROFILES_LABEL_A1B2";
+        std::env::set_var(var, "My Work Label");
+        let cfg: Config = toml::from_str(&format!(
+            r#"
+[endpoint]
+base_url = {{ env = "X" }}
+api_format = "anthropic"
+[profiles.work]
+label = {{ env = "{var}" }}
+api_key = "sk-test"
+"#
+        ))
+        .unwrap();
+        let pairs = sorted_profiles(&cfg);
+        std::env::remove_var(var);
+        let pairs = pairs.unwrap();
+        assert_eq!(pairs[0].1, "My Work Label");
+    }
+
+    #[test]
+    fn sorted_profiles_missing_env_label_returns_err() {
+        let var = "AIX_TEST_SORTED_PROFILES_LABEL_MISSING_C3D4";
+        std::env::remove_var(var);
+        let cfg: Config = toml::from_str(&format!(
+            r#"
+[endpoint]
+base_url = {{ env = "X" }}
+api_format = "anthropic"
+[profiles.work]
+label = {{ env = "{var}" }}
+api_key = "sk-test"
+"#
+        ))
+        .unwrap();
+        assert!(sorted_profiles(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_surfaces_bad_label_source() {
+        let var = "AIX_TEST_VALIDATE_LABEL_MISSING_E5F6";
+        std::env::remove_var(var);
+        let cfg: Config = toml::from_str(&format!(
+            r#"
+[endpoint]
+base_url = {{ env = "X" }}
+api_format = "anthropic"
+[profiles.work]
+label = {{ env = "{var}" }}
+api_key = "sk-test"
+"#
+        ))
+        .unwrap();
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            matches!(err, AixError::SecretMissingEnvVar { .. }),
+            "expected SecretMissingEnvVar, got: {err}"
+        );
+    }
+
+    #[test]
+    fn format_available_profiles_falls_back_on_bad_label() {
+        let var = "AIX_TEST_FORMAT_PROFILES_LABEL_BAD_G7H8";
+        std::env::remove_var(var);
+        let cfg: Config = toml::from_str(&format!(
+            r#"
+[endpoint]
+base_url = {{ env = "X" }}
+api_format = "anthropic"
+[profiles.work]
+label = {{ env = "{var}" }}
+api_key = "sk-test"
+"#
+        ))
+        .unwrap();
+        let out = format_available_profiles(&cfg);
+        assert!(
+            out.contains("work"),
+            "should fall back to profile name: {out}"
         );
     }
 }
