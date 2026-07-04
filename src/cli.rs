@@ -59,14 +59,6 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
-    /// Show user info and budget for the selected profile (LiteLLM only)
-    Info {
-        /// Profile name (positional; overrides the global --profile flag)
-        profile: Option<String>,
-        /// Output raw JSON instead of formatted text
-        #[arg(long)]
-        json: bool,
-    },
     /// Show spend and budget info for the selected profile (LiteLLM only)
     Spend {
         /// Profile name (positional; overrides the global --profile flag)
