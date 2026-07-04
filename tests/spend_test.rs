@@ -57,7 +57,7 @@ async fn spend_shows_matching_key_by_suffix() {
         .stdout(predicate::str::contains("41.53"))
         .stdout(predicate::str::contains("500.00"))
         .stdout(predicate::str::contains("458.47"))
-        .stdout(predicate::str::contains("remaining"))
+        .stdout(predicate::str::contains("available"))
         .stdout(predicate::str::contains("█"))
         .stdout(predicate::str::contains("% used"))
         .stdout(predicate::str::contains("bob").not());

@@ -79,7 +79,7 @@ fn print_human(data: &serde_json::Value, api_key: &str) {
         let filled = (pct_used / 100.0 * BAR as f64).round() as usize;
         let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(BAR - filled));
 
-        println!("${spend:.2} of ${b:.2}  ·  ${remaining:.2} remaining ({pct_remaining:.0}%)");
+        println!("${spend:.2} of ${b:.2}  ·  ${remaining:.2} available ({pct_remaining:.0}%)");
         println!("{bar}  {pct_used:.0}% used");
     } else {
         println!("${spend:.2} spent  (no budget set)");
