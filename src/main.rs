@@ -8,13 +8,14 @@ mod config;
 mod error;
 mod secrets;
 
-fn main() -> color_eyre::Result<()> {
+#[tokio::main]
+async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
-    run(cli)
+    run(cli).await
 }
 
-fn run(cli: Cli) -> color_eyre::Result<()> {
+async fn run(cli: Cli) -> color_eyre::Result<()> {
     let global_profile = cli.profile;
     let config_path = cli.config;
     match cli.command {
@@ -45,6 +46,14 @@ fn run(cli: Cli) -> color_eyre::Result<()> {
             commands::exec::run(effective_profile, config_path, dry_run, args)
         }
         Command::Config { action } => commands::config::run(action, config_path),
+        Command::Info { profile, json } => {
+            let effective_profile = profile.or(global_profile);
+            commands::info::run(effective_profile, config_path, json).await
+        }
+        Command::Spend { profile, json, limit } => {
+            let effective_profile = profile.or(global_profile);
+            commands::spend::run(effective_profile, config_path, json, limit).await
+        }
         Command::Tool(raw) => {
             let tool = raw[0].clone();
             let rest = &raw[1..];

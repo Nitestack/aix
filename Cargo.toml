@@ -23,8 +23,11 @@ inquire     = { version = "0.9", default-features = false, features = ["crosster
 thiserror   = "2"
 color-eyre  = { version = "0.6", default-features = false }
 zeroize     = "1"
+reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio       = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
 assert_cmd = "2"
 assert_fs  = "1"
 predicates = "3"
+wiremock   = "0.6"
