@@ -84,7 +84,21 @@ impl Cache {
     }
 
     pub fn clear(&self) -> std::io::Result<usize> {
-        todo!()
+        if !self.base_dir.exists() {
+            return Ok(0);
+        }
+        let mut count = 0;
+        for entry in std::fs::read_dir(&self.base_dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                for file in std::fs::read_dir(&path)? {
+                    std::fs::remove_file(file?.path())?;
+                    count += 1;
+                }
+                let _ = std::fs::remove_dir(&path);
+            }
+        }
+        Ok(count)
     }
 
     fn endpoint_dir(&self, base_url: &str) -> PathBuf {
@@ -294,5 +308,28 @@ mod tests {
             !endpoint_dir.exists(),
             "no files should be written when disabled"
         );
+    }
+
+    #[test]
+    fn clear_removes_all_files_and_returns_count() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let data = serde_json::json!({ "user_id": "u-clr", "spend": 0.0, "keys": [] });
+        cache.put("https://api.example.com", "sk-clr1", &data);
+        cache.put("https://other.example.com", "sk-clr2", &data);
+        // Two endpoints → two subdirs, each with index.json + u-clr.json = 4 files
+        let count = cache.clear().unwrap();
+        assert_eq!(count, 4);
+        assert!(
+            dir.path().read_dir().unwrap().next().is_none(),
+            "base_dir should be empty after clear"
+        );
+    }
+
+    #[test]
+    fn clear_on_empty_dir_returns_zero() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        assert_eq!(cache.clear().unwrap(), 0);
     }
 }
