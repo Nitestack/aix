@@ -18,7 +18,7 @@ const TOML: &str = r#"
 default_profile = "work"
 
 [endpoint]
-base_url = "https://compat.example.com/v1"
+base_url = "https://compat.example.com"
 api_format = "anthropic"
 provider = "litellm"
 gateway = "litellm"
@@ -35,7 +35,7 @@ api_key = "sk-compat-local"
 const YAML: &str = r#"
 default_profile: work
 endpoint:
-  base_url: "https://compat.example.com/v1"
+  base_url: "https://compat.example.com"
   api_format: anthropic
   provider: litellm
   gateway: litellm
@@ -51,7 +51,7 @@ profiles:
 const JSON: &str = r#"{
   "default_profile": "work",
   "endpoint": {
-    "base_url": "https://compat.example.com/v1",
+    "base_url": "https://compat.example.com",
     "api_format": "anthropic",
     "provider": "litellm",
     "gateway": "litellm"
@@ -65,7 +65,7 @@ const JSON: &str = r#"{
 const JSON5: &str = r#"{
   default_profile: "work",
   endpoint: {
-    base_url: "https://compat.example.com/v1",
+    base_url: "https://compat.example.com",
     api_format: "anthropic",
     provider: "litellm",
     gateway: "litellm",
@@ -137,7 +137,7 @@ fn all_formats_produce_correct_api_key() {
     ] {
         let out = env_json_for(config, ext);
         assert_eq!(
-            out["AIX_API_KEY"], "sk-compat-work",
+            out["ANTHROPIC_API_KEY"], "sk-compat-work",
             "wrong api key for {ext}: {out}"
         );
     }
@@ -153,7 +153,7 @@ fn all_formats_produce_correct_base_url() {
     ] {
         let out = env_json_for(config, ext);
         assert_eq!(
-            out["AIX_BASE_URL"], "https://compat.example.com/v1",
+            out["ANTHROPIC_BASE_URL"], "https://compat.example.com",
             "wrong base_url for {ext}: {out}"
         );
     }
@@ -168,7 +168,7 @@ fn all_formats_produce_correct_base_url() {
 
 const CONFIG_ANTHROPIC: &str = r#"
 [endpoint]
-base_url = "https://gw.example.com/v1"
+base_url = "https://gw.example.com"
 api_format = "anthropic"
 [profiles.p]
 api_key = "sk-anthro"
@@ -176,7 +176,7 @@ api_key = "sk-anthro"
 
 const CONFIG_OPENAI: &str = r#"
 [endpoint]
-base_url = "https://gw.example.com/v1"
+base_url = "https://gw.example.com"
 api_format = "openai"
 [profiles.p]
 api_key = "sk-oai"
@@ -184,7 +184,7 @@ api_key = "sk-oai"
 
 const CONFIG_BOTH: &str = r#"
 [endpoint]
-base_url = "https://gw.example.com/v1"
+base_url = "https://gw.example.com"
 api_format = "both"
 [profiles.p]
 api_key = "sk-both"
@@ -207,7 +207,7 @@ fn env_for(config: &str) -> serde_json::Value {
 }
 
 #[test]
-fn api_format_anthropic_emits_exactly_5_vars() {
+fn api_format_anthropic_emits_exactly_3_vars() {
     let out = env_for(CONFIG_ANTHROPIC);
     let keys: Vec<&str> = out
         .as_object()
@@ -215,21 +215,23 @@ fn api_format_anthropic_emits_exactly_5_vars() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys.len(), 5, "expected 5 vars, got: {keys:?}");
+    assert_eq!(keys.len(), 3, "expected 3 vars, got: {keys:?}");
 }
 
 #[test]
 fn api_format_anthropic_emits_correct_var_names() {
     let out = env_for(CONFIG_ANTHROPIC);
-    for key in [
-        "AIX_PROFILE",
-        "AIX_API_KEY",
-        "AIX_BASE_URL",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_BASE_URL",
-    ] {
+    for key in ["AIX_PROFILE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] {
         assert!(out.get(key).is_some(), "missing {key} for anthropic: {out}");
     }
+    assert!(
+        out.get("AIX_API_KEY").is_none(),
+        "unexpected AIX_API_KEY: {out}"
+    );
+    assert!(
+        out.get("AIX_BASE_URL").is_none(),
+        "unexpected AIX_BASE_URL: {out}"
+    );
     assert!(
         out.get("OPENAI_API_KEY").is_none(),
         "unexpected OPENAI_API_KEY: {out}"
@@ -241,7 +243,7 @@ fn api_format_anthropic_emits_correct_var_names() {
 }
 
 #[test]
-fn api_format_openai_emits_exactly_5_vars() {
+fn api_format_openai_emits_exactly_3_vars() {
     let out = env_for(CONFIG_OPENAI);
     let keys: Vec<&str> = out
         .as_object()
@@ -249,21 +251,23 @@ fn api_format_openai_emits_exactly_5_vars() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys.len(), 5, "expected 5 vars, got: {keys:?}");
+    assert_eq!(keys.len(), 3, "expected 3 vars, got: {keys:?}");
 }
 
 #[test]
 fn api_format_openai_emits_correct_var_names() {
     let out = env_for(CONFIG_OPENAI);
-    for key in [
-        "AIX_PROFILE",
-        "AIX_API_KEY",
-        "AIX_BASE_URL",
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-    ] {
+    for key in ["AIX_PROFILE", "OPENAI_API_KEY", "OPENAI_BASE_URL"] {
         assert!(out.get(key).is_some(), "missing {key} for openai: {out}");
     }
+    assert!(
+        out.get("AIX_API_KEY").is_none(),
+        "unexpected AIX_API_KEY: {out}"
+    );
+    assert!(
+        out.get("AIX_BASE_URL").is_none(),
+        "unexpected AIX_BASE_URL: {out}"
+    );
     assert!(
         out.get("ANTHROPIC_API_KEY").is_none(),
         "unexpected ANTHROPIC_API_KEY: {out}"
@@ -275,7 +279,7 @@ fn api_format_openai_emits_correct_var_names() {
 }
 
 #[test]
-fn api_format_both_emits_exactly_7_vars() {
+fn api_format_both_emits_exactly_5_vars() {
     let out = env_for(CONFIG_BOTH);
     let keys: Vec<&str> = out
         .as_object()
@@ -283,7 +287,7 @@ fn api_format_both_emits_exactly_7_vars() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys.len(), 7, "expected 7 vars, got: {keys:?}");
+    assert_eq!(keys.len(), 5, "expected 5 vars, got: {keys:?}");
 }
 
 #[test]
@@ -291,8 +295,6 @@ fn api_format_both_emits_all_var_names() {
     let out = env_for(CONFIG_BOTH);
     for key in [
         "AIX_PROFILE",
-        "AIX_API_KEY",
-        "AIX_BASE_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_BASE_URL",
         "OPENAI_API_KEY",
@@ -300,15 +302,22 @@ fn api_format_both_emits_all_var_names() {
     ] {
         assert!(out.get(key).is_some(), "missing {key} for both: {out}");
     }
+    assert!(
+        out.get("AIX_API_KEY").is_none(),
+        "unexpected AIX_API_KEY: {out}"
+    );
+    assert!(
+        out.get("AIX_BASE_URL").is_none(),
+        "unexpected AIX_BASE_URL: {out}"
+    );
 }
 
 #[test]
-fn api_format_anthropic_and_openai_mirror_aix_values() {
+fn api_format_both_openai_url_has_v1_suffix() {
     let out = env_for(CONFIG_BOTH);
-    assert_eq!(out["AIX_API_KEY"], out["ANTHROPIC_API_KEY"]);
-    assert_eq!(out["AIX_API_KEY"], out["OPENAI_API_KEY"]);
-    assert_eq!(out["AIX_BASE_URL"], out["ANTHROPIC_BASE_URL"]);
-    assert_eq!(out["AIX_BASE_URL"], out["OPENAI_BASE_URL"]);
+    let anthropic_url = out["ANTHROPIC_BASE_URL"].as_str().unwrap();
+    let openai_url = out["OPENAI_BASE_URL"].as_str().unwrap();
+    assert_eq!(openai_url, format!("{anthropic_url}/v1"));
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +328,7 @@ fn api_format_anthropic_and_openai_mirror_aix_values() {
 
 const CONFIG_SECRET_LEAK_CHECK: &str = r#"
 [endpoint]
-base_url = "https://gw.example.com/v1"
+base_url = "https://gw.example.com"
 api_format = "anthropic"
 [profiles.p]
 api_key = "sk-SENTINEL-MUST-NOT-LEAK"

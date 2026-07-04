@@ -1,5 +1,6 @@
 use clap::Parser;
 use cli::{Cli, Command};
+use config::ApiFormat;
 
 mod cli;
 mod commands;
@@ -43,22 +44,34 @@ fn run(cli: Cli) -> color_eyre::Result<()> {
             let effective_profile = profile.or(global_profile);
             commands::exec::run(effective_profile, config_path, dry_run, args)
         }
-        Command::Claude {
-            profile,
-            dry_run,
-            args,
-        } => {
-            let effective_profile = profile.or(global_profile);
-            commands::claude::run(effective_profile, config_path, dry_run, args)
-        }
-        Command::Pi {
-            profile,
-            dry_run,
-            args,
-        } => {
-            let effective_profile = profile.or(global_profile);
-            commands::pi::run(effective_profile, config_path, dry_run, args)
-        }
         Command::Config { action } => commands::config::run(action, config_path),
+        Command::Tool(raw) => {
+            let tool = raw[0].clone();
+            let rest = &raw[1..];
+
+            let sep = rest.iter().position(|a| a == "--");
+            let (pre, tool_args) = match sep {
+                Some(i) => (&rest[..i], rest[i + 1..].to_vec()),
+                None => (rest, vec![]),
+            };
+
+            let dry_run = pre.iter().any(|a| a == "--dry-run");
+            let profile = pre.iter().find(|a| !a.starts_with('-')).cloned();
+
+            let format = if tool == "claude" {
+                ApiFormat::Anthropic
+            } else {
+                ApiFormat::OpenAi
+            };
+
+            commands::launch::run_named_tool(
+                &tool,
+                format,
+                profile.or(global_profile),
+                config_path,
+                dry_run,
+                tool_args,
+            )
+        }
     }
 }

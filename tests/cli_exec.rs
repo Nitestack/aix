@@ -7,7 +7,7 @@ fn cmd() -> Command {
 
 const CONFIG: &str = r#"
 [endpoint]
-base_url = "https://ai.example.com/v1"
+base_url = "https://ai.example.com"
 api_format = "anthropic"
 
 [profiles.swtb]
@@ -18,7 +18,7 @@ const CONFIG_WITH_DEFAULT: &str = r#"
 default_profile = "swtb"
 
 [endpoint]
-base_url = "https://ai.example.com/v1"
+base_url = "https://ai.example.com"
 api_format = "anthropic"
 
 [profiles.swtb]
@@ -35,14 +35,14 @@ fn exec_sets_aix_env_vars_in_child() {
 
     let out = cmd()
         .env("AIX_CONFIG", file.path())
-        .args(["exec", "swtb", "--", "printenv", "AIX_API_KEY"])
+        .args(["exec", "swtb", "--", "printenv", "AIX_PROFILE"])
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
     let s = std::str::from_utf8(&out).unwrap().trim();
-    assert_eq!(s, "sk-swtb-key", "got: {s}");
+    assert_eq!(s, "swtb", "got: {s}");
 }
 
 #[test]
@@ -136,7 +136,14 @@ fn exec_dry_run_shows_variable_names_not_values() {
 
     let output = cmd()
         .env("AIX_CONFIG", file.path())
-        .args(["exec", "swtb", "--dry-run", "--", "printenv", "AIX_API_KEY"])
+        .args([
+            "exec",
+            "swtb",
+            "--dry-run",
+            "--",
+            "printenv",
+            "ANTHROPIC_API_KEY",
+        ])
         .assert()
         .success()
         .get_output()
@@ -144,7 +151,7 @@ fn exec_dry_run_shows_variable_names_not_values() {
 
     let stderr = std::str::from_utf8(&output.stderr).unwrap();
     assert!(
-        stderr.contains("AIX_API_KEY"),
+        stderr.contains("ANTHROPIC_API_KEY"),
         "must mention var name: {stderr}"
     );
     assert!(
@@ -229,7 +236,10 @@ fn claude_dry_run_shows_claude_command() {
         .clone();
     let s = std::str::from_utf8(&stderr).unwrap();
     assert!(s.contains("claude"), "must mention 'claude': {s}");
-    assert!(s.contains("AIX_API_KEY"), "must list env var names: {s}");
+    assert!(
+        s.contains("ANTHROPIC_API_KEY"),
+        "must list env var names: {s}"
+    );
     assert!(!s.contains("sk-swtb-key"), "must not leak value: {s}");
 }
 
@@ -270,6 +280,6 @@ fn shell_dry_run_shows_shell_and_var_names() {
         .clone();
     let s = std::str::from_utf8(&stderr).unwrap();
     assert!(s.contains("Would run:"), "must show would-run: {s}");
-    assert!(s.contains("AIX_API_KEY"), "must list var names: {s}");
+    assert!(s.contains("ANTHROPIC_API_KEY"), "must list var names: {s}");
     assert!(!s.contains("sk-swtb-key"), "must not leak value: {s}");
 }

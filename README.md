@@ -280,23 +280,21 @@ Only one source per field is allowed. Mixing sources in the same field is a conf
 
 ## Environment variables emitted
 
-All commands that set up an environment (exec, shell, claude, pi) resolve the selected profile and inject:
+All commands that set up an environment resolve the selected profile and always inject:
 
 ```
 AIX_PROFILE   — the resolved profile name
-AIX_API_KEY   — the resolved API key
-AIX_BASE_URL  — the resolved gateway base URL
 ```
 
-Plus, depending on `api_format`:
+Plus a format-specific set determined by `api_format` (for `exec`/`shell`/`env`) or by the tool subcommand:
 
-| api_format   | Additional variables |
-|--------------|---------------------|
-| `anthropic`  | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
-| `openai`     | `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
-| `both`       | All four of the above |
+| api_format / tool subcommand | Variables set |
+|------------------------------|--------------|
+| `anthropic` / `aix claude`   | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
+| `openai` / all other tools   | `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
+| `both`                       | All four of the above |
 
-`ANTHROPIC_*` / `OPENAI_*` values are always identical to the corresponding `AIX_*` values.
+`OPENAI_BASE_URL` is the gateway base URL with `/v1` appended; `ANTHROPIC_BASE_URL` is the bare base URL. This matches how each SDK constructs request paths.
 
 ---
 
@@ -398,36 +396,27 @@ aix shell
 aix shell work --dry-run
 ```
 
-### aix claude — Claude CLI wrapper
+### Running any AI tool
 
-Finds `claude` on `$PATH` and runs it with the profile environment set.
+`aix <tool>` works with any binary on `$PATH` — no configuration needed and no list to maintain. The credential format is chosen automatically:
+
+- `aix claude ...` → injects `ANTHROPIC_*` variables
+- `aix <anything else> ...` → injects `OPENAI_*` variables
 
 ```bash
-# aix claude PROFILE -- CLAUDE_ARGS...
+# aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]
 
-# Run Claude with the work profile
 aix claude work -- --model claude-opus-4
-
-# Pass through all claude flags
-aix claude work -- --model claude-opus-4 --output-format json
+aix opencode work -- --model gpt-4o
+aix aider work -- --no-auto-commits
+aix goose work -- session start
+aix my-new-agent work -- --prompt "Hello"
 
 # Interactive profile picker (when both stdin and stdout are TTYs)
-aix claude -- --help
-```
+aix claude -- chat
 
-### aix pi — Pi Coding Agent wrapper
-
-Finds `pi` (the Pi Coding Agent) on `$PATH` and runs it with the profile environment set.
-
-```bash
-# aix pi PROFILE -- PI_ARGS...
-
-aix pi work -- --model claude-opus-4
-
-aix pi work -- chat --system "You are a helpful assistant."
-
-# Dry-run (prints command and variable names, never secrets)
-aix pi work --dry-run -- --model swtb
+# Dry-run: print what would run, never print secrets
+aix opencode work --dry-run
 ```
 
 ### Listing profiles

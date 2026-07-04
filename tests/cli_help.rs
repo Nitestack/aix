@@ -51,16 +51,6 @@ fn exec_help() {
 }
 
 #[test]
-fn claude_help() {
-    cmd().args(["claude", "--help"]).assert().success();
-}
-
-#[test]
-fn pi_help() {
-    cmd().args(["pi", "--help"]).assert().success();
-}
-
-#[test]
 fn config_help() {
     cmd().args(["config", "--help"]).assert().success();
 }

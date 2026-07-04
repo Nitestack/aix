@@ -14,7 +14,7 @@ fn cmd() -> Command {
 // Used to test "missing API key" error paths.
 const CONFIG_ENV_API_KEY: &str = r#"
 [endpoint]
-base_url = "https://ai.example.com/v1"
+base_url = "https://ai.example.com"
 api_format = "anthropic"
 
 [profiles.swtb]
@@ -34,7 +34,7 @@ api_key = "sk-direct-key"
 // Minimal working config for exec / shell parity tests.
 const CONFIG_DIRECT: &str = r#"
 [endpoint]
-base_url = "https://ai.example.com/v1"
+base_url = "https://ai.example.com"
 api_format = "anthropic"
 
 [profiles.swtb]
@@ -147,11 +147,8 @@ fn exec_missing_base_url_exits_nonzero() {
 
 // ── env variable name parity ─────────────────────────────────────────────────
 //
-// Old wrapper always emits exactly these 5 variables (api_format = anthropic):
-//   AIX_PROFILE, AIX_API_KEY, AIX_BASE_URL,
-//   ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL
-//
-// Rust CLI: same 5 when api_format = "anthropic".
+// For api_format = "anthropic" the CLI emits exactly 3 variables:
+//   AIX_PROFILE, ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL
 
 #[test]
 fn env_sh_exact_variable_set_matches_old_wrapper() {
@@ -168,17 +165,11 @@ fn env_sh_exact_variable_set_matches_old_wrapper() {
         .clone();
     let s = std::str::from_utf8(&out).unwrap();
 
-    // Must contain exactly these 5 variable names.
-    for var in &[
-        "AIX_PROFILE",
-        "AIX_API_KEY",
-        "AIX_BASE_URL",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_BASE_URL",
-    ] {
+    for var in &["AIX_PROFILE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] {
         assert!(s.contains(var), "missing variable {var}: {s}");
     }
-    // Must not introduce new variables beyond the old wrapper's set.
+    assert!(!s.contains("AIX_API_KEY"), "unexpected AIX_API_KEY: {s}");
+    assert!(!s.contains("AIX_BASE_URL"), "unexpected AIX_BASE_URL: {s}");
     assert!(!s.contains("OPENAI_"), "unexpected OPENAI_ variable: {s}");
 }
 
@@ -198,18 +189,20 @@ fn env_json_exact_key_set_matches_old_wrapper() {
 
     let parsed: serde_json::Value = serde_json::from_slice(&out).expect("must be valid JSON");
 
-    for key in &[
-        "AIX_PROFILE",
-        "AIX_API_KEY",
-        "AIX_BASE_URL",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_BASE_URL",
-    ] {
+    for key in &["AIX_PROFILE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] {
         assert!(
             parsed.get(*key).is_some(),
             "missing key {key} in JSON output"
         );
     }
+    assert!(
+        parsed.get("AIX_API_KEY").is_none(),
+        "unexpected AIX_API_KEY"
+    );
+    assert!(
+        parsed.get("AIX_BASE_URL").is_none(),
+        "unexpected AIX_BASE_URL"
+    );
     assert!(
         parsed.get("OPENAI_API_KEY").is_none(),
         "unexpected OPENAI_API_KEY in JSON output"
@@ -217,25 +210,14 @@ fn env_json_exact_key_set_matches_old_wrapper() {
 }
 
 // ── exec with command sets env vars (mirrors old `shell -- cmd`) ─────────────
-//
-// Old wrapper: `aix shell myprofile -- printenv AIX_API_KEY`
-// Rust CLI: `aix exec myprofile -- printenv AIX_API_KEY`
-//
-// The `shell` subcommand no longer accepts `-- cmd`; `exec` is the replacement.
 
 #[test]
 #[cfg(unix)]
-fn exec_with_command_sets_all_five_anthropic_vars() {
+fn exec_with_command_sets_all_three_anthropic_vars() {
     let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
     file.write_str(CONFIG_DIRECT).unwrap();
 
-    for var in &[
-        "AIX_PROFILE",
-        "AIX_API_KEY",
-        "AIX_BASE_URL",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_BASE_URL",
-    ] {
+    for var in &["AIX_PROFILE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] {
         let out = cmd()
             .env("AIX_CONFIG", file.path())
             .args(["exec", "swtb", "--", "printenv", var])
@@ -247,36 +229,6 @@ fn exec_with_command_sets_all_five_anthropic_vars() {
         let val = std::str::from_utf8(&out).unwrap().trim();
         assert!(!val.is_empty(), "variable {var} must be non-empty in child");
     }
-}
-
-#[test]
-#[cfg(unix)]
-fn exec_anthropic_vars_mirror_aix_vars() {
-    let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
-    file.write_str(CONFIG_DIRECT).unwrap();
-
-    let get = |var: &str| {
-        let out = cmd()
-            .env("AIX_CONFIG", file.path())
-            .args(["exec", "swtb", "--", "printenv", var])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        std::str::from_utf8(&out).unwrap().trim().to_string()
-    };
-
-    assert_eq!(
-        get("AIX_API_KEY"),
-        get("ANTHROPIC_API_KEY"),
-        "ANTHROPIC_API_KEY must equal AIX_API_KEY"
-    );
-    assert_eq!(
-        get("AIX_BASE_URL"),
-        get("ANTHROPIC_BASE_URL"),
-        "ANTHROPIC_BASE_URL must equal AIX_BASE_URL"
-    );
 }
 
 // ── non-interactive safety ───────────────────────────────────────────────────

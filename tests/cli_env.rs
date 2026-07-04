@@ -8,7 +8,7 @@ fn cmd() -> Command {
 // Config with direct (non-env) secret values so tests don't depend on env vars.
 const CONFIG_DIRECT: &str = r#"
 [endpoint]
-base_url = "https://ai.example.com/v1"
+base_url = "https://ai.example.com"
 api_format = "anthropic"
 
 [profiles.swtb]
@@ -22,7 +22,7 @@ const CONFIG_WITH_DEFAULT: &str = r#"
 default_profile = "swtb"
 
 [endpoint]
-base_url = "https://ai.example.com/v1"
+base_url = "https://ai.example.com"
 api_format = "anthropic"
 
 [profiles.swtb]
@@ -31,7 +31,7 @@ api_key = "sk-swtb-key"
 
 const CONFIG_OPENAI_COMPAT: &str = r#"
 [endpoint]
-base_url = "https://ai.example.com/v1"
+base_url = "https://ai.example.com"
 api_format = "both"
 
 [profiles.swtb]
@@ -40,7 +40,7 @@ api_key = "sk-swtb-key"
 
 const CONFIG_NO_ANTHROPIC: &str = r#"
 [endpoint]
-base_url = "https://ai.example.com/v1"
+base_url = "https://ai.example.com"
 api_format = "openai"
 
 [profiles.swtb]
@@ -49,7 +49,7 @@ api_key = "sk-swtb-key"
 
 const CONFIG_SPECIAL_CHARS: &str = r#"
 [endpoint]
-base_url = "https://ai.example.com/v1?token=abc&id=1"
+base_url = "https://ai.example.com?token=abc&id=1"
 api_format = "anthropic"
 
 [profiles.test]
@@ -74,18 +74,13 @@ fn env_sh_contains_aix_vars() {
     let s = std::str::from_utf8(&out).unwrap();
 
     assert!(s.contains("export AIX_PROFILE='swtb'"), "got: {s}");
-    assert!(s.contains("export AIX_API_KEY='sk-swtb-key'"), "got: {s}");
-    assert!(
-        s.contains("export AIX_BASE_URL='https://ai.example.com/v1'"),
-        "got: {s}"
-    );
     // anthropic_env defaults to true
     assert!(
         s.contains("export ANTHROPIC_API_KEY='sk-swtb-key'"),
         "got: {s}"
     );
     assert!(
-        s.contains("export ANTHROPIC_BASE_URL='https://ai.example.com/v1'"),
+        s.contains("export ANTHROPIC_BASE_URL='https://ai.example.com'"),
         "got: {s}"
     );
     // openai_env defaults to false
@@ -128,7 +123,7 @@ fn env_sh_special_chars_in_key_and_url() {
     assert!(s.contains(r"'sk-it'\''s a test'"), "got: {s}");
     // URL with & and = preserved inside single quotes
     assert!(
-        s.contains("'https://ai.example.com/v1?token=abc&id=1'"),
+        s.contains("'https://ai.example.com?token=abc&id=1'"),
         "got: {s}"
     );
 }
@@ -152,8 +147,6 @@ fn env_json_produces_valid_json() {
     let parsed: serde_json::Value =
         serde_json::from_slice(&out).expect("output must be valid JSON");
     assert_eq!(parsed["AIX_PROFILE"], "swtb");
-    assert_eq!(parsed["AIX_API_KEY"], "sk-swtb-key");
-    assert_eq!(parsed["AIX_BASE_URL"], "https://ai.example.com/v1");
     assert_eq!(parsed["ANTHROPIC_API_KEY"], "sk-swtb-key");
     assert!(parsed.get("OPENAI_API_KEY").is_none());
 }
@@ -174,11 +167,7 @@ fn env_json_special_chars_round_trip() {
 
     let parsed: serde_json::Value =
         serde_json::from_slice(&out).expect("output must be valid JSON");
-    assert_eq!(parsed["AIX_API_KEY"], "sk-it's a test");
-    assert_eq!(
-        parsed["AIX_BASE_URL"],
-        "https://ai.example.com/v1?token=abc&id=1"
-    );
+    assert_eq!(parsed["AIX_PROFILE"], "test");
 }
 
 // --- nu format ---
@@ -199,7 +188,6 @@ fn env_nu_contains_env_assignments() {
     let s = std::str::from_utf8(&out).unwrap();
 
     assert!(s.contains("$env.AIX_PROFILE = \"swtb\""), "got: {s}");
-    assert!(s.contains("$env.AIX_API_KEY = \"sk-swtb-key\""), "got: {s}");
 }
 
 // --- fish format ---
@@ -220,7 +208,6 @@ fn env_fish_contains_set_x_lines() {
     let s = std::str::from_utf8(&out).unwrap();
 
     assert!(s.contains("set -x AIX_PROFILE 'swtb'"), "got: {s}");
-    assert!(s.contains("set -x AIX_API_KEY 'sk-swtb-key'"), "got: {s}");
 }
 
 #[test]
@@ -260,7 +247,6 @@ fn env_powershell_contains_env_colon_assignments() {
     let s = std::str::from_utf8(&out).unwrap();
 
     assert!(s.contains("$env:AIX_PROFILE = 'swtb'"), "got: {s}");
-    assert!(s.contains("$env:AIX_API_KEY = 'sk-swtb-key'"), "got: {s}");
 }
 
 #[test]
@@ -320,8 +306,6 @@ fn env_no_anthropic_compat_omits_anthropic_vars() {
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert!(parsed.get("ANTHROPIC_API_KEY").is_none());
     assert_eq!(parsed["OPENAI_API_KEY"], "sk-swtb-key");
-    // Core vars still present
-    assert_eq!(parsed["AIX_API_KEY"], "sk-swtb-key");
 }
 
 // --- profile selection ---
@@ -531,11 +515,6 @@ fn env_cmd_contains_set_quoted_lines() {
     let s = std::str::from_utf8(&out).unwrap();
 
     assert!(s.contains(r#"set "AIX_PROFILE=swtb""#), "got: {s}");
-    assert!(s.contains(r#"set "AIX_API_KEY=sk-swtb-key""#), "got: {s}");
-    assert!(
-        s.contains(r#"set "AIX_BASE_URL=https://ai.example.com/v1""#),
-        "got: {s}"
-    );
     assert!(
         s.contains(r#"set "ANTHROPIC_API_KEY=sk-swtb-key""#),
         "got: {s}"
@@ -568,7 +547,7 @@ fn env_cmd_no_debug_on_stdout() {
 fn env_cmd_percent_in_url_is_doubled() {
     const CONFIG_PERCENT: &str = r#"
 [endpoint]
-base_url = "https://ai.example.com/v1?token=abc%20def"
+base_url = "https://ai.example.com?token=abc%20def"
 api_format = "anthropic"
 
 [profiles.test]
@@ -588,7 +567,7 @@ api_key = "sk-key"
     let s = std::str::from_utf8(&out).unwrap();
 
     assert!(
-        s.contains(r#"set "AIX_BASE_URL=https://ai.example.com/v1?token=abc%%20def""#),
+        s.contains(r#"set "ANTHROPIC_BASE_URL=https://ai.example.com?token=abc%%20def""#),
         "got: {s}"
     );
 }

@@ -11,6 +11,7 @@ pub struct LaunchEnv {
 pub fn resolve_launch_env(
     profile: Option<String>,
     config_path: Option<PathBuf>,
+    format_override: Option<config::ApiFormat>,
 ) -> Result<LaunchEnv> {
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
@@ -28,14 +29,27 @@ pub fn resolve_launch_env(
 
     let api_key = profile_entry.api_key.resolve()?;
     let base_url = cfg.endpoint.base_url.resolve()?;
+    let api_format = format_override.as_ref().unwrap_or(&cfg.endpoint.api_format);
 
     let vars = collect_vars(
         &profile_name,
         api_key.expose_secret(),
         base_url.expose_secret(),
-        &cfg.endpoint.api_format,
+        api_format,
     );
     Ok(LaunchEnv { vars })
+}
+
+pub fn run_named_tool(
+    name: &str,
+    format: config::ApiFormat,
+    profile: Option<String>,
+    config_path: Option<PathBuf>,
+    dry_run: bool,
+    args: Vec<String>,
+) -> Result<()> {
+    let env = resolve_launch_env(profile, config_path, Some(format))?;
+    run_command(name, &args, &env, dry_run)
 }
 
 pub fn detect_shell() -> String {
@@ -175,7 +189,7 @@ mod tests {
         );
         let names: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
         assert!(names.contains(&"AIX_PROFILE"));
-        assert!(names.contains(&"AIX_API_KEY"));
-        assert!(names.contains(&"AIX_BASE_URL"));
+        assert!(!names.contains(&"AIX_API_KEY"));
+        assert!(!names.contains(&"AIX_BASE_URL"));
     }
 }

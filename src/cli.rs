@@ -54,33 +54,16 @@ pub enum Command {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Run the claude CLI with profile environment set
-    Claude {
-        /// Profile name (positional; overrides the global --profile flag)
-        profile: Option<String>,
-        /// Print the command and variable names that would be set, without running
-        #[arg(long)]
-        dry_run: bool,
-        /// Arguments to pass to claude (after --)
-        #[arg(last = true)]
-        args: Vec<String>,
-    },
-    /// Run the pi CLI with profile environment set
-    Pi {
-        /// Profile name (positional; overrides the global --profile flag)
-        profile: Option<String>,
-        /// Print the command and variable names that would be set, without running
-        #[arg(long)]
-        dry_run: bool,
-        /// Arguments to pass to pi (after --)
-        #[arg(last = true)]
-        args: Vec<String>,
-    },
     /// Manage configuration
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Run any AI tool binary with profile environment set.
+    /// Uses Anthropic credentials for `claude`, OpenAI credentials for everything else.
+    /// Usage: aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]
+    #[command(external_subcommand)]
+    Tool(Vec<String>),
 }
 
 #[derive(Subcommand)]

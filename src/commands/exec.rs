@@ -14,6 +14,6 @@ pub fn run(
         .map(|(p, rest)| (p.clone(), rest.to_vec()))
         .ok_or(AixError::ExecNoCommand)?;
 
-    let env = launch::resolve_launch_env(profile, config_path)?;
+    let env = launch::resolve_launch_env(profile, config_path, None)?;
     launch::run_command(&program, &cmd_args, &env, dry_run)
 }
