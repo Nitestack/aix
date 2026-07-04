@@ -2,6 +2,7 @@ use clap::Parser;
 use cli::{Cli, Command};
 use config::ApiFormat;
 
+mod cache;
 mod cli;
 mod client;
 mod commands;
