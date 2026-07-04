@@ -55,9 +55,11 @@ async fn spend_shows_matching_key_by_suffix() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Nhan Pham"))
+        .stdout(predicate::str::contains("sk-...ABCD"))
         .stdout(predicate::str::contains("41.53"))
         .stdout(predicate::str::contains("500.00"))
         .stdout(predicate::str::contains("458.47"))
+        .stdout(predicate::str::contains("remaining"))
         .stdout(predicate::str::contains("Someone Else").not());
 }
 

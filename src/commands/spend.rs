@@ -70,13 +70,12 @@ fn print_human(data: &serde_json::Value, api_key: &str) {
         let spend = key.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let budget = key.get("max_budget").and_then(|v| v.as_f64());
 
+        println!("Key:       {label}  ({key_name})");
         if let Some(b) = budget {
             let remaining = b - spend;
-            println!(
-                "{label:<35} {key_name}  spend: ${spend:>8.2} / ${b:>8.2}  remaining: ${remaining:.2}"
-            );
+            println!("Spend:     ${spend:.2}  /  ${b:.2}  (${remaining:.2} remaining)");
         } else {
-            println!("{label:<35} {key_name}  spend: ${spend:>8.2}");
+            println!("Spend:     ${spend:.2}");
         }
     } else {
         // Fallback: no key match found, show user-level totals.
@@ -85,9 +84,9 @@ fn print_human(data: &serde_json::Value, api_key: &str) {
         match (spend, budget) {
             (Some(s), Some(b)) => {
                 let remaining = b - s;
-                println!("spend: ${s:>8.2} / ${b:>8.2}  remaining: ${remaining:.2}");
+                println!("Spend:     ${s:.2}  /  ${b:.2}  (${remaining:.2} remaining)");
             }
-            (Some(s), None) => println!("spend: ${s:>8.2}"),
+            (Some(s), None) => println!("Spend:     ${s:.2}"),
             _ => println!("(no spend data available)"),
         }
     }
