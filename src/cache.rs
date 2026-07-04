@@ -36,12 +36,51 @@ impl Cache {
         }
     }
 
-    pub fn get(&self, _base_url: &str, _api_key: &str) -> Option<Value> {
-        todo!()
+    pub fn get(&self, base_url: &str, api_key: &str) -> Option<Value> {
+        if self.disabled {
+            return None;
+        }
+        (|| {
+            let dir = self.endpoint_dir(base_url);
+            let index = load_index(&dir);
+            let user_id = index.get(&key_suffix(api_key))?.clone();
+            let content = std::fs::read_to_string(dir.join(format!("{user_id}.json"))).ok()?;
+            let entry: CacheEntry = serde_json::from_str(&content).ok()?;
+            if self.ttl_secs > 0 {
+                let age = now_secs().saturating_sub(entry.fetched_at);
+                if age >= self.ttl_secs {
+                    return None;
+                }
+            }
+            Some(entry.data)
+        })()
     }
 
-    pub fn put(&self, _base_url: &str, _api_key: &str, _data: &Value) {
-        todo!()
+    pub fn put(&self, base_url: &str, api_key: &str, data: &Value) {
+        if self.disabled {
+            return;
+        }
+        let _ = (|| -> std::io::Result<()> {
+            let dir = self.endpoint_dir(base_url);
+            std::fs::create_dir_all(&dir)?;
+            let user_id = derive_user_id(api_key, data);
+            let entry = CacheEntry {
+                fetched_at: now_secs(),
+                data: data.clone(),
+            };
+            let json = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
+            write_atomic(&dir.join(format!("{user_id}.json")), &json)?;
+            let mut index = load_index(&dir);
+            index.insert(key_suffix(api_key), user_id.clone());
+            if let Some(keys) = data.get("keys").and_then(|v| v.as_array()) {
+                for k in keys {
+                    if let Some(kn) = k.get("key_name").and_then(|v| v.as_str()) {
+                        index.insert(key_suffix(kn), user_id.clone());
+                    }
+                }
+            }
+            save_index(&dir, &index)
+        })();
     }
 
     pub fn clear(&self) -> std::io::Result<usize> {
@@ -157,9 +196,103 @@ mod tests {
         assert_eq!(fnv1a_hex(b"hello").len(), 16);
     }
 
-    // get/put/clear tests added in Tasks 3 & 4
-    #[allow(dead_code)]
-    fn _uses_test_cache(dir: &TempDir) {
-        let _ = test_cache(dir);
+    #[test]
+    fn get_returns_none_on_empty_cache() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        assert!(cache.get("https://api.example.com", "sk-abc123").is_none());
+    }
+
+    #[test]
+    fn put_then_get_returns_data() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let data = serde_json::json!({
+            "user_id": "u-test",
+            "spend": 2.5,
+            "keys": [{ "key_name": "sk-...X1Y2" }]
+        });
+        cache.put("https://api.example.com", "sk-X1Y2", &data);
+        let result = cache.get("https://api.example.com", "sk-X1Y2").unwrap();
+        assert_eq!(result["user_id"], "u-test");
+        assert_eq!(result["spend"], 2.5);
+    }
+
+    #[test]
+    fn put_warms_sibling_keys_from_response() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let data = serde_json::json!({
+            "user_id": "u-shared",
+            "spend": 1.0,
+            "keys": [
+                { "key_name": "sk-...A1B2" },
+                { "key_name": "sk-...C3D4" }
+            ]
+        });
+        cache.put("https://api.example.com", "sk-A1B2", &data);
+        let result = cache.get("https://api.example.com", "sk-C3D4");
+        assert!(
+            result.is_some(),
+            "sibling key from response should be cached"
+        );
+    }
+
+    #[test]
+    fn get_returns_none_when_ttl_expired() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = test_cache(&dir);
+        cache.ttl_secs = 1;
+        let data = serde_json::json!({ "user_id": "u-old", "spend": 0.0, "keys": [] });
+        cache.put("https://api.example.com", "sk-old1", &data);
+        let entry_path = cache
+            .endpoint_dir("https://api.example.com")
+            .join("u-old.json");
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
+        raw["fetched_at"] = serde_json::json!(0u64);
+        std::fs::write(&entry_path, serde_json::to_string(&raw).unwrap()).unwrap();
+        assert!(cache.get("https://api.example.com", "sk-old1").is_none());
+    }
+
+    #[test]
+    fn ttl_zero_means_never_expires() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = test_cache(&dir);
+        cache.ttl_secs = 0;
+        let data = serde_json::json!({ "user_id": "u-inf", "spend": 0.0, "keys": [] });
+        cache.put("https://api.example.com", "sk-inf1", &data);
+        let entry_path = cache
+            .endpoint_dir("https://api.example.com")
+            .join("u-inf.json");
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
+        raw["fetched_at"] = serde_json::json!(0u64);
+        std::fs::write(&entry_path, serde_json::to_string(&raw).unwrap()).unwrap();
+        assert!(cache.get("https://api.example.com", "sk-inf1").is_some());
+    }
+
+    #[test]
+    fn get_returns_none_when_disabled() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = test_cache(&dir);
+        let data = serde_json::json!({ "user_id": "u-dis", "spend": 0.0, "keys": [] });
+        cache.put("https://api.example.com", "sk-dis1", &data);
+        cache.disabled = true;
+        assert!(cache.get("https://api.example.com", "sk-dis1").is_none());
+    }
+
+    #[test]
+    fn put_is_noop_when_disabled() {
+        let dir = TempDir::new().unwrap();
+        let mut cache = test_cache(&dir);
+        cache.disabled = true;
+        let data = serde_json::json!({ "user_id": "u-skip", "spend": 0.0, "keys": [] });
+        cache.put("https://api.example.com", "sk-skip", &data);
+        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
+        assert!(
+            !endpoint_dir.exists(),
+            "no files should be written when disabled"
+        );
     }
 }
