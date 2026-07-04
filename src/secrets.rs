@@ -151,6 +151,36 @@ impl<'de> Deserialize<'de> for SecretSource {
 }
 
 // ---------------------------------------------------------------------------
+// DynamicValue — dynamic but non-secret string source
+// ---------------------------------------------------------------------------
+
+pub struct DynamicValue(pub(crate) SourceKind);
+
+impl fmt::Debug for DynamicValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            SourceKind::Direct(s) => write!(f, "DynamicValue::Direct({s:?})"),
+            SourceKind::Env(name) => write!(f, "DynamicValue::Env({name:?})"),
+            SourceKind::File(path) => write!(f, "DynamicValue::File({path:?})"),
+            SourceKind::Command(cmd) => write!(f, "DynamicValue::Command({cmd:?})"),
+        }
+    }
+}
+
+impl DynamicValue {
+    pub fn resolve(&self) -> Result<String, AixError> {
+        self.0.resolve_raw()
+    }
+}
+
+impl<'de> Deserialize<'de> for DynamicValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let de = SourceKindDe::deserialize(deserializer)?;
+        try_from_de(de).map(DynamicValue)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -451,5 +481,102 @@ mod tests {
             strip_one_trailing_newline("hello\n\n".to_string()),
             "hello\n"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // DynamicValue tests
+    // ---------------------------------------------------------------------------
+
+    #[derive(Deserialize)]
+    struct WDyn {
+        value: DynamicValue,
+    }
+
+    fn from_toml_dyn(s: &str) -> Result<DynamicValue, toml::de::Error> {
+        toml::from_str::<WDyn>(s).map(|w| w.value)
+    }
+
+    #[test]
+    fn dynamic_value_deser_direct() {
+        let dv = from_toml_dyn("value = \"Work\"").unwrap();
+        assert!(matches!(dv.0, SourceKind::Direct(ref s) if s == "Work"));
+    }
+
+    #[test]
+    fn dynamic_value_deser_env() {
+        let dv = from_toml_dyn("value = { env = \"MY_LABEL\" }").unwrap();
+        assert!(matches!(dv.0, SourceKind::Env(ref s) if s == "MY_LABEL"));
+    }
+
+    #[test]
+    fn dynamic_value_deser_file() {
+        let dv = from_toml_dyn("value = { file = \"/run/labels/work\" }").unwrap();
+        assert!(
+            matches!(dv.0, SourceKind::File(ref p) if p == std::path::Path::new("/run/labels/work"))
+        );
+    }
+
+    #[test]
+    fn dynamic_value_deser_command() {
+        let dv = from_toml_dyn("value = { command = \"pass show label\" }").unwrap();
+        assert!(matches!(dv.0, SourceKind::Command(ref s) if s == "pass show label"));
+    }
+
+    #[test]
+    fn dynamic_value_deser_empty_table_rejected() {
+        assert!(from_toml_dyn("value = {}").is_err());
+    }
+
+    #[test]
+    fn dynamic_value_deser_ambiguous_rejected() {
+        assert!(from_toml_dyn("value = { env = \"X\", file = \"/y\" }").is_err());
+    }
+
+    #[test]
+    fn dynamic_value_resolve_direct() {
+        let dv = from_toml_dyn("value = \"Work account\"").unwrap();
+        assert_eq!(dv.resolve().unwrap(), "Work account");
+    }
+
+    #[test]
+    fn dynamic_value_resolve_env_set() {
+        let var = "AIX_TEST_DYN_RESOLVE_ENV_V1Q2";
+        std::env::set_var(var, "env-label");
+        let dv = from_toml_dyn(&format!("value = {{ env = \"{var}\" }}")).unwrap();
+        let result = dv.resolve();
+        std::env::remove_var(var);
+        assert_eq!(result.unwrap(), "env-label");
+    }
+
+    #[test]
+    fn dynamic_value_resolve_env_missing() {
+        let var = "AIX_TEST_DYN_RESOLVE_ENV_MISSING_Z9W8";
+        std::env::remove_var(var);
+        let dv = from_toml_dyn(&format!("value = {{ env = \"{var}\" }}")).unwrap();
+        let err = dv.resolve().unwrap_err();
+        assert!(matches!(err, AixError::SecretMissingEnvVar { ref name } if name == var));
+    }
+
+    #[test]
+    fn dynamic_value_resolve_file() {
+        use assert_fs::prelude::*;
+        let tmp = assert_fs::NamedTempFile::new("label").unwrap();
+        tmp.write_str("Work account\n").unwrap();
+        let dv = DynamicValue(SourceKind::File(tmp.path().to_path_buf()));
+        assert_eq!(dv.resolve().unwrap(), "Work account");
+    }
+
+    #[test]
+    fn dynamic_value_debug_shows_direct_value() {
+        let dv = from_toml_dyn("value = \"Work\"").unwrap();
+        let dbg = format!("{dv:?}");
+        assert!(dbg.contains("Work"), "direct label value must be visible in debug: {dbg}");
+    }
+
+    #[test]
+    fn dynamic_value_debug_shows_env_name() {
+        let dv = from_toml_dyn("value = { env = \"MY_LABEL\" }").unwrap();
+        let dbg = format!("{dv:?}");
+        assert!(dbg.contains("MY_LABEL"));
     }
 }
