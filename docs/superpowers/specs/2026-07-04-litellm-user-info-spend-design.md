@@ -52,7 +52,7 @@ Two async methods:
 
 | Method | Endpoint | Notes |
 |---|---|---|
-| `user_info()` | `GET /user/info` | No query params; returns the caller's own row |
+| `user_info()` | `GET /user/info` | Called without `?user_id=`; if the server requires it, fall back to extracting user ID from the key info response |
 | `spend_logs(limit)` | `GET /spend/logs` | `?limit=N`; returns per-request log entries |
 
 Both return `serde_json::Value`. Typed structs are deferred — LiteLLM's response
