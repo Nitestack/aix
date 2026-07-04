@@ -23,7 +23,7 @@ Nix is **not** responsible for CLI business logic. If you find logic in a Nix fi
 - `programs.aix.enable`
 - `programs.aix.package` — the Rust derivation (override point)
 - `programs.aix.defaultProfile` — optional default profile name
-- `programs.aix.endpoint` — submodule: `baseUrl`, `apiFormat`, `gateway`, `provider`
+- `programs.aix.endpoint` — submodule: `baseUrl`, `gateway`, `provider`
 - `programs.aix.profiles` — attrset of profile submodules (`label`, `apiKey`)
 
 Each secret field (`baseUrl`, `apiKey`) accepts a `secretSourceType`: a plain string (direct), `{ env = "VAR"; }`, `{ file = "/run/secrets/..."; }`, or `{ command = "..."; }`.

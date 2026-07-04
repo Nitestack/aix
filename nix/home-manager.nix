@@ -84,7 +84,6 @@ let
     ep:
     {
       base_url = encodeSecretSource ep.baseUrl;
-      api_format = ep.apiFormat;
     }
     // lib.optionalAttrs (ep.gateway != null) { gateway = ep.gateway; }
     // lib.optionalAttrs (ep.provider != null) { provider = ep.provider; };
@@ -129,21 +128,6 @@ in
             apply = validateSecretSource;
             example = lib.literalExpression ''{ file = "/run/secrets/aix/base-url"; }'';
             description = "Gateway base URL. Accepts any secret source.";
-          };
-
-          apiFormat = lib.mkOption {
-            type = lib.types.enum [
-              "anthropic"
-              "openai"
-              "both"
-            ];
-            example = "anthropic";
-            description = ''
-              Wire format emitted to downstream tools.
-              anthropic: ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL.
-              openai:    OPENAI_API_KEY + OPENAI_BASE_URL.
-              both:      all four variables.
-            '';
           };
 
           gateway = lib.mkOption {

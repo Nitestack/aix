@@ -14,17 +14,12 @@ default_profile = "work"
 # ---------------------------------------------------------------------------
 
 [endpoint]
-# api_format controls which SDK-compatible env vars are emitted.
+# aix always emits AIX_PROFILE plus both credential sets:
+#   ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL
+#   OPENAI_API_KEY,    OPENAI_BASE_URL  (base_url with "/v1" appended)
 #
-#   "anthropic"  →  ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL   (5 vars total)
-#   "openai"     →  OPENAI_API_KEY    + OPENAI_BASE_URL      (5 vars total)
-#   "both"       →  both pairs above                          (7 vars total)
-#
-# AIX_PROFILE, AIX_API_KEY, AIX_BASE_URL are always emitted.
-# Use "anthropic" for tools that read ANTHROPIC_* (claude, pi).
-# Use "openai"    for tools that read OPENAI_*    (openai-python, LangChain).
-# Use "both"      when you run both kinds of tools from one shell session.
-api_format = "anthropic"
+# `aix env` and `aix exec` emit all five variables.
+# `aix claude` emits only ANTHROPIC_*; `aix <other-tool>` emits only OPENAI_*.
 
 # Where to find the gateway URL. Supported secret sources:
 #   { env  = "VAR_NAME" }           — read from environment variable

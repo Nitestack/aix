@@ -25,15 +25,17 @@ Keep modules small. No god files.
 
 ## Config model
 
-Profiles are named sets of `(label, api_key)`. Gateway config (`base_url`, `api_format`) lives in the `[endpoint]` block.
+Profiles are named sets of `(label, api_key)`. Gateway config (`base_url`) lives in the `[endpoint]` block.
 The active profile is chosen by `--profile` flag, a positional argument, or the `default_profile` config key.
 Never embed a URL, key, or profile name as a compile-time constant in command logic.
+
+`api_format` is **not** a config field. `aix env`/`aix exec` always emit all five credential vars
+(both Anthropic and OpenAI sets). `aix claude` emits Anthropic-only; `aix <other>` emits OpenAI-only.
 
 Example config shape (TOML):
 ```toml
 [endpoint]
-base_url   = { env = "AIX_BASE_URL" }
-api_format = "anthropic"   # "anthropic" | "openai" | "both"
+base_url = { env = "AIX_BASE_URL" }
 
 [profiles.work]
 label   = "Work"

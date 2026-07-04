@@ -61,8 +61,7 @@ programs.aix = {
   endpoint = {
     # Any secret source: { env = "VAR"; }, { file = "/run/secrets/..."; },
     # { command = "pass show ..."; }, or a plain string (stored in Nix store).
-    baseUrl   = { file = "/run/secrets/aix/base-url"; };
-    apiFormat = "anthropic";   # "anthropic" | "openai" | "both"
+    baseUrl = { file = "/run/secrets/aix/base-url"; };
   };
 
   profiles.work = {
@@ -201,8 +200,7 @@ Supported formats: TOML, YAML, JSON, JSON5. All examples below use TOML.
 # ~/.config/aix/aix.toml
 
 [endpoint]
-base_url = "https://ai-hub.example.com/anthropic"
-api_format = "anthropic"   # "anthropic" | "openai" | "both"
+base_url = "https://ai-hub.example.com"
 
 [profiles.work]
 label = "Work"
@@ -226,12 +224,6 @@ env_files = ["~/.env.aix"]
 [endpoint]
 # The LiteLLM gateway base URL — accepts any secret source (see below).
 base_url = { env = "AIX_BASE_URL" }
-
-# api_format controls which downstream env vars are emitted:
-#   "anthropic" → ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL
-#   "openai"    → OPENAI_API_KEY + OPENAI_BASE_URL
-#   "both"      → both sets
-api_format = "anthropic"
 
 # ── Profile: Work ────────────────────────────────────────────────────────────
 [profiles.work]
@@ -280,21 +272,24 @@ Only one source per field is allowed. Mixing sources in the same field is a conf
 
 ## Environment variables emitted
 
-All commands that set up an environment resolve the selected profile and always inject:
+`aix env` and `aix exec` always inject all five variables:
 
-```
-AIX_PROFILE   — the resolved profile name
-```
+| Variable | Value |
+|---|---|
+| `AIX_PROFILE` | Selected profile name |
+| `ANTHROPIC_API_KEY` | Resolved API key |
+| `ANTHROPIC_BASE_URL` | Gateway base URL (bare) |
+| `OPENAI_API_KEY` | Resolved API key |
+| `OPENAI_BASE_URL` | Gateway base URL with `/v1` appended |
 
-Plus a format-specific set determined by `api_format` (for `exec`/`shell`/`env`) or by the tool subcommand:
+Named-tool subcommands (`aix <tool>`) emit a subset based on the tool name:
 
-| api_format / tool subcommand | Variables set |
-|------------------------------|--------------|
-| `anthropic` / `aix claude`   | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
-| `openai` / all other tools   | `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
-| `both`                       | All four of the above |
+| Invocation | Variables set |
+|---|---|
+| `aix claude ...` | `AIX_PROFILE`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
+| `aix <any other tool> ...` | `AIX_PROFILE`, `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
 
-`OPENAI_BASE_URL` is the gateway base URL with `/v1` appended; `ANTHROPIC_BASE_URL` is the bare base URL. This matches how each SDK constructs request paths.
+`AIX_API_KEY` and `AIX_BASE_URL` are never emitted. Tools that previously read those variables should switch to the `ANTHROPIC_*` or `OPENAI_*` equivalents.
 
 ---
 
@@ -383,7 +378,7 @@ aix exec work --dry-run -- my-ai-tool
 
 ### aix shell — interactive shell session
 
-Opens an interactive shell with the profile environment pre-loaded. Shell detection order: `NU_VERSION` (Nushell) → `$SHELL` → `sh`.
+Opens an interactive shell with the profile environment pre-loaded. Shell detection order: `$SHELL` env var → `NU_VERSION` (Nushell, if on `$PATH`) → `sh` fallback.
 
 ```bash
 # Work profile

@@ -9,7 +9,7 @@ This document records the behavioral delta between the old `aix` shell wrapper
 
 | Behavior | Old wrapper | Rust CLI | Test file |
 |---|---|---|---|
-| `env <profile> --format sh` emits 5 variables | ✓ | ✓ | `cli_parity.rs`, `cli_env.rs` |
+| `env <profile> --format sh` emits 5 variables | ✓ (AIX_* + ANTHROPIC_*) | ✓ (AIX_PROFILE + ANTHROPIC_* + OPENAI_*) | `cli_parity.rs`, `cli_env.rs` |
 | `env <profile> --format json` produces valid JSON | ✗ (broken) | ✓ | `cli_env.rs` |
 | `env` with missing profile → non-zero exit | ✓ | ✓ | `cli_env.rs`, `cli_profiles.rs` |
 | `env` with unknown profile → non-zero exit | ✓ | ✓ | `cli_env.rs` |
@@ -28,18 +28,19 @@ the variable it maps to is set. Empty or absent files give an empty key with no 
 
 ## Environment variable name parity
 
-For `api_format = "anthropic"` (the default for LiteLLM gateways), the Rust CLI
-emits exactly the same five variables as the old wrapper:
+The Rust CLI always emits both Anthropic and OpenAI credential sets (`aix env` / `aix exec`).
+`AIX_API_KEY` and `AIX_BASE_URL` are no longer emitted; tools that read them must switch to
+`ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` or `OPENAI_API_KEY` / `OPENAI_BASE_URL`.
 
-| Variable | Old wrapper | Rust CLI (`anthropic`) |
+| Variable | Old wrapper | Rust CLI |
 |---|---|---|
 | `AIX_PROFILE` | ✓ | ✓ |
-| `AIX_API_KEY` | ✓ | ✓ |
-| `AIX_BASE_URL` | ✓ | ✓ |
-| `ANTHROPIC_API_KEY` | ✓ | ✓ |
-| `ANTHROPIC_BASE_URL` | ✓ | ✓ |
-| `OPENAI_API_KEY` | ✗ | ✓ (when `api_format = "openai"` or `"both"`) |
-| `OPENAI_BASE_URL` | ✗ | ✓ (when `api_format = "openai"` or `"both"`) |
+| `AIX_API_KEY` | ✓ | ✗ (removed) |
+| `AIX_BASE_URL` | ✓ | ✗ (removed) |
+| `ANTHROPIC_API_KEY` | ✓ | ✓ (always) |
+| `ANTHROPIC_BASE_URL` | ✓ | ✓ (always) |
+| `OPENAI_API_KEY` | ✗ | ✓ (always) |
+| `OPENAI_BASE_URL` | ✗ | ✓ (always, `/v1` appended) |
 
 ---
 
@@ -89,7 +90,7 @@ The feature was effectively broken and never usable.
 
 **Old wrapper:** only `sh` (default) and `json` (broken).
 
-**Rust CLI:** `sh`, `json`, `nu`, `fish`, `powershell`.
+**Rust CLI:** `sh`, `json`, `nu`, `fish`, `powershell`, `cmd`.
 
 ### 6. `--format` is validated before profile selection
 
@@ -117,8 +118,6 @@ without error. This is a known gap; validation of secret contents is left to cal
 
 ## Behaviors preserved exactly
 
-- `ANTHROPIC_API_KEY` equals `AIX_API_KEY` (no separate value).
-- `ANTHROPIC_BASE_URL` equals `AIX_BASE_URL`.
 - Non-interactive invocations (piped stdin/stdout) without a profile fail immediately
   with a clear error message; they never hang waiting for input.
 - Duplicate profile labels cause a non-zero exit before any secret is read.
