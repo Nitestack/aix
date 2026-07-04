@@ -37,12 +37,62 @@ The tool never logs, prints, or stores resolved secrets outside the subprocess e
 
 ## Installation
 
-### Via Nix (recommended for NixOS / home-manager)
+### Via Nix
 
-The Nix deployment generates a config file at the appropriate path and wires up secret files from your secrets store. Add the `aix` home-manager module and rebuild:
+Three paths depending on how much you want Nix to manage.
+
+#### home-manager module (recommended for NixOS / nix-darwin)
+
+Add the flake input, import the module, and declare your config declaratively. Nix installs the binary and generates `~/.config/aix/aix.toml` at activation time.
+
+```nix
+# flake.nix
+inputs.aix.url = "github:Nitestack/aix";
+```
+
+```nix
+# home-manager config
+imports = [ inputs.aix.homeManagerModules.aix ];
+
+programs.aix = {
+  enable = true;
+  defaultProfile = "work";
+
+  endpoint = {
+    # Any secret source: { env = "VAR"; }, { file = "/run/secrets/..."; },
+    # { command = "pass show ..."; }, or a plain string (stored in Nix store).
+    baseUrl   = { file = "/run/secrets/aix/base-url"; };
+    apiFormat = "anthropic";   # "anthropic" | "openai" | "both"
+  };
+
+  profiles.work = {
+    label  = "Work";
+    apiKey = { file = "/run/secrets/aix/work-key"; };
+  };
+};
+```
+
+Then rebuild:
 
 ```bash
 nixos-rebuild switch --flake .#your-host
+# or, standalone home-manager:
+home-manager switch --flake .#your-user
+```
+
+#### Overlay (install binary only, manage config yourself)
+
+Apply `overlays.default` to add `pkgs.aix-rs` to your package set, then add it to `home.packages` or `environment.systemPackages`. The overlay only supports the four default systems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `aarch64-darwin`).
+
+```nix
+nixpkgs.overlays = [ inputs.aix.overlays.default ];
+home.packages = [ pkgs.aix-rs ];
+```
+
+#### One-off / try it out
+
+```bash
+nix run github:Nitestack/aix -- --help
 ```
 
 ### Via Cargo
