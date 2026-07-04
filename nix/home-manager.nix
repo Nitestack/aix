@@ -8,43 +8,80 @@
 let
   cfg = config.programs.aix;
 
-  secretSourceType = lib.types.oneOf [
-    lib.types.str
-    (lib.types.submodule {
-      options.env = lib.mkOption {
-        type = lib.types.str;
+  rawSecretSourceType = lib.types.submodule {
+    options = {
+      value = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        visible = false;
+        description = "Literal secret value. Stored in the Nix store when used.";
+      };
+
+      env = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
         description = "Environment variable name containing the secret.";
       };
-    })
-    (lib.types.submodule {
-      options.file = lib.mkOption {
-        type = lib.types.str;
+
+      file = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
         description = ''
           Path to a file containing the secret (e.g. /run/secrets/aix/key).
           Trailing newline is stripped automatically by the CLI.
           Uses lib.types.str (not path) so Nix does not copy runtime paths into the store.
         '';
       };
-    })
-    (lib.types.submodule {
-      options.command = lib.mkOption {
-        type = lib.types.str;
+
+      command = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
         description = "Shell command whose stdout becomes the secret. Trailing newline is stripped.";
       };
-    })
-  ];
+    };
+  };
+
+  secretSourceType = lib.types.coercedTo lib.types.str (value: {
+    inherit value;
+  }) rawSecretSourceType;
+
+  validateSecretSource =
+    source:
+    let
+      populatedFields = builtins.filter (value: value != null) [
+        source.value
+        source.env
+        source.file
+        source.command
+      ];
+    in
+    if builtins.length populatedFields == 1 then
+      source
+    else
+      throw "Secret source must set exactly one of value, env, file, or command.";
+
+  encodeSecretSource =
+    source:
+    if source.value != null then
+      source.value
+    else if source.env != null then
+      { env = source.env; }
+    else if source.file != null then
+      { file = source.file; }
+    else
+      { command = source.command; };
 
   mkProfile =
     _name: profile:
     {
-      api_key = profile.apiKey;
+      api_key = encodeSecretSource profile.apiKey;
     }
     // lib.optionalAttrs (profile.label != null) { label = profile.label; };
 
   mkEndpoint =
     ep:
     {
-      base_url = ep.baseUrl;
+      base_url = encodeSecretSource ep.baseUrl;
       api_format = ep.apiFormat;
     }
     // lib.optionalAttrs (ep.gateway != null) { gateway = ep.gateway; }
@@ -87,6 +124,7 @@ in
         options = {
           baseUrl = lib.mkOption {
             type = secretSourceType;
+            apply = validateSecretSource;
             example = lib.literalExpression ''{ file = "/run/secrets/aix/base-url"; }'';
             description = "Gateway base URL. Accepts any secret source.";
           };
@@ -137,6 +175,7 @@ in
 
             apiKey = lib.mkOption {
               type = secretSourceType;
+              apply = validateSecretSource;
               example = lib.literalExpression ''{ file = "/run/secrets/aix/work-key"; }'';
               description = ''
                 API key for this profile. Accepts any secret source.
