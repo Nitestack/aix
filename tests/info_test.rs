@@ -103,13 +103,14 @@ api_key = "sk-test"
 }
 
 #[test]
-fn info_no_gateway_set_errors_with_litellm_hint() {
+fn info_explicit_custom_gateway_errors_with_litellm_hint() {
     let dir = TempDir::new().unwrap();
     let file = dir.child("aix.toml");
     file.write_str(
         r#"
 [endpoint]
 base_url = "https://example.com"
+gateway = "some-other-gateway"
 
 [profiles.test]
 api_key = "sk-test"

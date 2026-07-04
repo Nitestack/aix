@@ -131,13 +131,14 @@ async fn spend_empty_logs_prints_no_spend_logs() {
 }
 
 #[test]
-fn spend_no_gateway_errors_with_litellm_hint() {
+fn spend_explicit_custom_gateway_errors_with_litellm_hint() {
     let dir = TempDir::new().unwrap();
     let file = dir.child("aix.toml");
     file.write_str(
         r#"
 [endpoint]
 base_url = "https://example.com"
+gateway = "some-other-gateway"
 
 [profiles.test]
 api_key = "sk-test"

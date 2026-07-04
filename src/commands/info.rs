@@ -1,6 +1,6 @@
 use crate::client::LiteLlmClient;
 use crate::commands::env::resolve_profile;
-use crate::config::{self, Gateway, KnownGateway};
+use crate::config::{self, Gateway};
 use crate::error::AixError;
 use color_eyre::Result;
 use std::path::PathBuf;
@@ -45,10 +45,7 @@ pub async fn run(
 }
 
 fn is_litellm(cfg: &config::Config) -> bool {
-    matches!(
-        cfg.endpoint.gateway,
-        Some(Gateway::Known(KnownGateway::Litellm))
-    )
+    !matches!(cfg.endpoint.gateway, Some(Gateway::Custom(_)))
 }
 
 fn print_human(data: &serde_json::Value) {
