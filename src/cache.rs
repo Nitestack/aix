@@ -36,7 +36,8 @@ impl Cache {
         }
     }
 
-    pub fn get(&self, base_url: &str, api_key: &str) -> Option<Value> {
+    /// Returns `(data, fetched_at_unix_secs)` when a fresh-enough entry exists.
+    pub fn get(&self, base_url: &str, api_key: &str) -> Option<(Value, u64)> {
         if self.disabled {
             return None;
         }
@@ -52,7 +53,7 @@ impl Cache {
                     return None;
                 }
             }
-            Some(entry.data)
+            Some((entry.data, entry.fetched_at))
         })()
     }
 
@@ -227,9 +228,10 @@ mod tests {
             "keys": [{ "key_name": "sk-...X1Y2" }]
         });
         cache.put("https://api.example.com", "sk-X1Y2", &data);
-        let result = cache.get("https://api.example.com", "sk-X1Y2").unwrap();
+        let (result, fetched_at) = cache.get("https://api.example.com", "sk-X1Y2").unwrap();
         assert_eq!(result["user_id"], "u-test");
         assert_eq!(result["spend"], 2.5);
+        assert!(fetched_at > 0);
     }
 
     #[test]
@@ -245,9 +247,8 @@ mod tests {
             ]
         });
         cache.put("https://api.example.com", "sk-A1B2", &data);
-        let result = cache.get("https://api.example.com", "sk-C3D4");
         assert!(
-            result.is_some(),
+            cache.get("https://api.example.com", "sk-C3D4").is_some(),
             "sibling key from response should be cached"
         );
     }

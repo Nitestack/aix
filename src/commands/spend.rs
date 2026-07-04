@@ -30,19 +30,19 @@ pub async fn run(
     let api_key = profile.api_key.resolve()?;
     let cache = Cache::from_config(&cfg.cache);
 
-    let data = if !no_cache {
+    let hit = if !no_cache {
         cache.get(base_url.expose_secret(), api_key.expose_secret())
     } else {
         None
     };
 
-    let data = match data {
-        Some(cached) => cached,
+    let (data, cached_at) = match hit {
+        Some((data, fetched_at)) => (data, Some(fetched_at)),
         None => {
             let client = LiteLlmClient::new(base_url.expose_secret(), api_key.expose_secret());
             let fresh = client.user_info().await?;
             cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);
-            fresh
+            (fresh, None)
         }
     };
 
@@ -51,7 +51,7 @@ pub async fn run(
         out.push('\n');
         print!("{out}");
     } else {
-        print_human(&data, api_key.expose_secret());
+        print_human(&data, api_key.expose_secret(), cached_at);
     }
     Ok(())
 }
@@ -68,7 +68,16 @@ fn find_matching_key<'a>(
     })
 }
 
-fn print_human(data: &serde_json::Value, api_key: &str) {
+fn format_age(age_secs: u64) -> String {
+    match age_secs {
+        0..=59 => format!("{age_secs}s ago"),
+        60..=3599 => format!("{}m ago", age_secs / 60),
+        3600..=86399 => format!("{}h ago", age_secs / 3600),
+        _ => format!("{}d ago", age_secs / 86400),
+    }
+}
+
+fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) {
     let empty = vec![];
     let keys = data
         .get("keys")
@@ -85,6 +94,16 @@ fn print_human(data: &serde_json::Value, api_key: &str) {
         (spend, budget)
     };
 
+    let cache_suffix = cached_at.map_or(String::new(), |t| {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let age = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs()
+            .saturating_sub(t);
+        format!("  ·  cached {}", format_age(age))
+    });
+
     if let Some(b) = budget {
         let remaining = b - spend;
         let pct_used = (spend / b * 100.0).clamp(0.0, 100.0);
@@ -94,9 +113,9 @@ fn print_human(data: &serde_json::Value, api_key: &str) {
         let filled = (pct_used / 100.0 * BAR as f64).round() as usize;
         let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(BAR - filled));
 
-        println!("${spend:.2} of ${b:.2}  ·  ${remaining:.2} available ({pct_remaining:.0}%)");
+        println!("${spend:.2} of ${b:.2}  ·  ${remaining:.2} available ({pct_remaining:.0}%){cache_suffix}");
         println!("{bar}  {pct_used:.0}% used");
     } else {
-        println!("${spend:.2} spent  (no budget set)");
+        println!("${spend:.2} spent  (no budget set){cache_suffix}");
     }
 }
