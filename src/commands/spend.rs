@@ -9,7 +9,6 @@ pub async fn run(
     positional_profile: Option<String>,
     config_path: Option<PathBuf>,
     json: bool,
-    limit: u32,
 ) -> Result<()> {
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
@@ -29,7 +28,7 @@ pub async fn run(
     let api_key = profile.api_key.resolve()?;
 
     let client = LiteLlmClient::new(base_url.expose_secret(), api_key.expose_secret());
-    let data = client.spend_logs(limit).await?;
+    let data = client.user_info().await?;
 
     if json {
         let mut out = serde_json::to_string_pretty(&data)?;
@@ -42,35 +41,35 @@ pub async fn run(
 }
 
 fn print_human(data: &serde_json::Value) {
-    let entries = match data.as_array() {
-        Some(arr) => arr,
-        None => {
-            println!("(no spend data)");
-            return;
+    let spend = data.get("spend").and_then(|v| v.as_f64());
+    let budget = data.get("max_budget").and_then(|v| v.as_f64());
+
+    match (spend, budget) {
+        (Some(s), Some(b)) => {
+            let remaining = b - s;
+            println!("Spend:     ${s:.4}  /  ${b:.2} budget  (${remaining:.4} remaining)");
         }
-    };
-    if entries.is_empty() {
-        println!("(no spend logs)");
-        return;
+        (Some(s), None) => println!("Spend:     ${s:.4}"),
+        _ => println!("Spend:     (unavailable)"),
     }
-    println!("{:<30}  {:<25}  {:>12}", "Time", "Model", "Cost ($)");
-    println!("{}", "-".repeat(72));
-    for entry in entries {
-        let time = entry
-            .get("startTime")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
-        let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("-");
-        let cost = entry.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let req_id = entry
-            .get("request_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let short_id = if req_id.len() > 8 {
-            &req_id[..8]
-        } else {
-            req_id
-        };
-        println!("{time:<30}  {model:<25}  {cost:>12.6}  [{short_id}]");
+
+    if let Some(keys) = data.get("keys").and_then(|v| v.as_array()) {
+        let keys_with_spend: Vec<_> = keys
+            .iter()
+            .filter(|k| k.get("spend").and_then(|v| v.as_f64()).is_some())
+            .collect();
+        if !keys_with_spend.is_empty() {
+            println!();
+            println!("Keys:");
+            for key in keys_with_spend {
+                let name = key
+                    .get("key_alias")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| key.get("key_name").and_then(|v| v.as_str()))
+                    .unwrap_or("(unnamed)");
+                let s = key.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                println!("  {name:<30}  ${s:.4}");
+            }
+        }
     }
 }

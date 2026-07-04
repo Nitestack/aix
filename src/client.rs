@@ -30,30 +30,13 @@ impl LiteLlmClient {
         }
         Ok(resp.json().await?)
     }
-
-    pub async fn spend_logs(&self, limit: u32) -> Result<serde_json::Value, AixError> {
-        let url = format!("{}/spend/logs", self.base_url);
-        let resp = self
-            .inner
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .query(&[("limit", limit.to_string())])
-            .send()
-            .await?;
-        let status = resp.status().as_u16();
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(AixError::GatewayError { status, body });
-        }
-        Ok(resp.json().await?)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -73,24 +56,6 @@ mod tests {
         let result = client.user_info().await.unwrap();
         assert_eq!(result["user_id"], "u123");
         assert_eq!(result["spend"], 1.23);
-    }
-
-    #[tokio::test]
-    async fn spend_logs_calls_correct_endpoint_with_limit() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/spend/logs"))
-            .and(header("Authorization", "Bearer test-key"))
-            .and(query_param("limit", "25"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                {"model": "gpt-4", "spend": 0.01}
-            ])))
-            .mount(&server)
-            .await;
-
-        let client = LiteLlmClient::new(server.uri(), "test-key");
-        let result = client.spend_logs(25).await.unwrap();
-        assert_eq!(result[0]["model"], "gpt-4");
     }
 
     #[tokio::test]

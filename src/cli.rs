@@ -67,16 +67,13 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show recent spend logs for the selected profile (LiteLLM only)
+    /// Show spend and budget info for the selected profile (LiteLLM only)
     Spend {
         /// Profile name (positional; overrides the global --profile flag)
         profile: Option<String>,
         /// Output raw JSON instead of formatted text
         #[arg(long)]
         json: bool,
-        /// Maximum number of log entries to return
-        #[arg(long, default_value = "50")]
-        limit: u32,
     },
     /// Run any AI tool binary with profile environment set.
     /// Uses Anthropic credentials for `claude`, OpenAI credentials for everything else.
