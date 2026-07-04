@@ -1,3 +1,4 @@
+use crate::cache::Cache;
 use crate::client::LiteLlmClient;
 use crate::commands::env::resolve_profile;
 use crate::config;
@@ -9,7 +10,7 @@ pub async fn run(
     positional_profile: Option<String>,
     config_path: Option<PathBuf>,
     json: bool,
-    _no_cache: bool,
+    no_cache: bool,
 ) -> Result<()> {
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
@@ -27,9 +28,23 @@ pub async fn run(
 
     let base_url = cfg.endpoint.base_url.resolve()?;
     let api_key = profile.api_key.resolve()?;
+    let cache = Cache::from_config(&cfg.cache);
 
-    let client = LiteLlmClient::new(base_url.expose_secret(), api_key.expose_secret());
-    let data = client.user_info().await?;
+    let data = if !no_cache {
+        cache.get(base_url.expose_secret(), api_key.expose_secret())
+    } else {
+        None
+    };
+
+    let data = match data {
+        Some(cached) => cached,
+        None => {
+            let client = LiteLlmClient::new(base_url.expose_secret(), api_key.expose_secret());
+            let fresh = client.user_info().await?;
+            cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);
+            fresh
+        }
+    };
 
     if json {
         let mut out = serde_json::to_string_pretty(&data)?;
@@ -45,7 +60,6 @@ fn find_matching_key<'a>(
     keys: &'a [serde_json::Value],
     api_key: &str,
 ) -> Option<&'a serde_json::Value> {
-    // LiteLLM masks keys as "sk-...XXXX" — match by the last 4 characters.
     let suffix = &api_key[api_key.len().saturating_sub(4)..];
     keys.iter().find(|k| {
         k.get("key_name")
