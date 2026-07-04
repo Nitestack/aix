@@ -1,6 +1,6 @@
 use crate::client::LiteLlmClient;
 use crate::commands::env::resolve_profile;
-use crate::config::{self, Gateway};
+use crate::config;
 use crate::error::AixError;
 use color_eyre::Result;
 use std::path::PathBuf;
@@ -15,10 +15,6 @@ pub async fn run(
     let cfg = config::load(&path)?;
     config::validate(&cfg)?;
     config::load_env_files(&cfg)?;
-
-    if !is_litellm(&cfg) {
-        return Err(AixError::NotLiteLlm.into());
-    }
 
     let profile_name = resolve_profile(positional_profile, &cfg)?;
     let profile = cfg
@@ -43,10 +39,6 @@ pub async fn run(
         print_human(&data);
     }
     Ok(())
-}
-
-fn is_litellm(cfg: &config::Config) -> bool {
-    !matches!(cfg.endpoint.gateway, Some(Gateway::Custom(_)))
 }
 
 fn print_human(data: &serde_json::Value) {

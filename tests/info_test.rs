@@ -3,6 +3,7 @@ use assert_fs::prelude::*;
 use assert_fs::TempDir;
 use predicates::prelude::*;
 use serde_json::json;
+
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -76,52 +77,4 @@ async fn info_json_flag_returns_raw_json() {
     assert!(output.status.success());
     let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(parsed["user_id"], "u1");
-}
-
-#[test]
-fn info_wrong_gateway_errors_with_litellm_hint() {
-    let dir = TempDir::new().unwrap();
-    let file = dir.child("aix.toml");
-    file.write_str(
-        r#"
-[endpoint]
-base_url = "https://example.com"
-gateway = "my-other-gateway"
-
-[profiles.test]
-api_key = "sk-test"
-"#,
-    )
-    .unwrap();
-
-    Command::cargo_bin("aix")
-        .unwrap()
-        .args(["--config", file.path().to_str().unwrap(), "info", "test"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("litellm"));
-}
-
-#[test]
-fn info_explicit_custom_gateway_errors_with_litellm_hint() {
-    let dir = TempDir::new().unwrap();
-    let file = dir.child("aix.toml");
-    file.write_str(
-        r#"
-[endpoint]
-base_url = "https://example.com"
-gateway = "some-other-gateway"
-
-[profiles.test]
-api_key = "sk-test"
-"#,
-    )
-    .unwrap();
-
-    Command::cargo_bin("aix")
-        .unwrap()
-        .args(["--config", file.path().to_str().unwrap(), "info", "test"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("litellm"));
 }

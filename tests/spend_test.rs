@@ -129,27 +129,3 @@ async fn spend_empty_logs_prints_no_spend_logs() {
         .success()
         .stdout(predicate::str::contains("no spend logs"));
 }
-
-#[test]
-fn spend_explicit_custom_gateway_errors_with_litellm_hint() {
-    let dir = TempDir::new().unwrap();
-    let file = dir.child("aix.toml");
-    file.write_str(
-        r#"
-[endpoint]
-base_url = "https://example.com"
-gateway = "some-other-gateway"
-
-[profiles.test]
-api_key = "sk-test"
-"#,
-    )
-    .unwrap();
-
-    Command::cargo_bin("aix")
-        .unwrap()
-        .args(["--config", file.path().to_str().unwrap(), "spend", "test"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("litellm"));
-}
