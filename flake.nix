@@ -89,8 +89,10 @@
     // {
       # Adds pkgs.aix-rs to nixpkgs — primary install path for users who
       # manage their config file themselves without the home-manager module.
+      # Only available for the systems built by this flake (eachDefaultSystem).
+      # Applying this overlay on an unsupported system is a hard eval error.
       overlays.default = final: prev: {
-        aix-rs = self.packages.${prev.system}.aix-rs;
+        aix-rs = self.packages.${prev.stdenv.hostPlatform.system}.aix-rs;
       };
 
       # Optional home-manager integration. Imports the module and wires the
@@ -99,7 +101,7 @@
         { pkgs, lib, ... }:
         {
           imports = [ ./nix/home-manager.nix ];
-          config.programs.aix.package = lib.mkDefault self.packages.${pkgs.system}.aix-rs;
+          config.programs.aix.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.aix-rs;
         };
       homeManagerModules.default = self.homeManagerModules.aix;
     };

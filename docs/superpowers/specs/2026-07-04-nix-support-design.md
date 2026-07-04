@@ -36,7 +36,7 @@ Add first-class Nix support so NixOS / home-manager users can install and config
 
 ---
 
-## Home-manager module (`modules/home/aix.nix`)
+## Home-manager module (`nix/home-manager.nix`)
 
 ### Secret source type
 
@@ -115,12 +115,12 @@ When `programs.aix.enable = true`:
 
 ```nix
 homeManagerModules.aix = { pkgs, lib, ... }: {
-  imports = [ ./modules/home/aix.nix ];
-  config.programs.aix.package = lib.mkDefault self.packages.${pkgs.system}.aix-rs;
+  imports = [ ./nix/home-manager.nix ];
+  config.programs.aix.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.aix-rs;
 };
 ```
 
-This means users who import via the flake get the bundled binary automatically. Users who import `./modules/home/aix.nix` directly must set `programs.aix.package` themselves.
+This means users who import via the flake get the bundled binary automatically. Users who import `./nix/home-manager.nix` directly must set `programs.aix.package` themselves.
 
 ---
 
@@ -151,5 +151,5 @@ programs.aix = {
 
 | File | Change |
 |------|--------|
-| `modules/home/aix.nix` | New — home-manager module |
+| `nix/home-manager.nix` | New — home-manager module |
 | `flake.nix` | Add `overlays.default`, `homeManagerModules.aix/default` |

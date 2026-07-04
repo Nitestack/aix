@@ -19,7 +19,7 @@ docs/              — design docs and architecture
 - **Do not touch unrelated files.** Changes outside `nix/`, `src/`, `tests/`, or `flake.nix` require explicit user approval.
 - Prefer small commits and small diffs. One logical change per commit.
 - Run `cargo fmt && cargo clippy` before claiming Rust work is done.
-- Run `nixfmt` or `alejandra` on any Nix files you edit.
+- Run `nixfmt` (`nixfmt-rfc-style`) on any Nix files you edit.
 - No hardcoded secrets, API keys, or URLs tied to any specific deployment.
 
 ## Architecture constraints

@@ -32,8 +32,9 @@ Do not add options that duplicate CLI flags. Options are for stable deployment c
 
 ## Config generation
 
-The module renders `config.toml` from the `profiles` attrset using `builtins.toJSON` or `lib.generators.toTOML`.
-The output path must be `$XDG_CONFIG_HOME/aix/config.toml` (default `~/.config/aix/config.toml`).
+The module renders `~/.config/aix/aix.toml` via `xdg.configFile` using `pkgs.formats.toml.generate`.
+camelCase Nix option names are transformed to snake_case TOML keys (e.g. `endpoint.baseUrl` → `endpoint.base_url`).
+Secret source values (`{ env = "VAR"; }`, `{ file = "/path"; }`, `{ command = "..."; }`) pass through as TOML subtables.
 
 ## Secret handling
 
@@ -47,9 +48,9 @@ Pass the path to the CLI via `AIX_API_KEY` or `--secret-cmd cat /run/secrets/aix
 
 ## Formatting
 
-Run `alejandra` (preferred) or `nixfmt` on any Nix file before committing:
+Run `nixfmt` (`nixfmt-rfc-style`) on any Nix file before committing:
 ```sh
-alejandra modules/home/aix.nix
+nixfmt nix/home-manager.nix
 ```
 
 ## What NOT to change here
