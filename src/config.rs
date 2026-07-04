@@ -18,6 +18,8 @@ pub struct Config {
     pub env_files: Vec<PathBuf>,
     pub endpoint: Endpoint,
     #[serde(default)]
+    pub cache: CacheConfig,
+    #[serde(default)]
     pub profiles: HashMap<String, Profile>,
 }
 
@@ -70,6 +72,28 @@ pub struct Endpoint {
 pub struct Profile {
     pub label: Option<DynamicValue>,
     pub api_key: SecretSource,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CacheConfig {
+    #[serde(default = "default_cache_ttl")]
+    pub ttl_secs: u64,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            ttl_secs: default_cache_ttl(),
+            disabled: false,
+        }
+    }
+}
+
+fn default_cache_ttl() -> u64 {
+    3600
 }
 
 pub fn find_config_path(explicit: Option<&Path>) -> Result<Option<PathBuf>, AixError> {
@@ -466,6 +490,7 @@ api_key = "sk-test"
             env_files: vec![tmp.path().to_path_buf()],
             endpoint: toml::from_str::<Config>(TOML).unwrap().endpoint,
             profiles: Default::default(),
+            cache: Default::default(),
         };
         load_env_files(&cfg).unwrap();
         assert_eq!(
@@ -488,6 +513,7 @@ api_key = "sk-test"
             env_files: vec![tmp.path().to_path_buf()],
             endpoint: toml::from_str::<Config>(TOML).unwrap().endpoint,
             profiles: Default::default(),
+            cache: Default::default(),
         };
         load_env_files(&cfg).unwrap();
         // Process env must win over file value.
@@ -519,6 +545,7 @@ api_key = "sk-test"
             env_files: vec![PathBuf::from("/nonexistent/aix-secrets-xyz.env")],
             endpoint: toml::from_str::<Config>(TOML).unwrap().endpoint,
             profiles: Default::default(),
+            cache: Default::default(),
         };
         let err = load_env_files(&cfg).unwrap_err();
         assert!(matches!(err, AixError::EnvFileLoad { .. }));
@@ -953,5 +980,58 @@ api_key = "sk-test"
             out.contains("work"),
             "should fall back to profile name: {out}"
         );
+    }
+
+    // --- CacheConfig ---
+
+    #[test]
+    fn cache_config_defaults_when_section_absent() {
+        let cfg: Config = toml::from_str(TOML).unwrap();
+        assert_eq!(cfg.cache.ttl_secs, 3600);
+        assert!(!cfg.cache.disabled);
+    }
+
+    #[test]
+    fn cache_config_parses_full_section() {
+        let toml = r#"
+[endpoint]
+base_url = { env = "X" }
+[profiles.work]
+api_key = "sk-test"
+[cache]
+ttl_secs = 600
+disabled = true
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.cache.ttl_secs, 600);
+        assert!(cfg.cache.disabled);
+    }
+
+    #[test]
+    fn cache_config_partial_section_uses_field_defaults() {
+        let toml = r#"
+[endpoint]
+base_url = { env = "X" }
+[profiles.work]
+api_key = "sk-test"
+[cache]
+disabled = true
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.cache.ttl_secs, 3600);
+        assert!(cfg.cache.disabled);
+    }
+
+    #[test]
+    fn cache_config_rejects_unknown_fields() {
+        let toml = r#"
+[endpoint]
+base_url = { env = "X" }
+[profiles.work]
+api_key = "sk-test"
+[cache]
+unknown_key = "bad"
+"#;
+        assert!(toml::from_str::<Config>(toml).is_err());
     }
 }
