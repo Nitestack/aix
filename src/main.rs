@@ -3,6 +3,7 @@ use cli::{Cli, Command};
 use config::ApiFormat;
 
 mod cli;
+mod client;
 mod commands;
 mod config;
 mod error;
