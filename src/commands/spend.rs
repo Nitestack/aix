@@ -17,6 +17,15 @@ pub async fn run(
     config::validate(&cfg)?;
     config::load_env_files(&cfg)?;
 
+    if let Some(gateway) = &cfg.endpoint.gateway {
+        if !matches!(
+            gateway,
+            config::Gateway::Known(config::KnownGateway::Litellm)
+        ) {
+            return Err(AixError::NotLiteLlm.into());
+        }
+    }
+
     let profile_name = resolve_profile(positional_profile, &cfg)?;
     let profile = cfg
         .profiles

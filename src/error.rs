@@ -109,6 +109,9 @@ pub enum AixError {
 
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
+
+    #[error("aix spend requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
+    NotLiteLlm,
 }
 
 #[cfg(test)]
