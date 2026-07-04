@@ -56,7 +56,7 @@ async fn run(cli: Cli) -> color_eyre::Result<()> {
             let effective_profile = profile.or(global_profile);
             commands::spend::run(effective_profile, config_path, json, no_cache).await
         }
-        Command::Cache { action } => commands::cache::run(action),
+        Command::Cache { action } => commands::cache::run(action, config_path),
         Command::Tool(raw) => {
             let tool = raw[0].clone();
             let rest = &raw[1..];
