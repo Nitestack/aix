@@ -19,6 +19,8 @@ Profile-aware credential injector for AI tools backed by a LiteLLM-compatible AI
 - [Environment variables emitted](#environment-variables-emitted)
 - [Shell integration](#shell-integration)
 - [Running tools directly](#running-tools-directly)
+- [Spend and budget](#spend-and-budget)
+- [Cache](#cache)
 - [Security notes](#security-notes)
 
 ---
@@ -253,6 +255,15 @@ label   = "Staging"
 api_key = "sk-fake-staging-0000000000000000000000"
 ```
 
+### Cache config
+
+```toml
+# Optional: cache aix spend API responses on disk (default: 1-hour TTL, enabled)
+[cache]
+ttl_secs = 3600  # seconds before a cached response is considered stale; 0 = never expires
+disabled = false # set to true to always fetch fresh data
+```
+
 ---
 
 ## Secret sources
@@ -423,6 +434,70 @@ aix profiles
 # JSON array of { name, label } objects (no secrets)
 aix profiles --json
 ```
+
+---
+
+## Spend and budget
+
+`aix spend` fetches live spend and budget data from your LiteLLM gateway and displays it as a human-readable progress bar.
+
+```bash
+# Show spend for the default or selected profile
+aix spend work
+
+# JSON output — full /user/info payload
+aix spend work --json
+
+# Always fetch fresh data (result is still cached for future calls)
+aix spend work --no-cache
+```
+
+**Example output:**
+
+```
+$41.53 of $500.00  ·  $458.47 available (92%)  ·  cached 5m ago
+[████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  8% used
+```
+
+Responses are cached locally for 1 hour by default (configurable via `[cache]`). The `·  cached N ago` suffix appears when the result was served from cache. Use `--no-cache` to bypass the cache for a single call; the fresh response is still written to cache for subsequent calls.
+
+`aix spend` requires a LiteLLM-compatible gateway. If `gateway` is set in your config to a non-LiteLLM value, `aix spend` will refuse to run with a clear error. Leaving `gateway` unset (or setting it to `"litellm"`) is accepted.
+
+---
+
+## Cache
+
+`aix spend` caches API responses in the platform cache directory to avoid redundant network calls:
+
+| Platform | Default cache directory |
+|----------|------------------------|
+| Linux    | `~/.cache/aix/`        |
+| macOS    | `~/Library/Caches/aix/` |
+| Windows  | `%LOCALAPPDATA%\aix\cache\` |
+
+Override the directory for all invocations:
+
+```bash
+export AIX_CACHE_DIR=/tmp/aix-cache
+```
+
+### Cache configuration
+
+Add a `[cache]` block to your config to tune behaviour:
+
+```toml
+[cache]
+ttl_secs = 3600  # cached entries older than this are treated as stale (0 = never expire)
+disabled = false # set to true to always fetch live data (equivalent to always passing --no-cache)
+```
+
+### Clearing the cache
+
+```bash
+aix cache clear
+```
+
+Deletes all cached response files and prints a count of removed files.
 
 ---
 
