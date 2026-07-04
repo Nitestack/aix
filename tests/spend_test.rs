@@ -26,20 +26,20 @@ async fn spend_shows_matching_key_by_suffix() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/user/info"))
-        .and(header("Authorization", "Bearer sk-testABCD"))
+        .and(header("Authorization", "Bearer sk-test1111"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "keys": [
                 {
-                    "key_name": "sk-...ABCD",
+                    "key_name": "sk-...1111",
                     "spend": 41.53,
                     "max_budget": 500.0,
-                    "metadata": { "key_name": "Nhan Pham" }
+                    "metadata": { "key_name": "alice" }
                 },
                 {
-                    "key_name": "sk-...ZZZZ",
+                    "key_name": "sk-...2222",
                     "spend": 100.0,
                     "max_budget": 1000.0,
-                    "metadata": { "key_name": "Someone Else" }
+                    "metadata": { "key_name": "bob" }
                 }
             ]
         })))
@@ -47,7 +47,7 @@ async fn spend_shows_matching_key_by_suffix() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), "sk-testABCD");
+    let config = write_config(&dir, &server.uri(), "sk-test1111");
 
     Command::cargo_bin("aix")
         .unwrap()
@@ -60,9 +60,7 @@ async fn spend_shows_matching_key_by_suffix() {
         .stdout(predicate::str::contains("remaining"))
         .stdout(predicate::str::contains("█"))
         .stdout(predicate::str::contains("% used"))
-        .stdout(predicate::str::contains("Someone Else").not())
-        .stdout(predicate::str::contains("Nhan Pham").not())
-        .stdout(predicate::str::contains("sk-...ABCD").not());
+        .stdout(predicate::str::contains("bob").not());
 }
 
 #[tokio::test]

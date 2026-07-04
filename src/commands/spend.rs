@@ -44,7 +44,7 @@ fn find_matching_key<'a>(
     keys: &'a [serde_json::Value],
     api_key: &str,
 ) -> Option<&'a serde_json::Value> {
-    // LiteLLM masks keys as "sk-...H6Og" — match by the last 4 characters.
+    // LiteLLM masks keys as "sk-...XXXX" — match by the last 4 characters.
     let suffix = &api_key[api_key.len().saturating_sub(4)..];
     keys.iter().find(|k| {
         k.get("key_name")
