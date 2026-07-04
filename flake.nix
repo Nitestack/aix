@@ -85,5 +85,22 @@
           aix-rs = aix-rs;
         };
       }
-    );
+    )
+    // {
+      # Adds pkgs.aix-rs to nixpkgs — primary install path for users who
+      # manage their config file themselves without the home-manager module.
+      overlays.default = final: prev: {
+        aix-rs = self.packages.${prev.system}.aix-rs;
+      };
+
+      # Optional home-manager integration. Imports the module and wires the
+      # package default so consumers don't need to set programs.aix.package.
+      homeManagerModules.aix =
+        { pkgs, lib, ... }:
+        {
+          imports = [ ./nix/home-manager.nix ];
+          config.programs.aix.package = lib.mkDefault self.packages.${pkgs.system}.aix-rs;
+        };
+      homeManagerModules.default = self.homeManagerModules.aix;
+    };
 }
