@@ -23,10 +23,11 @@ impl LiteLlmClient {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await?;
-        let status = resp.status().as_u16();
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
+            let code = status.as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(AixError::GatewayError { status, body });
+            return Err(AixError::GatewayError { status: code, body });
         }
         Ok(resp.json().await?)
     }

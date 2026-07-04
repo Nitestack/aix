@@ -60,11 +60,11 @@ fn find_matching_key<'a>(
     keys: &'a [serde_json::Value],
     api_key: &str,
 ) -> Option<&'a serde_json::Value> {
-    let suffix = &api_key[api_key.len().saturating_sub(4)..];
+    let suffix = crate::cache::key_suffix(api_key);
     keys.iter().find(|k| {
         k.get("key_name")
             .and_then(|v| v.as_str())
-            .is_some_and(|kn| kn.ends_with(suffix))
+            .is_some_and(|kn| kn.ends_with(&suffix))
     })
 }
 
@@ -78,11 +78,11 @@ fn format_age(age_secs: u64) -> String {
 }
 
 fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) {
-    let empty = vec![];
-    let keys = data
+    let keys: &[serde_json::Value] = data
         .get("keys")
         .and_then(|v| v.as_array())
-        .unwrap_or(&empty);
+        .map(Vec::as_slice)
+        .unwrap_or_default();
 
     let (spend, budget) = if let Some(key) = find_matching_key(keys, api_key) {
         let spend = key.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -95,18 +95,17 @@ fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) 
     };
 
     let cache_suffix = cached_at.map_or(String::new(), |t| {
-        use std::time::{Duration, SystemTime, UNIX_EPOCH};
-        let age = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_secs()
-            .saturating_sub(t);
+        let age = crate::cache::now_secs().saturating_sub(t);
         format!("  ·  cached {}", format_age(age))
     });
 
     if let Some(b) = budget {
         let remaining = b - spend;
-        let pct_used = (spend / b * 100.0).clamp(0.0, 100.0);
+        let pct_used = if b > 0.0 {
+            (spend / b * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
         let pct_remaining = 100.0 - pct_used;
 
         const BAR: usize = 40;
