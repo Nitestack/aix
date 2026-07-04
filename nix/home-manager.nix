@@ -93,6 +93,12 @@ let
     // {
       endpoint = mkEndpoint cfg.endpoint;
       profiles = lib.mapAttrs mkProfile cfg.profiles;
+    }
+    // lib.optionalAttrs (cfg.cache.ttlSecs != 3600 || cfg.cache.disabled) {
+      cache = {
+        ttl_secs = cfg.cache.ttlSecs;
+        disabled = cfg.cache.disabled;
+      };
     };
 
 in
@@ -134,13 +140,40 @@ in
             type = lib.types.nullOr lib.types.str;
             default = null;
             example = "litellm";
-            description = "Optional gateway hint. Metadata only — does not affect runtime behaviour.";
+            description = ''
+              Optional gateway hint.
+              When set to a value other than "litellm", `aix spend` will refuse to run.
+              Omit or set to "litellm" to use `aix spend` with the default LiteLLM-compatible gateway.
+            '';
           };
 
           provider = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
             description = "Optional provider hint. Metadata only — does not affect runtime behaviour.";
+          };
+        };
+      };
+    };
+
+    cache = lib.mkOption {
+      description = "Cache settings for aix spend API responses.";
+      default = { };
+      type = lib.types.submodule {
+        options = {
+          ttlSecs = lib.mkOption {
+            type = lib.types.int;
+            default = 3600;
+            example = 600;
+            description = ''
+              Cache TTL in seconds. Cached entries older than this are re-fetched.
+              Set to 0 to never expire cached entries.
+            '';
+          };
+          disabled = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Disable the response cache entirely. Equivalent to always passing --no-cache.";
           };
         };
       };
