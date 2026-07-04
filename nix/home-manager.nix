@@ -76,7 +76,9 @@ let
     {
       api_key = encodeSecretSource profile.apiKey;
     }
-    // lib.optionalAttrs (profile.label != null) { label = profile.label; };
+    // lib.optionalAttrs (profile.label != null) {
+      label = encodeSecretSource profile.label;
+    };
 
   mkEndpoint =
     ep:
@@ -167,10 +169,15 @@ in
         lib.types.submodule {
           options = {
             label = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
+              type = lib.types.nullOr secretSourceType;
               default = null;
-              example = "Work";
-              description = "Human-readable label shown in the interactive profile picker.";
+              apply = v: if v != null then validateSecretSource v else null;
+              example = lib.literalExpression ''{ file = "/run/secrets/aix/work-label"; }'';
+              description = ''
+                Display label shown in the interactive profile picker.
+                Accepts a plain string, or { env = "VAR"; }, { file = "/path"; }, { command = "cmd"; }.
+                Use a non-literal source to avoid leaking account names into the Nix store.
+              '';
             };
 
             apiKey = lib.mkOption {
