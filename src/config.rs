@@ -213,6 +213,7 @@ pub fn sorted_profiles(cfg: &Config) -> Vec<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::SourceKind;
 
     const TOML: &str = r#"
 default_profile = "work"
@@ -281,14 +282,11 @@ profiles:
             cfg.endpoint.provider,
             Some(Provider::Known(KnownProvider::LiteLlm))
         );
-        assert!(matches!(cfg.endpoint.base_url, SecretSource::Env(_)));
+        assert!(matches!(cfg.endpoint.base_url.0, SourceKind::Env(_)));
         assert!(cfg.profiles.contains_key("work"));
         assert!(cfg.profiles.contains_key("local"));
-        assert!(matches!(cfg.profiles["work"].api_key, SecretSource::Env(_)));
-        assert!(matches!(
-            cfg.profiles["local"].api_key,
-            SecretSource::Direct(_)
-        ));
+        assert!(matches!(cfg.profiles["work"].api_key.0, SourceKind::Env(_)));
+        assert!(matches!(cfg.profiles["local"].api_key.0, SourceKind::Direct(_)));
     }
 
     #[test]

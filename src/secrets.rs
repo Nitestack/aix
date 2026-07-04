@@ -45,24 +45,90 @@ impl fmt::Display for SecretString {
 }
 
 // ---------------------------------------------------------------------------
-// SecretSource — describes where to fetch a secret from
+// SourceKind — private inner type shared by SecretSource and DynamicValue
 // ---------------------------------------------------------------------------
 
-pub enum SecretSource {
+pub(crate) enum SourceKind {
     Direct(String),
     Env(String),
     File(PathBuf),
     Command(String),
 }
 
+impl SourceKind {
+    fn resolve_raw(&self) -> Result<String, AixError> {
+        match self {
+            SourceKind::Direct(s) => Ok(s.clone()),
+
+            SourceKind::Env(name) => std::env::var(name)
+                .map_err(|_| AixError::SecretMissingEnvVar { name: name.clone() }),
+
+            SourceKind::File(raw_path) => {
+                let expanded = shellexpand::tilde(&raw_path.to_string_lossy()).into_owned();
+                let path = PathBuf::from(expanded);
+                let content = std::fs::read_to_string(&path)
+                    .map_err(|source| AixError::SecretFileRead { path, source })?;
+                Ok(strip_one_trailing_newline(content))
+            }
+
+            SourceKind::Command(cmd) => {
+                let output = run_command(cmd)?;
+                Ok(strip_one_trailing_newline(output))
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared deserialization helpers
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SourceKindDe {
+    Direct(String),
+    Structured(SourceKindFields),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceKindFields {
+    env: Option<String>,
+    file: Option<PathBuf>,
+    command: Option<String>,
+}
+
+fn try_from_de<E: serde::de::Error>(de: SourceKindDe) -> Result<SourceKind, E> {
+    match de {
+        SourceKindDe::Direct(s) => Ok(SourceKind::Direct(s)),
+        SourceKindDe::Structured(f) => match (f.env, f.file, f.command) {
+            (Some(v), None, None) => Ok(SourceKind::Env(v)),
+            (None, Some(p), None) => Ok(SourceKind::File(p)),
+            (None, None, Some(c)) => Ok(SourceKind::Command(c)),
+            (None, None, None) => Err(serde::de::Error::custom(
+                "secret source table must specify one of: env, file, command",
+            )),
+            _ => Err(serde::de::Error::custom(
+                "ambiguous secret source: specify exactly one of env / file / command",
+            )),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SecretSource — describes where to fetch a secret from
+// ---------------------------------------------------------------------------
+
+pub struct SecretSource(pub(crate) SourceKind);
+
 /// Custom Debug hides Direct values to prevent accidental logging.
 impl fmt::Debug for SecretSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SecretSource::Direct(_) => f.write_str("SecretSource::Direct([redacted])"),
-            SecretSource::Env(name) => write!(f, "SecretSource::Env({name:?})"),
-            SecretSource::File(path) => write!(f, "SecretSource::File({path:?})"),
-            SecretSource::Command(cmd) => write!(f, "SecretSource::Command({cmd:?})"),
+        match &self.0 {
+            SourceKind::Direct(_) => f.write_str("SecretSource::Direct([redacted])"),
+            SourceKind::Env(name) => write!(f, "SecretSource::Env({name:?})"),
+            SourceKind::File(path) => write!(f, "SecretSource::File({path:?})"),
+            SourceKind::Command(cmd) => write!(f, "SecretSource::Command({cmd:?})"),
         }
     }
 }
@@ -73,64 +139,14 @@ impl SecretSource {
     /// Errors include the source type and identifier (env var name, file path,
     /// command string) but never the resolved value.
     pub fn resolve(&self) -> Result<SecretString, AixError> {
-        match self {
-            SecretSource::Direct(s) => Ok(SecretString::new(s.clone())),
-
-            SecretSource::Env(name) => std::env::var(name)
-                .map(SecretString::new)
-                .map_err(|_| AixError::SecretMissingEnvVar { name: name.clone() }),
-
-            SecretSource::File(raw_path) => {
-                let expanded = shellexpand::tilde(&raw_path.to_string_lossy()).into_owned();
-                let path = PathBuf::from(expanded);
-                let content = std::fs::read_to_string(&path)
-                    .map_err(|source| AixError::SecretFileRead { path, source })?;
-                Ok(SecretString::new(strip_one_trailing_newline(content)))
-            }
-
-            SecretSource::Command(cmd) => {
-                let output = run_command(cmd)?;
-                Ok(SecretString::new(strip_one_trailing_newline(output)))
-            }
-        }
+        self.0.resolve_raw().map(SecretString::new)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Deserialization
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum SecretSourceDe {
-    Direct(String),
-    Structured(SecretSourceFields),
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SecretSourceFields {
-    env: Option<String>,
-    file: Option<PathBuf>,
-    command: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for SecretSource {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match SecretSourceDe::deserialize(deserializer)? {
-            SecretSourceDe::Direct(s) => Ok(SecretSource::Direct(s)),
-            SecretSourceDe::Structured(f) => match (f.env, f.file, f.command) {
-                (Some(v), None, None) => Ok(SecretSource::Env(v)),
-                (None, Some(p), None) => Ok(SecretSource::File(p)),
-                (None, None, Some(c)) => Ok(SecretSource::Command(c)),
-                (None, None, None) => Err(serde::de::Error::custom(
-                    "secret source table must specify one of: env, file, command",
-                )),
-                _ => Err(serde::de::Error::custom(
-                    "ambiguous secret source: specify exactly one of env / file / command",
-                )),
-            },
-        }
+        let de = SourceKindDe::deserialize(deserializer)?;
+        try_from_de(de).map(SecretSource)
     }
 }
 
@@ -222,27 +238,27 @@ mod tests {
     #[test]
     fn deser_direct() {
         let src = from_toml("value = \"sk-test\"").unwrap();
-        assert!(matches!(src, SecretSource::Direct(ref s) if s == "sk-test"));
+        assert!(matches!(src.0, SourceKind::Direct(ref s) if s == "sk-test"));
     }
 
     #[test]
     fn deser_env() {
         let src = from_toml("value = { env = \"MY_KEY\" }").unwrap();
-        assert!(matches!(src, SecretSource::Env(ref s) if s == "MY_KEY"));
+        assert!(matches!(src.0, SourceKind::Env(ref s) if s == "MY_KEY"));
     }
 
     #[test]
     fn deser_file() {
         let src = from_toml("value = { file = \"/run/secrets/key\" }").unwrap();
         assert!(
-            matches!(src, SecretSource::File(ref p) if p == std::path::Path::new("/run/secrets/key"))
+            matches!(src.0, SourceKind::File(ref p) if p == std::path::Path::new("/run/secrets/key"))
         );
     }
 
     #[test]
     fn deser_command() {
         let src = from_toml("value = { command = \"op read op://Work/key\" }").unwrap();
-        assert!(matches!(src, SecretSource::Command(ref s) if s == "op read op://Work/key"));
+        assert!(matches!(src.0, SourceKind::Command(ref s) if s == "op read op://Work/key"));
     }
 
     #[test]
@@ -264,7 +280,7 @@ mod tests {
 
     #[test]
     fn resolve_direct() {
-        let src = SecretSource::Direct("sk-direct".to_string());
+        let src = SecretSource(SourceKind::Direct("sk-direct".to_string()));
         assert_eq!(src.resolve().unwrap().expose_secret(), "sk-direct");
     }
 
@@ -274,7 +290,7 @@ mod tests {
     fn resolve_env_set() {
         let var = "AIX_TEST_SEC_RESOLVE_ENV_SET_A1B2";
         std::env::set_var(var, "env-value-xyz");
-        let result = SecretSource::Env(var.to_string()).resolve();
+        let result = SecretSource(SourceKind::Env(var.to_string())).resolve();
         std::env::remove_var(var);
         assert_eq!(result.unwrap().expose_secret(), "env-value-xyz");
     }
@@ -283,7 +299,7 @@ mod tests {
     fn resolve_env_missing() {
         let var = "AIX_TEST_SEC_RESOLVE_ENV_MISSING_X9Y8";
         std::env::remove_var(var);
-        let err = SecretSource::Env(var.to_string()).resolve().unwrap_err();
+        let err = SecretSource(SourceKind::Env(var.to_string())).resolve().unwrap_err();
         assert!(matches!(err, AixError::SecretMissingEnvVar { ref name } if name == var));
         let msg = err.to_string();
         assert!(msg.contains(var), "error must include var name");
@@ -296,7 +312,7 @@ mod tests {
         use assert_fs::prelude::*;
         let tmp = assert_fs::NamedTempFile::new("secret").unwrap();
         tmp.write_str("file-secret\n").unwrap();
-        let s = SecretSource::File(tmp.path().to_path_buf())
+        let s = SecretSource(SourceKind::File(tmp.path().to_path_buf()))
             .resolve()
             .unwrap();
         assert_eq!(s.expose_secret(), "file-secret");
@@ -307,7 +323,7 @@ mod tests {
         use assert_fs::prelude::*;
         let tmp = assert_fs::NamedTempFile::new("secret").unwrap();
         tmp.write_str("value\n\n").unwrap();
-        let s = SecretSource::File(tmp.path().to_path_buf())
+        let s = SecretSource(SourceKind::File(tmp.path().to_path_buf()))
             .resolve()
             .unwrap();
         assert_eq!(s.expose_secret(), "value\n");
@@ -318,7 +334,7 @@ mod tests {
         use assert_fs::prelude::*;
         let tmp = assert_fs::NamedTempFile::new("secret").unwrap();
         tmp.write_str("no-newline").unwrap();
-        let s = SecretSource::File(tmp.path().to_path_buf())
+        let s = SecretSource(SourceKind::File(tmp.path().to_path_buf()))
             .resolve()
             .unwrap();
         assert_eq!(s.expose_secret(), "no-newline");
@@ -326,7 +342,7 @@ mod tests {
 
     #[test]
     fn resolve_file_missing() {
-        let err = SecretSource::File(PathBuf::from("/nonexistent/aix-secret-xyz"))
+        let err = SecretSource(SourceKind::File(PathBuf::from("/nonexistent/aix-secret-xyz")))
             .resolve()
             .unwrap_err();
         assert!(matches!(err, AixError::SecretFileRead { ref path, .. }
@@ -340,7 +356,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn resolve_command_success() {
-        let s = SecretSource::Command("printf 'cmd-secret'".to_string())
+        let s = SecretSource(SourceKind::Command("printf 'cmd-secret'".to_string()))
             .resolve()
             .unwrap();
         assert_eq!(s.expose_secret(), "cmd-secret");
@@ -349,7 +365,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn resolve_command_strips_trailing_newline() {
-        let s = SecretSource::Command("echo trailing".to_string())
+        let s = SecretSource(SourceKind::Command("echo trailing".to_string()))
             .resolve()
             .unwrap();
         // echo appends \n; we strip exactly one
@@ -359,7 +375,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn resolve_command_failure() {
-        let err = SecretSource::Command("exit 42".to_string())
+        let err = SecretSource(SourceKind::Command("exit 42".to_string()))
             .resolve()
             .unwrap_err();
         assert!(
@@ -399,7 +415,7 @@ mod tests {
 
     #[test]
     fn secret_source_debug_hides_direct_value() {
-        let src = SecretSource::Direct("sk-direct-value".to_string());
+        let src = SecretSource(SourceKind::Direct("sk-direct-value".to_string()));
         let dbg = format!("{src:?}");
         assert!(!dbg.contains("sk-direct-value"));
         assert!(dbg.contains("redacted"));
@@ -407,7 +423,7 @@ mod tests {
 
     #[test]
     fn secret_source_debug_shows_env_name() {
-        let src = SecretSource::Env("MY_VAR".to_string());
+        let src = SecretSource(SourceKind::Env("MY_VAR".to_string()));
         let dbg = format!("{src:?}");
         assert!(dbg.contains("MY_VAR"));
     }
