@@ -39,6 +39,14 @@ pub fn run(
     Ok(())
 }
 
+fn append_v1(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    match trimmed.find('?') {
+        Some(pos) => format!("{}/v1{}", &trimmed[..pos], &trimmed[pos..]),
+        None => format!("{}/v1", trimmed),
+    }
+}
+
 pub(crate) fn collect_vars(
     profile_name: &str,
     api_key: &str,
@@ -54,14 +62,11 @@ pub(crate) fn collect_vars(
         vars.push(("ANTHROPIC_BASE_URL", base_url.to_string()));
     }
     if emit_openai {
-        let trimmed = base_url.trim_end_matches('/');
-        let openai_base_url = match trimmed.find('?') {
-            Some(pos) => format!("{}/v1{}", &trimmed[..pos], &trimmed[pos..]),
-            None => format!("{}/v1", trimmed),
-        };
         vars.push(("OPENAI_API_KEY", api_key.to_string()));
-        vars.push(("OPENAI_BASE_URL", openai_base_url));
+        vars.push(("OPENAI_BASE_URL", append_v1(base_url)));
     }
+    vars.push(("LITELLM_API_KEY", api_key.to_string()));
+    vars.push(("LITELLM_BASE_URL", append_v1(base_url)));
     vars
 }
 
@@ -226,19 +231,24 @@ mod tests {
     // --- collect_vars with ApiFormat ---
 
     #[test]
-    fn collect_vars_anthropic_produces_3_vars() {
+    fn collect_vars_anthropic_produces_5_vars() {
         let vars = collect_vars(
             "swtb",
             "sk-key",
             "https://example.com",
             &ApiFormat::Anthropic,
         );
-        assert_eq!(vars.len(), 3);
+        assert_eq!(vars.len(), 5);
         assert_eq!(vars[0], ("AIX_PROFILE", "swtb".to_string()));
         assert_eq!(vars[1], ("ANTHROPIC_API_KEY", "sk-key".to_string()));
         assert_eq!(
             vars[2],
             ("ANTHROPIC_BASE_URL", "https://example.com".to_string())
+        );
+        assert_eq!(vars[3], ("LITELLM_API_KEY", "sk-key".to_string()));
+        assert_eq!(
+            vars[4],
+            ("LITELLM_BASE_URL", "https://example.com/v1".to_string())
         );
     }
 
@@ -251,14 +261,19 @@ mod tests {
     }
 
     #[test]
-    fn collect_vars_openai_produces_3_vars() {
+    fn collect_vars_openai_produces_5_vars() {
         let vars = collect_vars("swtb", "sk-key", "https://example.com", &ApiFormat::OpenAi);
-        assert_eq!(vars.len(), 3);
+        assert_eq!(vars.len(), 5);
         assert_eq!(vars[0], ("AIX_PROFILE", "swtb".to_string()));
         assert_eq!(vars[1], ("OPENAI_API_KEY", "sk-key".to_string()));
         assert_eq!(
             vars[2],
             ("OPENAI_BASE_URL", "https://example.com/v1".to_string())
+        );
+        assert_eq!(vars[3], ("LITELLM_API_KEY", "sk-key".to_string()));
+        assert_eq!(
+            vars[4],
+            ("LITELLM_BASE_URL", "https://example.com/v1".to_string())
         );
     }
 
@@ -271,9 +286,9 @@ mod tests {
     }
 
     #[test]
-    fn collect_vars_both_produces_5_vars() {
+    fn collect_vars_both_produces_7_vars() {
         let vars = collect_vars("swtb", "sk-key", "https://example.com", &ApiFormat::Both);
-        assert_eq!(vars.len(), 5);
+        assert_eq!(vars.len(), 7);
         assert_eq!(vars[0], ("AIX_PROFILE", "swtb".to_string()));
         assert_eq!(vars[1], ("ANTHROPIC_API_KEY", "sk-key".to_string()));
         assert_eq!(
@@ -285,17 +300,44 @@ mod tests {
             vars[4],
             ("OPENAI_BASE_URL", "https://example.com/v1".to_string())
         );
+        assert_eq!(vars[5], ("LITELLM_API_KEY", "sk-key".to_string()));
+        assert_eq!(
+            vars[6],
+            ("LITELLM_BASE_URL", "https://example.com/v1".to_string())
+        );
     }
 
     #[test]
-    fn collect_vars_always_emits_aix_profile() {
+    fn collect_vars_always_emits_aix_profile_and_litellm_vars() {
         for fmt in [ApiFormat::Anthropic, ApiFormat::OpenAi, ApiFormat::Both] {
             let vars = collect_vars("p", "k", "u", &fmt);
             let names: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
             assert!(names.contains(&"AIX_PROFILE"), "missing for {fmt:?}");
+            assert!(names.contains(&"LITELLM_API_KEY"), "missing for {fmt:?}");
+            assert!(names.contains(&"LITELLM_BASE_URL"), "missing for {fmt:?}");
             assert!(!names.contains(&"AIX_API_KEY"), "unexpected for {fmt:?}");
             assert!(!names.contains(&"AIX_BASE_URL"), "unexpected for {fmt:?}");
         }
+    }
+
+    // --- append_v1 ---
+
+    #[test]
+    fn append_v1_appends_to_plain_url() {
+        assert_eq!(append_v1("https://example.com"), "https://example.com/v1");
+    }
+
+    #[test]
+    fn append_v1_trims_trailing_slash_before_appending() {
+        assert_eq!(append_v1("https://example.com/"), "https://example.com/v1");
+    }
+
+    #[test]
+    fn append_v1_inserts_before_query_string() {
+        assert_eq!(
+            append_v1("https://example.com?foo=bar"),
+            "https://example.com/v1?foo=bar"
+        );
     }
 
     // --- sh ---

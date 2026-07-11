@@ -189,6 +189,7 @@ mod tests {
         );
         let names: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
         assert!(names.contains(&"AIX_PROFILE"));
+        assert!(names.contains(&"LITELLM_API_KEY"));
         assert!(!names.contains(&"AIX_API_KEY"));
         assert!(!names.contains(&"AIX_BASE_URL"));
     }

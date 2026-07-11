@@ -187,7 +187,7 @@ fn env_for(config: &str) -> serde_json::Value {
 }
 
 #[test]
-fn env_always_emits_exactly_5_vars() {
+fn env_always_emits_exactly_7_vars() {
     let out = env_for(CONFIG_SIMPLE);
     let keys: Vec<&str> = out
         .as_object()
@@ -195,7 +195,7 @@ fn env_always_emits_exactly_5_vars() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys.len(), 5, "expected 5 vars, got: {keys:?}");
+    assert_eq!(keys.len(), 7, "expected 7 vars, got: {keys:?}");
 }
 
 #[test]
@@ -207,6 +207,8 @@ fn env_always_emits_all_var_names() {
         "ANTHROPIC_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
+        "LITELLM_API_KEY",
+        "LITELLM_BASE_URL",
     ] {
         assert!(out.get(key).is_some(), "missing {key}: {out}");
     }
