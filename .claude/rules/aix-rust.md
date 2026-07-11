@@ -29,8 +29,10 @@ Profiles are named sets of `(label, api_key)`. Gateway config (`base_url`) lives
 The active profile is chosen by `--profile` flag, a positional argument, or the `default_profile` config key.
 Never embed a URL, key, or profile name as a compile-time constant in command logic.
 
-`api_format` is **not** a config field. `aix env`/`aix exec` always emit all five credential vars
-(both Anthropic and OpenAI sets). `aix claude` emits Anthropic-only; `aix <other>` emits OpenAI-only.
+`api_format` is **not** a config field. `aix env`/`aix exec` always emit all seven credential vars
+(Anthropic, OpenAI, and LiteLLM-named sets). `aix claude` emits Anthropic + LiteLLM-named vars;
+`aix <other>` emits OpenAI + LiteLLM-named vars. `LITELLM_API_KEY`/`LITELLM_BASE_URL` are always
+emitted regardless of tool name — they alias the same credential as the OpenAI-named vars.
 
 Example config shape (TOML):
 ```toml

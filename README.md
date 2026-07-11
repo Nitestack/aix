@@ -283,7 +283,7 @@ Only one source per field is allowed. Mixing sources in the same field is a conf
 
 ## Environment variables emitted
 
-`aix env` and `aix exec` always inject all five variables:
+`aix env` and `aix exec` always inject all seven variables:
 
 | Variable | Value |
 |---|---|
@@ -292,13 +292,23 @@ Only one source per field is allowed. Mixing sources in the same field is a conf
 | `ANTHROPIC_BASE_URL` | Gateway base URL (bare) |
 | `OPENAI_API_KEY` | Resolved API key |
 | `OPENAI_BASE_URL` | Gateway base URL with `/v1` appended |
+| `LITELLM_API_KEY` | Resolved API key |
+| `LITELLM_BASE_URL` | Gateway base URL with `/v1` appended |
 
-Named-tool subcommands (`aix <tool>`) emit a subset based on the tool name:
+`LITELLM_API_KEY`/`LITELLM_BASE_URL` are aliases for the same credential and
+gateway as `OPENAI_API_KEY`/`OPENAI_BASE_URL` — not a third distinct secret
+— for tools that specifically look for a `LITELLM_*`-named variable (e.g.
+LiteLLM-aware config formats). They are always present regardless of tool
+name or invocation shape.
 
-| Invocation | Variables set |
+Named-tool subcommands (`aix <tool>`) emit a subset of the Anthropic/OpenAI
+pair based on the tool name, but `AIX_PROFILE`, `LITELLM_API_KEY`, and
+`LITELLM_BASE_URL` are always included regardless of tool name:
+
+| Invocation | Anthropic/OpenAI vars set |
 |---|---|
-| `aix claude ...` | `AIX_PROFILE`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
-| `aix <any other tool> ...` | `AIX_PROFILE`, `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
+| `aix claude ...` | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
+| `aix <any other tool> ...` | `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
 
 `AIX_API_KEY` and `AIX_BASE_URL` are never emitted. Tools that previously read those variables should switch to the `ANTHROPIC_*` or `OPENAI_*` equivalents.
 
