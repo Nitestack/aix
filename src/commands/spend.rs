@@ -96,13 +96,32 @@ fn format_age(age_secs: u64) -> String {
     }
 }
 
-fn tier_color(pct_used: f64) -> Rgb {
-    match pct_used {
-        p if p < 50.0 => Rgb(0, 200, 0),
-        p if p < 75.0 => Rgb(220, 200, 0),
-        p if p < 100.0 => Rgb(255, 165, 0),
-        _ => Rgb(220, 0, 0),
-    }
+const GRADIENT_STOPS: [(f64, Rgb); 4] = [
+    (0.0, Rgb(0, 200, 0)),
+    (50.0, Rgb(220, 200, 0)),
+    (75.0, Rgb(255, 165, 0)),
+    (100.0, Rgb(220, 0, 0)),
+];
+
+fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
+    (a as f64 + (b as f64 - a as f64) * t).round() as u8
+}
+
+fn gradient_color(pct_used: f64) -> Rgb {
+    let pct = pct_used.clamp(0.0, 100.0);
+    let segment = GRADIENT_STOPS
+        .windows(2)
+        .find(|w| pct <= w[1].0)
+        .unwrap_or(&GRADIENT_STOPS[GRADIENT_STOPS.len() - 2..]);
+    let (p0, c0) = segment[0];
+    let (p1, c1) = segment[1];
+    let t = if p1 > p0 { (pct - p0) / (p1 - p0) } else { 0.0 };
+
+    Rgb(
+        lerp_channel(c0.0, c1.0, t),
+        lerp_channel(c0.1, c1.1, t),
+        lerp_channel(c0.2, c1.2, t),
+    )
 }
 
 fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) {
@@ -139,7 +158,7 @@ fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) 
         const BAR: usize = 40;
         let filled = (pct_used / 100.0 * BAR as f64).round() as usize;
         let bar_empty = "░".repeat(BAR - filled);
-        let color = tier_color(pct_used);
+        let color = gradient_color(pct_used);
         let bar_filled = "█"
             .repeat(filled)
             .if_supports_color(Stdout, |t| t.color(color))
@@ -170,14 +189,26 @@ mod tests {
     use owo_colors::Rgb;
 
     #[test]
-    fn tier_color_boundaries() {
-        assert_eq!(tier_color(0.0), Rgb(0, 200, 0));
-        assert_eq!(tier_color(49.0), Rgb(0, 200, 0));
-        assert_eq!(tier_color(50.0), Rgb(220, 200, 0));
-        assert_eq!(tier_color(74.0), Rgb(220, 200, 0));
-        assert_eq!(tier_color(75.0), Rgb(255, 165, 0));
-        assert_eq!(tier_color(99.0), Rgb(255, 165, 0));
-        assert_eq!(tier_color(100.0), Rgb(220, 0, 0));
-        assert_eq!(tier_color(150.0), Rgb(220, 0, 0));
+    fn gradient_color_at_stops() {
+        assert_eq!(gradient_color(0.0), Rgb(0, 200, 0));
+        assert_eq!(gradient_color(50.0), Rgb(220, 200, 0));
+        assert_eq!(gradient_color(75.0), Rgb(255, 165, 0));
+        assert_eq!(gradient_color(100.0), Rgb(220, 0, 0));
+    }
+
+    #[test]
+    fn gradient_color_interpolates_between_stops() {
+        // Halfway between green (0%) and yellow (50%).
+        assert_eq!(gradient_color(25.0), Rgb(110, 200, 0));
+        // Halfway between yellow (50%) and orange (75%).
+        assert_eq!(gradient_color(62.5), Rgb(238, 183, 0));
+        // Halfway between orange (75%) and red (100%).
+        assert_eq!(gradient_color(87.5), Rgb(238, 83, 0));
+    }
+
+    #[test]
+    fn gradient_color_clamps_out_of_range_input() {
+        assert_eq!(gradient_color(-10.0), Rgb(0, 200, 0));
+        assert_eq!(gradient_color(150.0), Rgb(220, 0, 0));
     }
 }
