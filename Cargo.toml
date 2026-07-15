@@ -25,6 +25,7 @@ color-eyre  = { version = "0.6", default-features = false }
 zeroize     = "1"
 reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio       = { version = "1", features = ["macros", "rt-multi-thread"] }
+owo-colors  = { version = "4", features = ["supports-colors"] }
 
 [dev-dependencies]
 assert_cmd = "2"

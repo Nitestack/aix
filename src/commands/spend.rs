@@ -4,6 +4,7 @@ use crate::commands::env::resolve_profile;
 use crate::config;
 use crate::error::AixError;
 use color_eyre::Result;
+use owo_colors::Rgb;
 use std::path::PathBuf;
 
 pub async fn run(
@@ -49,9 +50,18 @@ pub async fn run(
         Some((data, fetched_at)) => (data, Some(fetched_at)),
         None => {
             let client = LiteLlmClient::new(base_url.expose_secret(), api_key.expose_secret());
-            let fresh = client.user_info().await?;
-            cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);
-            (fresh, None)
+            match client.user_info().await {
+                Ok(fresh) => {
+                    cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);
+                    (fresh, None)
+                }
+                Err(AixError::BudgetExceeded { spend, max_budget }) => {
+                    let fresh = serde_json::json!({ "spend": spend, "max_budget": max_budget });
+                    cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);
+                    (fresh, None)
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
     };
 
@@ -83,6 +93,16 @@ fn format_age(age_secs: u64) -> String {
         60..=3599 => format!("{}m ago", age_secs / 60),
         3600..=86399 => format!("{}h ago", age_secs / 3600),
         _ => format!("{}d ago", age_secs / 86400),
+    }
+}
+
+#[allow(dead_code, reason = "wired into print_human in the next commit")]
+fn tier_color(pct_used: f64) -> Rgb {
+    match pct_used {
+        p if p < 50.0 => Rgb(0, 200, 0),
+        p if p < 75.0 => Rgb(220, 200, 0),
+        p if p < 100.0 => Rgb(255, 165, 0),
+        _ => Rgb(220, 0, 0),
     }
 }
 
@@ -121,9 +141,36 @@ fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) 
         let filled = (pct_used / 100.0 * BAR as f64).round() as usize;
         let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(BAR - filled));
 
-        println!("${spend:.2} of ${b:.2}  ·  ${remaining:.2} available ({pct_remaining:.0}%){cache_suffix}");
+        if remaining < 0.0 {
+            println!(
+                "${spend:.2} of ${b:.2}  ·  over budget by ${:.2}{cache_suffix}",
+                -remaining
+            );
+        } else {
+            println!(
+                "${spend:.2} of ${b:.2}  ·  ${remaining:.2} available ({pct_remaining:.0}%){cache_suffix}"
+            );
+        }
         println!("{bar}  {pct_used:.0}% used");
     } else {
         println!("${spend:.2} spent  (no budget set){cache_suffix}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use owo_colors::Rgb;
+
+    #[test]
+    fn tier_color_boundaries() {
+        assert_eq!(tier_color(0.0), Rgb(0, 200, 0));
+        assert_eq!(tier_color(49.0), Rgb(0, 200, 0));
+        assert_eq!(tier_color(50.0), Rgb(220, 200, 0));
+        assert_eq!(tier_color(74.0), Rgb(220, 200, 0));
+        assert_eq!(tier_color(75.0), Rgb(255, 165, 0));
+        assert_eq!(tier_color(99.0), Rgb(255, 165, 0));
+        assert_eq!(tier_color(100.0), Rgb(220, 0, 0));
+        assert_eq!(tier_color(150.0), Rgb(220, 0, 0));
     }
 }
