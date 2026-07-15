@@ -124,6 +124,11 @@ fn gradient_color(pct_used: f64) -> Rgb {
     )
 }
 
+fn position_color(index: usize, bar_len: usize) -> Rgb {
+    let pct = index as f64 / (bar_len - 1) as f64 * 100.0;
+    gradient_color(pct)
+}
+
 fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) {
     let keys: &[serde_json::Value] = data
         .get("keys")
@@ -158,13 +163,15 @@ fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) 
         const BAR: usize = 40;
         let filled = (pct_used / 100.0 * BAR as f64).round() as usize;
         let bar_empty = "░".repeat(BAR - filled);
-        let color = gradient_color(pct_used);
-        let bar_filled = "█"
-            .repeat(filled)
-            .if_supports_color(Stdout, |t| t.color(color))
-            .to_string();
+        let bar_filled: String = (0..filled)
+            .map(|i| {
+                "█"
+                    .if_supports_color(Stdout, |t| t.color(position_color(i, BAR)))
+                    .to_string()
+            })
+            .collect();
         let label = format!("{pct_used:.0}% used")
-            .if_supports_color(Stdout, |t| t.color(color))
+            .if_supports_color(Stdout, |t| t.color(gradient_color(pct_used)))
             .to_string();
 
         if remaining < 0.0 {
@@ -210,5 +217,14 @@ mod tests {
     fn gradient_color_clamps_out_of_range_input() {
         assert_eq!(gradient_color(-10.0), Rgb(0, 200, 0));
         assert_eq!(gradient_color(150.0), Rgb(220, 0, 0));
+    }
+
+    #[test]
+    fn position_color_sweeps_the_full_spectrum_across_a_bar() {
+        assert_eq!(position_color(0, 40), Rgb(0, 200, 0));
+        assert_eq!(position_color(39, 40), Rgb(220, 0, 0));
+        // index 20 of 40 -> 20/39*100 = 51.28...%, between the yellow (50%) and
+        // orange (75%) stops.
+        assert_eq!(position_color(20, 40), Rgb(222, 198, 0));
     }
 }
