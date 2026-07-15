@@ -1,8 +1,9 @@
 # Spend Color Output Design
 
 **Date:** 2026-07-15
-**Status:** Approved (amended 2026-07-15: discrete tiers replaced with a smooth gradient — see
-"Color tiers" and "Implementation" below)
+**Status:** Approved (amended 2026-07-15 twice: discrete tiers replaced with a smooth
+gradient, then the bar changed from one flat color to a per-character rainbow sweep — see
+"Color tiers", "What gets colored", and "Implementation" below)
 
 ## Problem
 
@@ -43,6 +44,14 @@ Values between stops interpolate per-channel (e.g. 63% is ~52% of the way from t
 stop to the 75% stop, giving `Rgb(238,182,0)`). `pct_used` is clamped to `[0, 100]` before
 interpolating, matching the existing clamp in `print_human`.
 
+The 40-character bar uses this same gradient function, but per-character rather than as one
+flat color for the whole bar: character at index `i` (0-based) is colored via
+`gradient_color(i / (BAR_LEN - 1) * 100)`. This maps index 0 to green and index 39 to red
+regardless of how much of the bar is filled, so revealing more of the bar (as usage grows)
+reveals more of a fixed, pre-existing rainbow spectrum rather than shifting a single color.
+The `"NN% used"` label keeps a single flat color, `gradient_color(pct_used)`, since it's a
+one-line summary of current status rather than a spectrum.
+
 Terminal-theme-derived colors (reading the user's actual configured ANSI palette) were
 considered and rejected: there's no portable way to read back a terminal's live theme
 colors without OSC 4 queries, which aren't universally supported and require raw-mode
@@ -52,8 +61,9 @@ reads with timeout/fallback handling — too much complexity for this feature.
 
 Only two things, both in the second output line:
 
-- The filled (`█`) portion of the progress bar.
-- The `"{pct_used:.0}% used"` label.
+- The filled (`█`) portion of the progress bar — each character individually, per the
+  position-based rainbow sweep described above.
+- The `"{pct_used:.0}% used"` label — one flat color for the whole label.
 
 The empty (`░`) portion of the bar and the entire first line (`$X of $Y ... available/over
 budget by ...`) stay in the default terminal color.
@@ -101,17 +111,30 @@ fn gradient_color(pct_used: f64) -> Rgb {
         lerp_channel(c0.2, c1.2, t),
     )
 }
+
+fn position_color(index: usize, bar_len: usize) -> Rgb {
+    let pct = index as f64 / (bar_len - 1) as f64 * 100.0;
+    gradient_color(pct)
+}
 ```
 
-`print_human`'s budget branch builds the bar and label, then wraps just those two pieces:
+`print_human`'s budget branch colors each filled bar character individually via
+`position_color`, and the label once via `gradient_color`:
 
 ```rust
-let color = gradient_color(pct_used);
-let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(BAR - filled));
-let bar_colored = bar.if_supports_color(Stdout, |t| t.color(color)).to_string();
-let label = format!("{pct_used:.0}% used");
-let label_colored = label.if_supports_color(Stdout, |t| t.color(color)).to_string();
-println!("{bar_colored}  {label_colored}");
+const BAR: usize = 40;
+let bar_empty = "░".repeat(BAR - filled);
+let bar_filled: String = (0..filled)
+    .map(|i| {
+        "█"
+            .if_supports_color(Stdout, |t| t.color(position_color(i, BAR)))
+            .to_string()
+    })
+    .collect();
+let label = format!("{pct_used:.0}% used")
+    .if_supports_color(Stdout, |t| t.color(gradient_color(pct_used)))
+    .to_string();
+println!("[{bar_filled}{bar_empty}]  {label}");
 ```
 
 `if_supports_color` checks both `NO_COLOR` and whether stdout is a TTY internally (via the
@@ -119,9 +142,11 @@ println!("{bar_colored}  {label_colored}");
 
 ## Testing
 
-- No unit test for ANSI byte output (brittle, low value). `gradient_color` itself is a pure
-  function and gets unit tests covering the four exact stops, interpolated midpoints between
-  each pair of adjacent stops, and out-of-range clamping.
+- No unit test for ANSI byte output (brittle, low value). `gradient_color` and
+  `position_color` are both pure functions and get unit tests: `gradient_color` covers the
+  four exact stops, interpolated midpoints between each pair of adjacent stops, and
+  out-of-range clamping; `position_color` covers the first index (green), last index (red),
+  and a mid-bar index landing between two gradient stops.
 - Manual verification: run `aix spend` against profiles at different usage levels (or a mock
   response) piped to a file vs. a real TTY, confirming color appears only in the TTY case and
   `NO_COLOR=1 aix spend` suppresses it.
