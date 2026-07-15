@@ -4,7 +4,7 @@ use crate::commands::env::resolve_profile;
 use crate::config;
 use crate::error::AixError;
 use color_eyre::Result;
-use owo_colors::Rgb;
+use owo_colors::{OwoColorize, Rgb, Stream::Stdout};
 use std::path::PathBuf;
 
 pub async fn run(
@@ -96,7 +96,6 @@ fn format_age(age_secs: u64) -> String {
     }
 }
 
-#[allow(dead_code, reason = "wired into print_human in the next commit")]
 fn tier_color(pct_used: f64) -> Rgb {
     match pct_used {
         p if p < 50.0 => Rgb(0, 200, 0),
@@ -139,7 +138,15 @@ fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) 
 
         const BAR: usize = 40;
         let filled = (pct_used / 100.0 * BAR as f64).round() as usize;
-        let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(BAR - filled));
+        let bar_empty = "░".repeat(BAR - filled);
+        let color = tier_color(pct_used);
+        let bar_filled = "█"
+            .repeat(filled)
+            .if_supports_color(Stdout, |t| t.color(color))
+            .to_string();
+        let label = format!("{pct_used:.0}% used")
+            .if_supports_color(Stdout, |t| t.color(color))
+            .to_string();
 
         if remaining < 0.0 {
             println!(
@@ -151,7 +158,7 @@ fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) 
                 "${spend:.2} of ${b:.2}  ·  ${remaining:.2} available ({pct_remaining:.0}%){cache_suffix}"
             );
         }
-        println!("{bar}  {pct_used:.0}% used");
+        println!("[{bar_filled}{bar_empty}]  {label}");
     } else {
         println!("${spend:.2} spent  (no budget set){cache_suffix}");
     }

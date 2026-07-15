@@ -201,3 +201,38 @@ async fn spend_no_cache_flag_always_fetches() {
     }
     // wiremock verifies .expect(2) on server drop
 }
+
+#[tokio::test]
+async fn spend_output_has_no_ansi_codes_when_piped() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "spend": 90.0,
+            "max_budget": 100.0,
+            "keys": []
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), "sk-colortest1");
+
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_CACHE_DIR", cache_dir.path())
+        .args(["--config", config.to_str().unwrap(), "spend", "test"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // assert_cmd captures stdout to a pipe, not a TTY, so owo-colors'
+    // supports-colors detection must suppress ANSI escapes here.
+    assert!(
+        !stdout.contains('\x1b'),
+        "expected no ANSI codes, got: {stdout:?}"
+    );
+    assert!(stdout.contains("90% used"));
+}
