@@ -1,7 +1,8 @@
 # Spend Color Output Design
 
 **Date:** 2026-07-15
-**Status:** Approved
+**Status:** Approved (amended 2026-07-15: discrete tiers replaced with a smooth gradient — see
+"Color tiers" and "Implementation" below)
 
 ## Problem
 
@@ -27,14 +28,25 @@ percentage number to notice they're near or over budget.
 
 ## Color tiers
 
-Based on `pct_used` (already computed in `print_human`):
+Based on `pct_used` (already computed in `print_human`), color is a continuous gradient
+rather than a discrete jump. Four RGB stops anchor the gradient; the color at any
+`pct_used` is linearly interpolated between the two nearest stops:
 
-| Range        | Color                  |
-|--------------|------------------------|
-| `< 50%`      | green                  |
-| `50% – 74%`  | yellow                 |
-| `75% – 99%`  | orange (`Rgb(255,165,0)`, no standard ANSI orange) |
-| `>= 100%`    | red (over budget)      |
+| `pct_used` | Color                  |
+|------------|------------------------|
+| `0%`       | green — `Rgb(0,200,0)`   |
+| `50%`      | yellow — `Rgb(220,200,0)`|
+| `75%`      | orange — `Rgb(255,165,0)` (no standard ANSI orange) |
+| `100%`     | red — `Rgb(220,0,0)` (over budget) |
+
+Values between stops interpolate per-channel (e.g. 63% is ~52% of the way from the 50%
+stop to the 75% stop, giving `Rgb(238,182,0)`). `pct_used` is clamped to `[0, 100]` before
+interpolating, matching the existing clamp in `print_human`.
+
+Terminal-theme-derived colors (reading the user's actual configured ANSI palette) were
+considered and rejected: there's no portable way to read back a terminal's live theme
+colors without OSC 4 queries, which aren't universally supported and require raw-mode
+reads with timeout/fallback handling — too much complexity for this feature.
 
 ## What gets colored
 
@@ -62,20 +74,39 @@ In `src/commands/spend.rs`:
 ```rust
 use owo_colors::{OwoColorize, Rgb, Stream::Stdout};
 
-fn tier_color(pct_used: f64) -> Rgb {
-    match pct_used {
-        p if p < 50.0 => Rgb(0, 200, 0),
-        p if p < 75.0 => Rgb(220, 200, 0),
-        p if p < 100.0 => Rgb(255, 165, 0),
-        _ => Rgb(220, 0, 0),
-    }
+const GRADIENT_STOPS: [(f64, Rgb); 4] = [
+    (0.0, Rgb(0, 200, 0)),
+    (50.0, Rgb(220, 200, 0)),
+    (75.0, Rgb(255, 165, 0)),
+    (100.0, Rgb(220, 0, 0)),
+];
+
+fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
+    (a as f64 + (b as f64 - a as f64) * t).round() as u8
+}
+
+fn gradient_color(pct_used: f64) -> Rgb {
+    let pct = pct_used.clamp(0.0, 100.0);
+    let segment = GRADIENT_STOPS
+        .windows(2)
+        .find(|w| pct <= w[1].0)
+        .unwrap_or(&GRADIENT_STOPS[GRADIENT_STOPS.len() - 2..]);
+    let (p0, c0) = segment[0];
+    let (p1, c1) = segment[1];
+    let t = if p1 > p0 { (pct - p0) / (p1 - p0) } else { 0.0 };
+
+    Rgb(
+        lerp_channel(c0.0, c1.0, t),
+        lerp_channel(c0.1, c1.1, t),
+        lerp_channel(c0.2, c1.2, t),
+    )
 }
 ```
 
 `print_human`'s budget branch builds the bar and label, then wraps just those two pieces:
 
 ```rust
-let color = tier_color(pct_used);
+let color = gradient_color(pct_used);
 let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(BAR - filled));
 let bar_colored = bar.if_supports_color(Stdout, |t| t.color(color)).to_string();
 let label = format!("{pct_used:.0}% used");
@@ -88,9 +119,9 @@ println!("{bar_colored}  {label_colored}");
 
 ## Testing
 
-- No unit test for ANSI byte output (brittle, low value). `tier_color` itself is a pure
-  function and gets a unit test covering the four boundary cases (49%, 50%, 74%, 75%, 99%,
-  100%).
+- No unit test for ANSI byte output (brittle, low value). `gradient_color` itself is a pure
+  function and gets unit tests covering the four exact stops, interpolated midpoints between
+  each pair of adjacent stops, and out-of-range clamping.
 - Manual verification: run `aix spend` against profiles at different usage levels (or a mock
   response) piped to a file vs. a real TTY, confirming color appears only in the TTY case and
   `NO_COLOR=1 aix spend` suppresses it.
