@@ -12,7 +12,9 @@ mod secrets;
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
-    color_eyre::install()?;
+    color_eyre::config::HookBuilder::default()
+        .display_env_section(false)
+        .install()?;
     let cli = Cli::parse();
     run(cli).await
 }

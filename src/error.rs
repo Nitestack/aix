@@ -107,6 +107,9 @@ pub enum AixError {
     #[error("gateway returned HTTP {status}: {body}")]
     GatewayError { status: u16, body: String },
 
+    #[error("budget exceeded: ${spend:.2} of ${max_budget:.2}")]
+    BudgetExceeded { spend: f64, max_budget: f64 },
+
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
 
