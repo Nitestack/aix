@@ -224,8 +224,12 @@ default_profile = "work"
 env_files = ["~/.env.aix"]
 
 [endpoint]
-# The LiteLLM gateway base URL — accepts any secret source (see below).
+# The gateway base URL — accepts any secret source (see below).
 base_url = { env = "AIX_BASE_URL" }
+# Optional metadata. `aix spend` accepts an unset gateway or "litellm" only.
+gateway = "litellm"
+# `provider` is optional metadata for other consumers.
+provider = "litellm"
 
 # ── Profile: Work ────────────────────────────────────────────────────────────
 [profiles.work]
@@ -239,6 +243,13 @@ label   = "Personal"
 # File secret: read from a file (Nix secrets, Docker secret, etc.).
 # Trailing newline is stripped automatically.
 api_key = { file = "/run/secrets/aix/personal" }
+# Optional profile-specific gateway, overriding [endpoint].base_url.
+base_url = { env = "AIX_PERSONAL_BASE_URL" }
+
+# Additional variables with valid shell-environment names are injected after generated
+# variables and may override them.
+[profiles.personal.env]
+EXAMPLE_FEATURE_FLAG = "enabled"
 
 # ── Profile: Dev ─────────────────────────────────────────────────────────────
 [profiles.dev]
@@ -268,7 +279,7 @@ disabled = false # set to true to always fetch fresh data
 
 ## Secret sources
 
-Every field that holds a secret (currently `api_key` and `base_url`) accepts one of four forms:
+Every secret-backed field (`api_key`, `base_url`, and profile `env` values) accepts one of four forms. Profile `label` supports the same dynamic forms:
 
 | Source | Syntax | Notes |
 |--------|--------|-------|

@@ -11,13 +11,15 @@ The old Nix shell-script implementation has been superseded; see `docs/aix/migra
 |---|---|
 | `aix profiles` | List available profiles (name + label) |
 | `aix profiles --json` | Emit profiles as a JSON array (no secrets) |
-| `aix env [PROFILE] [--format FORMAT]` | Print env vars to stdout; always emits all 5 vars |
+| `aix env [PROFILE] [--format FORMAT]` | Print env vars to stdout; always emits all 7 vars |
 | `aix shell [PROFILE] [--dry-run]` | Launch the user's detected shell with profile env set |
-| `aix exec [PROFILE] [--dry-run] -- CMD...` | Exec a command with profile env set |
-| `aix claude [PROFILE] [--dry-run] [-- args...]` | Exec `claude` with Anthropic credentials only |
-| `aix <tool> [PROFILE] [--dry-run] [-- args...]` | Exec `<tool>` with OpenAI credentials only |
+| `aix exec [PROFILE] [--dry-run] -- CMD...` | Run a command with profile env set |
+| `aix claude [PROFILE] [--dry-run] [-- args...]` | Run `claude` with Anthropic and LiteLLM credentials |
+| `aix <tool> [PROFILE] [--dry-run] [-- args...]` | Run `<tool>` with OpenAI and LiteLLM credentials |
 | `aix config path` | Print the resolved config file path |
 | `aix config validate` | Validate the config file and exit |
+| `aix spend [PROFILE] [--json] [--no-cache]` | Show LiteLLM spend and budget information |
+| `aix cache clear` | Delete all cached spend-response files |
 
 ---
 
@@ -27,8 +29,8 @@ Profiles are defined in the TOML config file (see `docs/aix/example-config.toml`
 
 **Selection order:**
 
-1. `--profile NAME` global flag (or `AIX_PROFILE` env var)
-2. Positional profile argument on the subcommand
+1. Positional profile argument on the subcommand
+2. `--profile NAME` global flag (or `AIX_PROFILE` env var)
 3. `default_profile` key in the config file
 4. Interactive picker via `inquire::Select` — only when both stdin and stdout are a TTY
 
@@ -38,7 +40,7 @@ If none applies and stdin/stdout are not both TTYs, the CLI exits with an error.
 
 ## Environment variables emitted
 
-`aix env` and `aix exec` always emit **all five** variables (`ApiFormat::Both`):
+`aix env` and `aix exec` always emit **all seven** variables (`ApiFormat::Both`):
 
 | Variable | Value |
 |---|---|
@@ -47,13 +49,15 @@ If none applies and stdin/stdout are not both TTYs, the CLI exits with an error.
 | `ANTHROPIC_BASE_URL` | Gateway base URL |
 | `OPENAI_API_KEY` | Resolved API key |
 | `OPENAI_BASE_URL` | Gateway base URL with `/v1` appended |
+| `LITELLM_API_KEY` | Resolved API key |
+| `LITELLM_BASE_URL` | Gateway base URL with `/v1` appended |
 
-Named-tool dispatch emits a subset:
+Named-tool dispatch always includes `AIX_PROFILE`, `LITELLM_API_KEY`, and `LITELLM_BASE_URL`, plus a provider-specific subset:
 
 | Command | Format | Variables emitted |
 |---|---|---|
-| `aix claude` | Anthropic | `AIX_PROFILE`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
-| `aix <other>` | OpenAI | `AIX_PROFILE`, `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
+| `aix claude` | Anthropic | `AIX_PROFILE`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `LITELLM_API_KEY`, `LITELLM_BASE_URL` |
+| `aix <other>` | OpenAI | `AIX_PROFILE`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LITELLM_API_KEY`, `LITELLM_BASE_URL` |
 
 `AIX_API_KEY` and `AIX_BASE_URL` are **never** emitted.
 
@@ -74,7 +78,7 @@ Named-tool dispatch emits a subset:
 
 ## Secret sources
 
-All secret fields (`api_key`, `base_url`, profile `label`) accept any of:
+All secret-backed fields (`api_key`, `base_url`, and profile `env` values) accept any of. Profile `label` supports the same dynamic forms:
 
 | TOML form | Resolved from |
 |---|---|
@@ -82,6 +86,8 @@ All secret fields (`api_key`, `base_url`, profile `label`) accept any of:
 | `{ env = "VAR" }` | Environment variable |
 | `{ file = "/run/secrets/..." }` | File contents (trailing newline stripped) |
 | `{ command = "op read ..." }` | stdout of a shell command (trailing newline stripped) |
+
+A profile can set `base_url` to override the shared endpoint and an `[profiles.<name>.env]` table to append custom variables. Variable names must be valid shell environment identifiers. Custom variables are added last, so they can explicitly override generated names.
 
 ---
 
@@ -97,6 +103,7 @@ TOML, YAML, JSON, and JSON5 are all supported.
 ## Shell detection (`aix shell`)
 
 Shell detected in order:
+
 1. `$SHELL` env var (if non-empty)
 2. `nu` if `$NU_VERSION` is set and `nu` is on `$PATH` (Unix only)
 3. `sh` fallback (Unix) / `pwsh` or `cmd` (Windows)
