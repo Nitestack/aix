@@ -78,6 +78,9 @@ let
     }
     // lib.optionalAttrs (profile.label != null) {
       label = encodeSecretSource profile.label;
+    }
+    // lib.optionalAttrs (profile.baseUrl != null) {
+      base_url = encodeSecretSource profile.baseUrl;
     };
 
   mkEndpoint =
@@ -205,6 +208,18 @@ in
                 API key for this profile. Accepts any secret source.
                 Avoid direct string values — they end up in the world-readable Nix store.
                 Prefer file (sops-nix / agenix), env, or command.
+              '';
+            };
+
+            baseUrl = lib.mkOption {
+              type = lib.types.nullOr secretSourceType;
+              default = null;
+              apply = v: if v != null then validateSecretSource v else null;
+              example = "https://local-ai.example.com";
+              description = ''
+                Optional gateway base URL override for this profile.
+                When unset, the shared programs.aix.endpoint.baseUrl is used.
+                Accepts any secret source.
               '';
             };
           };

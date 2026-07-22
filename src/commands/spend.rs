@@ -36,7 +36,7 @@ pub async fn run(
             available_hint: config::format_available_profiles(&cfg),
         })?;
 
-    let base_url = cfg.endpoint.base_url.resolve()?;
+    let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
     let api_key = profile.api_key.resolve()?;
     let cache = Cache::from_config(&cfg.cache);
 

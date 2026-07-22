@@ -61,6 +61,35 @@ fn exec_sets_anthropic_env_vars_by_default() {
     assert_eq!(s, "sk-swtb-key", "got: {s}");
 }
 
+#[test]
+#[cfg(unix)]
+fn exec_uses_profile_base_url_override() {
+    let config = r#"
+[endpoint]
+base_url = "https://shared.example.com"
+
+[profiles.local]
+api_key = "sk-local-key"
+base_url = "https://local.example.com"
+"#;
+    let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    file.write_str(config).unwrap();
+
+    let out = cmd()
+        .env("AIX_CONFIG", file.path())
+        .args(["exec", "local", "--", "printenv", "ANTHROPIC_BASE_URL"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(
+        std::str::from_utf8(&out).unwrap().trim(),
+        "https://local.example.com"
+    );
+}
+
 // --- exec: exit code propagation ---
 
 #[test]

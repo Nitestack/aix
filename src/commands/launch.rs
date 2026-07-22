@@ -28,7 +28,7 @@ pub fn resolve_launch_env(
             })?;
 
     let api_key = profile_entry.api_key.resolve()?;
-    let base_url = cfg.endpoint.base_url.resolve()?;
+    let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
     let api_format = format_override.unwrap_or(config::ApiFormat::Both);
 
     let vars = collect_vars(

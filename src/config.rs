@@ -72,6 +72,8 @@ pub struct Endpoint {
 pub struct Profile {
     pub label: Option<DynamicValue>,
     pub api_key: SecretSource,
+    /// Overrides the shared endpoint URL for this profile when configured.
+    pub base_url: Option<SecretSource>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +165,17 @@ pub fn load_env_files(config: &Config) -> Result<(), AixError> {
         })?;
     }
     Ok(())
+}
+
+/// Resolve the profile's endpoint URL, falling back to the shared endpoint.
+pub fn resolve_base_url(
+    profile: &Profile,
+    endpoint: &Endpoint,
+) -> Result<crate::secrets::SecretString, AixError> {
+    match &profile.base_url {
+        Some(base_url) => base_url.resolve(),
+        None => endpoint.base_url.resolve(),
+    }
 }
 
 pub fn validate(config: &Config) -> Result<(), AixError> {
@@ -263,6 +276,7 @@ api_key = { env = "AIX_API_KEY" }
 [profiles.local]
 label = "Local"
 api_key = "sk-local-key"
+base_url = "https://local.example.com"
 "#;
 
     const YAML: &str = r#"
@@ -279,6 +293,7 @@ profiles:
   local:
     label: Local
     api_key: sk-local-key
+    base_url: https://local.example.com
 "#;
 
     const JSON: &str = r#"{
@@ -289,7 +304,7 @@ profiles:
   },
   "profiles": {
     "work": { "label": "Work", "api_key": { "env": "AIX_API_KEY" } },
-    "local": { "label": "Local", "api_key": "sk-local-key" }
+    "local": { "label": "Local", "api_key": "sk-local-key", "base_url": "https://local.example.com" }
   }
 }"#;
 
@@ -301,7 +316,7 @@ profiles:
   },
   profiles: {
     work: { label: "Work", api_key: { env: "AIX_API_KEY" } },
-    local: { label: "Local", api_key: "sk-local-key" },
+    local: { label: "Local", api_key: "sk-local-key", base_url: "https://local.example.com" },
   },
 }"#;
 
@@ -317,6 +332,10 @@ profiles:
         assert!(matches!(cfg.profiles["work"].api_key.0, SourceKind::Env(_)));
         assert!(matches!(
             cfg.profiles["local"].api_key.0,
+            SourceKind::Direct(_)
+        ));
+        assert!(matches!(
+            cfg.profiles["local"].base_url.as_ref().unwrap().0,
             SourceKind::Direct(_)
         ));
     }
@@ -343,6 +362,31 @@ profiles:
     fn parse_json5() {
         let cfg: Config = json5::from_str(JSON5).unwrap();
         assert_standard(&cfg);
+    }
+
+    #[test]
+    fn resolve_base_url_prefers_profile_override() {
+        let cfg: Config = toml::from_str(TOML).unwrap();
+        let profile = &cfg.profiles["local"];
+        assert_eq!(
+            resolve_base_url(profile, &cfg.endpoint)
+                .unwrap()
+                .expose_secret(),
+            "https://local.example.com"
+        );
+    }
+
+    #[test]
+    fn resolve_base_url_falls_back_to_endpoint() {
+        let cfg: Config = toml::from_str(TOML).unwrap();
+        let profile = &cfg.profiles["work"];
+        std::env::set_var("AIX_BASE_URL", "https://shared.example.com");
+        let result = resolve_base_url(profile, &cfg.endpoint);
+        std::env::remove_var("AIX_BASE_URL");
+        assert_eq!(
+            result.unwrap().expose_secret(),
+            "https://shared.example.com"
+        );
     }
 
     #[test]

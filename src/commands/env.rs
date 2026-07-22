@@ -26,7 +26,7 @@ pub fn run(
         })?;
 
     let api_key = profile.api_key.resolve()?;
-    let base_url = cfg.endpoint.base_url.resolve()?;
+    let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
 
     let vars = collect_vars(
         &profile_name,

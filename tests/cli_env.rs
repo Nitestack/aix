@@ -113,6 +113,35 @@ fn env_sh_special_chars_in_key_and_url() {
     );
 }
 
+#[test]
+fn env_uses_profile_base_url_override() {
+    let config = r#"
+[endpoint]
+base_url = "https://shared.example.com"
+
+[profiles.local]
+api_key = "sk-local-key"
+base_url = "https://local.example.com"
+"#;
+    let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    file.write_str(config).unwrap();
+
+    let out = cmd()
+        .env("AIX_CONFIG", file.path())
+        .args(["env", "local", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&out) else {
+        panic!("env output must be valid JSON");
+    };
+    assert_eq!(parsed["ANTHROPIC_BASE_URL"], "https://local.example.com");
+    assert_eq!(parsed["OPENAI_BASE_URL"], "https://local.example.com/v1");
+}
+
 // --- json format ---
 
 #[test]
