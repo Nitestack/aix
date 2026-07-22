@@ -28,12 +28,13 @@ pub fn run(
     let api_key = profile.api_key.resolve()?;
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
 
-    let vars = collect_vars(
+    let vars = collect_profile_vars(
         &profile_name,
         api_key.expose_secret(),
         base_url.expose_secret(),
         &config::ApiFormat::Both,
-    );
+        profile,
+    )?;
 
     print!("{}", format_vars(&vars, &format));
     Ok(())
@@ -70,7 +71,30 @@ pub(crate) fn collect_vars(
     vars
 }
 
-fn format_vars(vars: &[(&'static str, String)], format: &EnvFormat) -> String {
+pub(crate) fn collect_profile_vars(
+    profile_name: &str,
+    api_key: &str,
+    base_url: &str,
+    api_format: &config::ApiFormat,
+    profile: &config::Profile,
+) -> Result<Vec<(String, String)>, AixError> {
+    let mut vars: Vec<(String, String)> = collect_vars(profile_name, api_key, base_url, api_format)
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect();
+
+    // Append profile values last so explicit profile configuration can override
+    // a generated variable when a provider requires different naming or values.
+    let mut custom_vars: Vec<_> = profile.env.iter().collect();
+    custom_vars.sort_unstable_by_key(|(key, _)| key.as_str());
+    for (key, value) in custom_vars {
+        vars.push((key.clone(), value.resolve()?.expose_secret().to_string()));
+    }
+
+    Ok(vars)
+}
+
+fn format_vars(vars: &[(String, String)], format: &EnvFormat) -> String {
     match format {
         EnvFormat::Sh => format_sh(vars),
         EnvFormat::Json => format_json(vars),
@@ -85,10 +109,10 @@ fn sh_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-fn format_sh(vars: &[(&'static str, String)]) -> String {
+fn format_sh<K: AsRef<str>>(vars: &[(K, String)]) -> String {
     let mut out = vars
         .iter()
-        .map(|(k, v)| format!("export {}={}", k, sh_escape(v)))
+        .map(|(k, v)| format!("export {}={}", k.as_ref(), sh_escape(v)))
         .collect::<Vec<_>>()
         .join("\n");
     out.push('\n');
@@ -105,10 +129,10 @@ fn nu_escape(s: &str) -> String {
     )
 }
 
-fn format_nu(vars: &[(&'static str, String)]) -> String {
+fn format_nu<K: AsRef<str>>(vars: &[(K, String)]) -> String {
     let mut out = vars
         .iter()
-        .map(|(k, v)| format!("$env.{} = {}", k, nu_escape(v)))
+        .map(|(k, v)| format!("$env.{} = {}", k.as_ref(), nu_escape(v)))
         .collect::<Vec<_>>()
         .join("\n");
     out.push('\n');
@@ -119,10 +143,10 @@ fn fish_escape(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
-fn format_fish(vars: &[(&'static str, String)]) -> String {
+fn format_fish<K: AsRef<str>>(vars: &[(K, String)]) -> String {
     let mut out = vars
         .iter()
-        .map(|(k, v)| format!("set -x {} {}", k, fish_escape(v)))
+        .map(|(k, v)| format!("set -x {} {}", k.as_ref(), fish_escape(v)))
         .collect::<Vec<_>>()
         .join("\n");
     out.push('\n');
@@ -133,10 +157,10 @@ fn ps_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-fn format_powershell(vars: &[(&'static str, String)]) -> String {
+fn format_powershell<K: AsRef<str>>(vars: &[(K, String)]) -> String {
     let mut out = vars
         .iter()
-        .map(|(k, v)| format!("$env:{} = {}", k, ps_escape(v)))
+        .map(|(k, v)| format!("$env:{} = {}", k.as_ref(), ps_escape(v)))
         .collect::<Vec<_>>()
         .join("\n");
     out.push('\n');
@@ -168,18 +192,18 @@ fn cmd_escape(s: &str) -> String {
     s.replace('%', "%%").replace('"', "\"\"")
 }
 
-fn format_cmd(vars: &[(&'static str, String)]) -> String {
+fn format_cmd<K: AsRef<str>>(vars: &[(K, String)]) -> String {
     let mut out = vars
         .iter()
-        .map(|(k, v)| format!("set \"{}={}\"", k, cmd_escape(v)))
+        .map(|(k, v)| format!("set \"{}={}\"", k.as_ref(), cmd_escape(v)))
         .collect::<Vec<_>>()
         .join("\n");
     out.push('\n');
     out
 }
 
-fn format_json(vars: &[(&'static str, String)]) -> String {
-    let map: BTreeMap<&str, &str> = vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
+fn format_json<K: AsRef<str>>(vars: &[(K, String)]) -> String {
+    let map: BTreeMap<&str, &str> = vars.iter().map(|(k, v)| (k.as_ref(), v.as_str())).collect();
     let mut out =
         serde_json::to_string_pretty(&map).expect("BTreeMap<&str,&str> is always serializable");
     out.push('\n');

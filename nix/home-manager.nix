@@ -81,6 +81,9 @@ let
     }
     // lib.optionalAttrs (profile.baseUrl != null) {
       base_url = encodeSecretSource profile.baseUrl;
+    }
+    // lib.optionalAttrs (profile.env != { }) {
+      env = lib.mapAttrs (_: encodeSecretSource) profile.env;
     };
 
   mkEndpoint =
@@ -220,6 +223,17 @@ in
                 Optional gateway base URL override for this profile.
                 When unset, the shared programs.aix.endpoint.baseUrl is used.
                 Accepts any secret source.
+              '';
+            };
+
+            env = lib.mkOption {
+              type = lib.types.attrsOf secretSourceType;
+              default = { };
+              description = ''
+                Additional environment variables injected for this profile.
+                Values accept a plain string or { env = "VAR"; }, { file = "/path"; },
+                or { command = "cmd"; }. Profile values are applied after aix's
+                standard credential variables, so they can override them when necessary.
               '';
             };
           };

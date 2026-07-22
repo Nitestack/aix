@@ -74,6 +74,9 @@ pub struct Profile {
     pub api_key: SecretSource,
     /// Overrides the shared endpoint URL for this profile when configured.
     pub base_url: Option<SecretSource>,
+    /// Additional environment variables injected when this profile is used.
+    #[serde(default)]
+    pub env: HashMap<String, SecretSource>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,7 +198,17 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
     sorted_names.sort();
     let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     for name in sorted_names {
-        let effective_label: String = match &config.profiles[name].label {
+        let profile = &config.profiles[name];
+        for env_name in profile.env.keys() {
+            if !is_valid_env_name(env_name) {
+                return Err(AixError::InvalidEnvironmentVariableName {
+                    profile: name.to_string(),
+                    name: env_name.clone(),
+                });
+            }
+        }
+
+        let effective_label: String = match &profile.label {
             None => name.to_string(),
             Some(dv) => dv.resolve()?,
         };
@@ -214,6 +227,12 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
 
 /// Format a list of profile names (with optional label in parens) for use in error messages.
 /// Shows the names users can type, e.g. "  swtb\n  work  (Work account)".
+fn is_valid_env_name(name: &str) -> bool {
+    let mut chars = name.bytes();
+    matches!(chars.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && chars.all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_'))
+}
+
 pub fn format_available_profiles(cfg: &Config) -> String {
     let mut pairs: Vec<(&str, String)> = cfg
         .profiles
@@ -492,6 +511,27 @@ api_key = "sk-test"
 "#;
         let cfg: Config = toml::from_str(no_default).unwrap();
         assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_profile_env_name() {
+        let cfg: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[profiles.work]
+api_key = "sk-test"
+[profiles.work.env]
+"NOT VALID" = "value"
+"#,
+        )
+        .unwrap();
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            matches!(err, AixError::InvalidEnvironmentVariableName { ref profile, ref name }
+                if profile == "work" && name == "NOT VALID"),
+            "unexpected error: {err}"
+        );
     }
 
     // --- env_files ---

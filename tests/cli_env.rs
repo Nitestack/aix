@@ -142,6 +142,39 @@ base_url = "https://local.example.com"
     assert_eq!(parsed["OPENAI_BASE_URL"], "https://local.example.com/v1");
 }
 
+#[test]
+fn env_includes_profile_custom_variables() {
+    let config = r#"
+[endpoint]
+base_url = "https://ai.example.com"
+
+[profiles.qwen]
+api_key = "sk-qwen-key"
+
+[profiles.qwen.env]
+ANTHROPIC_AUTH_TOKEN = { env = "QWEN_TEST_TOKEN" }
+ANTHROPIC_MODEL = "qwen3.8-max-preview"
+CLAUDE_CODE_MAX_CONTEXT_TOKENS = "983616"
+"#;
+    let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    file.write_str(config).unwrap();
+
+    let out = cmd()
+        .env("AIX_CONFIG", file.path())
+        .env("QWEN_TEST_TOKEN", "token-from-env")
+        .args(["env", "qwen", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(parsed["ANTHROPIC_AUTH_TOKEN"], "token-from-env");
+    assert_eq!(parsed["ANTHROPIC_MODEL"], "qwen3.8-max-preview");
+    assert_eq!(parsed["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "983616");
+}
+
 // --- json format ---
 
 #[test]

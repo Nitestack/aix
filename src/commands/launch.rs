@@ -1,11 +1,11 @@
-use crate::commands::env::{collect_vars, resolve_profile};
+use crate::commands::env::{collect_profile_vars, resolve_profile};
 use crate::config;
 use crate::error::AixError;
 use color_eyre::Result;
 use std::path::{Path, PathBuf};
 
 pub struct LaunchEnv {
-    pub vars: Vec<(&'static str, String)>,
+    pub vars: Vec<(String, String)>,
 }
 
 pub fn resolve_launch_env(
@@ -31,12 +31,13 @@ pub fn resolve_launch_env(
     let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
     let api_format = format_override.unwrap_or(config::ApiFormat::Both);
 
-    let vars = collect_vars(
+    let vars = collect_profile_vars(
         &profile_name,
         api_key.expose_secret(),
         base_url.expose_secret(),
         &api_format,
-    );
+        profile_entry,
+    )?;
     Ok(LaunchEnv { vars })
 }
 
@@ -180,6 +181,7 @@ mod tests {
 
     #[test]
     fn launch_env_vars_include_required_keys() {
+        use crate::commands::env::collect_vars;
         use crate::config::ApiFormat;
         let vars = collect_vars(
             "myprofile",

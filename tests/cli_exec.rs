@@ -90,6 +90,43 @@ base_url = "https://local.example.com"
     );
 }
 
+#[test]
+#[cfg(unix)]
+fn exec_sets_profile_custom_env_vars_in_child() {
+    let config = r#"
+[endpoint]
+base_url = "https://ai.example.com"
+
+[profiles.qwen]
+api_key = "sk-qwen-key"
+
+[profiles.qwen.env]
+CLAUDE_CODE_SUBAGENT_MODEL = "qwen3.7-max"
+"#;
+    let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    file.write_str(config).unwrap();
+
+    let out = cmd()
+        .env("AIX_CONFIG", file.path())
+        .args([
+            "exec",
+            "qwen",
+            "--",
+            "printenv",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let Ok(value) = std::str::from_utf8(&out) else {
+        panic!("child output must be UTF-8");
+    };
+    assert_eq!(value.trim(), "qwen3.7-max");
+}
+
 // --- exec: exit code propagation ---
 
 #[test]

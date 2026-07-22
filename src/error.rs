@@ -83,6 +83,9 @@ pub enum AixError {
     #[error("config must define at least one profile in [profiles]")]
     NoProfilesConfigured,
 
+    #[error("invalid environment variable name {name:?} in profile {profile:?}")]
+    InvalidEnvironmentVariableName { profile: String, name: String },
+
     #[allow(dead_code)]
     #[error("profile selection cancelled")]
     SelectionCancelled,
