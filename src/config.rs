@@ -2,7 +2,7 @@
 
 use crate::error::AixError;
 use crate::secrets::{DynamicValue, SecretSource};
-use directories::ProjectDirs;
+use directories::BaseDirs;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -106,11 +106,10 @@ pub fn find_config_path(explicit: Option<&Path>) -> Result<Option<PathBuf>, AixE
         return Ok(Some(path.to_path_buf()));
     }
 
-    let Some(dirs) = ProjectDirs::from("", "", "aix") else {
+    let Some(config_dir) = default_config_dir() else {
         return Ok(None);
     };
 
-    let config_dir = dirs.config_dir();
     for name in &["aix.toml", "aix.yaml", "aix.yml", "aix.json", "aix.json5"] {
         let candidate = config_dir.join(name);
         if candidate.exists() {
@@ -119,6 +118,10 @@ pub fn find_config_path(explicit: Option<&Path>) -> Result<Option<PathBuf>, AixE
     }
 
     Ok(None)
+}
+
+fn default_config_dir() -> Option<PathBuf> {
+    BaseDirs::new().map(|dirs| dirs.config_dir().join("aix"))
 }
 
 pub fn load(path: &Path) -> Result<Config, AixError> {
@@ -425,6 +428,17 @@ profiles:
     fn find_none_does_not_panic() {
         // Platform dir search shouldn't panic even if dir doesn't exist.
         let _ = find_config_path(None);
+    }
+
+    #[test]
+    fn default_config_dir_is_aix_subdirectory_of_platform_config_dir() {
+        let Some(base_dirs) = BaseDirs::new() else {
+            return;
+        };
+        assert_eq!(
+            default_config_dir(),
+            Some(base_dirs.config_dir().join("aix"))
+        );
     }
 
     #[test]
