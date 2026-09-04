@@ -12,10 +12,16 @@ pub struct Cache {
     disabled: bool,
 }
 
+const CACHE_VERSION: u8 = 1;
+
 #[derive(Serialize, Deserialize)]
 struct CacheEntry {
+    #[serde(default)]
+    version: u8,
     fetched_at: u64,
     data: Value,
+    #[serde(default)]
+    key_suffix: Option<String>,
 }
 
 impl Cache {
@@ -49,6 +55,18 @@ impl Cache {
             let user_id = index.get(&key_suffix(api_key))?.clone();
             let content = std::fs::read_to_string(dir.join(format!("{user_id}.json"))).ok()?;
             let entry: CacheEntry = serde_json::from_str(&content).ok()?;
+            if entry.version != CACHE_VERSION {
+                return None;
+            }
+            let suffix = key_suffix(api_key);
+            // Responses without a keys list are scoped to the key that fetched them.
+            // Entries written by older versions have no scope marker, so they miss and
+            // refresh instead of reusing a possibly wrong per-key response.
+            if data_is_key_scoped(&entry.data)
+                && entry.key_suffix.as_deref() != Some(suffix.as_str())
+            {
+                return None;
+            }
             if self.ttl_secs > 0 {
                 let age = now_secs().saturating_sub(entry.fetched_at);
                 if age >= self.ttl_secs {
@@ -66,12 +84,19 @@ impl Cache {
         let _ = (|| -> std::io::Result<()> {
             let dir = self.endpoint_dir(base_url);
             std::fs::create_dir_all(&dir)?;
-            let user_id = derive_user_id(api_key, data);
+            let key_scoped = data_is_key_scoped(data);
+            let user_id = if key_scoped {
+                format!("key:{}", fnv1a_hex(api_key.as_bytes()))
+            } else {
+                derive_user_id(api_key, data)
+            };
             // Load index BEFORE writing data file to narrow the TOCTOU window
             let mut index = load_index(&dir);
             let entry = CacheEntry {
+                version: CACHE_VERSION,
                 fetched_at: now_secs(),
                 data: data.clone(),
+                key_suffix: key_scoped.then(|| key_suffix(api_key)),
             };
             let json = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
             write_atomic(&dir.join(format!("{user_id}.json")), &json)?;
@@ -121,6 +146,10 @@ fn derive_user_id(api_key: &str, data: &Value) -> String {
         return uid.to_string();
     }
     format!("key:{}", fnv1a_hex(api_key.as_bytes()))
+}
+
+fn data_is_key_scoped(data: &Value) -> bool {
+    data.get("keys").and_then(|v| v.as_array()).is_none()
 }
 
 fn load_index(dir: &Path) -> HashMap<String, String> {
@@ -236,6 +265,55 @@ mod tests {
         assert_eq!(result["user_id"], "u-test");
         assert_eq!(result["spend"], 2.5);
         assert!(fetched_at > 0);
+    }
+
+    #[test]
+    fn key_scoped_entries_do_not_share_a_user_file() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let first = serde_json::json!({ "user_id": "u-shared", "spend": 1.0 });
+        let second = serde_json::json!({ "user_id": "u-shared", "spend": 2.0 });
+
+        cache.put("https://api.example.com", "sk-first1", &first);
+        cache.put("https://api.example.com", "sk-second", &second);
+
+        assert_eq!(
+            cache.get("https://api.example.com", "sk-first1").unwrap().0["spend"],
+            1.0
+        );
+        assert_eq!(
+            cache.get("https://api.example.com", "sk-second").unwrap().0["spend"],
+            2.0
+        );
+    }
+
+    #[test]
+    fn legacy_key_scoped_entry_without_marker_is_not_reused() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
+        std::fs::create_dir_all(&endpoint_dir).unwrap();
+        std::fs::write(
+            endpoint_dir.join("index.json"),
+            serde_json::json!({ "1111": "shared", "2222": "shared" }).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            endpoint_dir.join("shared.json"),
+            serde_json::json!({
+                "fetched_at": now_secs(),
+                "data": { "user_id": "u-shared", "spend": 1.0 }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(cache
+            .get("https://api.example.com", "sk-first1111")
+            .is_none());
+        assert!(cache
+            .get("https://api.example.com", "sk-second2222")
+            .is_none());
     }
 
     #[test]
