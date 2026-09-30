@@ -93,13 +93,26 @@ impl LiteLlmAdminClient {
 
 fn map_admin_error(error: TransportError) -> AixError {
     match error {
-        TransportError::Gateway { status: 429, body } => {
+        TransportError::Gateway {
+            status: 429,
+            body,
+            safe_body,
+        } => {
             if let Some((spend, max_budget)) = parse_budget_exceeded(&body) {
                 AixError::BudgetExceeded { spend, max_budget }
             } else {
-                AixError::GatewayError { status: 429, body }
+                AixError::GatewayError {
+                    status: 429,
+                    body: safe_body,
+                }
             }
         }
+        TransportError::Gateway {
+            status, safe_body, ..
+        } => AixError::GatewayError {
+            status,
+            body: safe_body,
+        },
         error => error.into_aix_error(),
     }
 }
@@ -307,6 +320,32 @@ mod tests {
             } if body == "Invalid API key: [redacted]"
         ));
         assert!(!err.to_string().contains("test-key"));
+    }
+
+    #[tokio::test]
+    async fn json_error_body_redacts_credentials_without_changing_field_names() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(KEY_INFO_PATH))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "message": "credential age rejected",
+                "api_key": "other-key",
+                "access_token": "other-token",
+                "metadata": { "token": "nested-token" }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LiteLlmAdminClient::new(server.uri(), "age");
+        let err = client.user_info().await.unwrap_err();
+        let AixError::GatewayError { status: 403, body } = err else {
+            panic!("expected GatewayError, got {err:?}");
+        };
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(body["message"], "credential [redacted] rejected");
+        assert!(body.get("api_key").is_none());
+        assert!(body.get("access_token").is_none());
+        assert!(body.get("metadata").is_none());
     }
 
     #[tokio::test]

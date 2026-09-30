@@ -56,16 +56,7 @@ impl Cache {
             let dir = self.endpoint_dir(base_url);
             let index = load_index(&dir);
             let identity = key_identity(api_key);
-            let legacy_suffix = legacy_key_suffix(api_key);
-            let user_id = index
-                .get(&identity)
-                .or_else(|| {
-                    legacy_suffix
-                        .as_deref()
-                        .filter(|legacy| *legacy != identity)
-                        .and_then(|legacy| index.get(legacy))
-                })?
-                .clone();
+            let user_id = index.get(&identity)?.clone();
             let content = std::fs::read_to_string(dir.join(format!("{user_id}.json"))).ok()?;
             let entry: CacheEntry = serde_json::from_str(&content).ok()?;
             if entry.version != CACHE_VERSION {
@@ -82,11 +73,9 @@ impl Cache {
             // Responses without a keys list are scoped to the key that fetched them.
             // Entries written by older versions have no scope marker, so they miss and
             // refresh instead of reusing a possibly wrong per-key response.
-            let entry_matches_key = entry.key_suffix.as_deref() == Some(identity.as_str())
-                || legacy_suffix
-                    .as_deref()
-                    .is_some_and(|legacy| entry.key_suffix.as_deref() == Some(legacy));
-            if data_is_key_scoped(&entry.data) && !entry_matches_key {
+            if data_is_key_scoped(&entry.data)
+                && entry.key_suffix.as_deref() != Some(identity.as_str())
+            {
                 return None;
             }
             if self.ttl_secs > 0 {
@@ -181,13 +170,6 @@ fn key_identity_from_name(key_name: &str) -> String {
         .strip_prefix("sk-short-")
         .map(str::to_owned)
         .unwrap_or_else(|| key_identity(key_name))
-}
-
-fn legacy_key_suffix(api_key: &str) -> Option<String> {
-    let start = api_key.len().saturating_sub(4);
-    api_key
-        .is_char_boundary(start)
-        .then(|| api_key[start..].to_string())
 }
 
 fn derive_user_id(api_key: &str, data: &Value) -> String {
@@ -453,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn get_accepts_existing_cache_indexes_for_short_keys() {
+    fn get_does_not_reuse_legacy_short_key_indexes() {
         let dir = TempDir::new().unwrap();
         let cache = test_cache(&dir);
         let endpoint_dir = cache.endpoint_dir("https://api.example.com");
@@ -475,10 +457,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            cache.get("https://api.example.com", "ab").unwrap().0["spend"],
-            1.0
-        );
+        assert!(cache.get("https://api.example.com", "ab").is_none());
     }
 
     #[test]
