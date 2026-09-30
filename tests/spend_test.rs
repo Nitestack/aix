@@ -101,16 +101,25 @@ async fn spend_falls_back_to_user_totals_when_no_key_match() {
 }
 
 #[tokio::test]
-async fn spend_json_returns_key_info_without_secret() {
+async fn spend_json_returns_versioned_aix_data_without_upstream_fields() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/key/info"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "key": "server-key",
             "info": {
-                "spend": 1.23,
+                "spend": 99.0,
+                "max_budget": 1000.0,
                 "token": "server-key",
-                "key_name": "sk-...1234"
+                "key_name": "sk-...1234",
+                "keys": [
+                    {
+                        "key_name": "sk-...1234",
+                        "spend": 1.23,
+                        "max_budget": 5.0,
+                        "metadata": { "token": "nested-private-token" }
+                    }
+                ]
             }
         })))
         .mount(&server)
@@ -120,7 +129,7 @@ async fn spend_json_returns_key_info_without_secret() {
     let cache_dir = TempDir::new().unwrap();
     let config = write_config(&dir, &server.uri(), "sk-test1234");
 
-    let output = Command::cargo_bin("aix")
+    let after = Command::cargo_bin("aix")
         .unwrap()
         .env("AIX_CACHE_DIR", cache_dir.path())
         .args([
@@ -133,11 +142,37 @@ async fn spend_json_returns_key_info_without_secret() {
         .output()
         .unwrap();
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(after.status.success());
+    let before = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_CACHE_DIR", cache_dir.path())
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "--json",
+            "spend",
+            "test",
+        ])
+        .output()
+        .unwrap();
+    assert!(before.status.success());
+    assert_eq!(before.stdout, after.stdout);
+
+    let stdout = String::from_utf8(after.stdout).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed["spend"], 1.23);
-    assert!(!stdout.contains("server-key"));
+    assert_eq!(parsed["schema_version"], 1);
+    assert_eq!(parsed["command"], "spend");
+    assert_eq!(parsed["data"]["spend"], 1.23);
+    assert_eq!(parsed["data"]["max_budget"], 5.0);
+    for upstream_field in ["key", "token", "key_name", "keys", "user_id", "metadata"] {
+        assert!(
+            parsed["data"].get(upstream_field).is_none(),
+            "unexpected upstream field {upstream_field}: {stdout}"
+        );
+    }
+    for secret in ["server-key", "nested-private-token", "sk-test1234"] {
+        assert!(!stdout.contains(secret), "leaked {secret}: {stdout}");
+    }
 }
 
 #[tokio::test]
@@ -362,4 +397,153 @@ async fn spend_output_has_no_ansi_codes_when_piped() {
         "expected no ANSI codes, got: {stdout:?}"
     );
     assert!(stdout.contains("90% used"));
+}
+
+#[tokio::test]
+async fn spend_auth_failure_uses_auth_exit_code_and_never_prints_secrets() {
+    let server = MockServer::start().await;
+    let api_key = "sk-auth-secret-1234";
+    Mock::given(method("GET"))
+        .and(path("/key/info"))
+        .and(header("Authorization", format!("Bearer {api_key}")))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "message": format!("credential {api_key} rejected"),
+            "access_token": "upstream-token-secret"
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), api_key);
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_CACHE_DIR", cache_dir.path())
+        .args([
+            "--json",
+            "--config",
+            config.to_str().unwrap(),
+            "spend",
+            "test",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("403"), "unexpected diagnostic: {stderr}");
+    assert!(
+        !stderr.contains(api_key),
+        "secret leaked to stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("upstream-token-secret"),
+        "upstream token leaked to stderr: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn spend_gateway_failure_uses_gateway_exit_code_and_empty_json_stdout() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/key/info"))
+        .respond_with(ResponseTemplate::new(502).set_body_string("gateway unavailable"))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), "sk-network-secret-5678");
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_CACHE_DIR", cache_dir.path())
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "spend",
+            "test",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(5));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("502"), "unexpected diagnostic: {stderr}");
+    assert!(!stderr.contains("sk-network-secret-5678"));
+}
+
+#[tokio::test]
+async fn spend_transport_failure_does_not_leak_url_or_api_key_secrets() {
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let api_key = "sk-transport-secret-9012";
+    let url_secret = "url-secret-marker";
+    let config = write_config(&dir, &format!("http://127.0.0.1:1/{url_secret}"), api_key);
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_CACHE_DIR", cache_dir.path())
+        .args([
+            "--json",
+            "--config",
+            config.to_str().unwrap(),
+            "spend",
+            "test",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(5));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains(api_key), "API key leaked: {stderr}");
+    assert!(!stderr.contains(url_secret), "URL secret leaked: {stderr}");
+}
+
+#[tokio::test]
+async fn budget_failure_uses_exit_code_six_and_json_stdout_stays_empty() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/key/info"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({
+            "error": {
+                "message": "Budget exceeded. Current cost: 50.17, Max budget: 50.0",
+                "type": "budget_exceeded"
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), "sk-budget-test-9876");
+
+    let human = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_CACHE_DIR", cache_dir.path())
+        .args(["--config", config.to_str().unwrap(), "spend", "test"])
+        .output()
+        .unwrap();
+    assert_eq!(human.status.code(), Some(6));
+    assert!(String::from_utf8_lossy(&human.stdout).contains("50.17"));
+    assert!(String::from_utf8_lossy(&human.stderr).contains("budget exceeded"));
+
+    let json = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_CACHE_DIR", cache_dir.path())
+        .args([
+            "--json",
+            "--config",
+            config.to_str().unwrap(),
+            "spend",
+            "test",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(json.status.code(), Some(6));
+    assert!(json.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&json.stderr).contains("budget exceeded"));
 }

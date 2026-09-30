@@ -109,6 +109,14 @@ pub enum AixError {
     #[error("exec requires a command after --")]
     ExecNoCommand,
 
+    #[error(
+        "`aix shell` does not accept commands after --; use `aix exec` to run a command directly"
+    )]
+    ShellExtraArgs,
+
+    #[error("JSON output is only supported by `aix profiles` and `aix spend`")]
+    JsonUnsupportedCommand,
+
     #[error("executable not found: {program}")]
     ExecutableNotFound { program: String },
 
@@ -130,6 +138,52 @@ pub enum AixError {
 
     #[error("aix spend requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
     NotLiteLlm,
+}
+
+impl AixError {
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::UnknownFormat { .. }
+            | Self::ParseError { .. }
+            | Self::UnknownDefaultProfile(_)
+            | Self::NoModelConfigured
+            | Self::EmptyModelDefault { .. }
+            | Self::EmptyModelAliasName { .. }
+            | Self::EmptyModelAliasTarget { .. }
+            | Self::AmbiguousSecretSource { .. }
+            | Self::NoConfigFile
+            | Self::ProfileNotFound { .. }
+            | Self::NoProfile
+            | Self::DuplicateLabel { .. }
+            | Self::NoProfilesConfigured
+            | Self::InvalidEnvironmentVariableName { .. }
+            | Self::SelectionCancelled
+            | Self::NoInteractiveTerminal
+            | Self::ExecNoCommand
+            | Self::ShellExtraArgs
+            | Self::JsonUnsupportedCommand
+            | Self::ExecutableNotFound { .. }
+            | Self::NotLiteLlm => 2,
+            Self::SecretMissingEnvVar { .. }
+            | Self::SecretFileRead { .. }
+            | Self::SecretCommandFailed { .. }
+            | Self::SecretCommandSpawn { .. }
+            | Self::SecretCommandEncoding { .. }
+            | Self::EnvFileLoad { .. } => 3,
+            Self::GatewayError {
+                status: 401 | 403, ..
+            } => 4,
+            Self::GatewayError { .. } | Self::HttpError(_) => 5,
+            Self::BudgetExceeded { .. } => 6,
+            Self::NotImplemented(_) | Self::ProcessSpawn { .. } => 1,
+        }
+    }
+}
+
+pub fn exit_code(error: &color_eyre::Report) -> i32 {
+    error
+        .downcast_ref::<AixError>()
+        .map_or(1, AixError::exit_code)
 }
 
 #[cfg(test)]
@@ -214,5 +268,50 @@ mod tests {
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
         };
         assert!(e.to_string().contains("claude"), "got: {}", e);
+    }
+
+    #[test]
+    fn exit_codes_use_the_documented_process_categories() {
+        assert_eq!(AixError::NoConfigFile.exit_code(), 2);
+        assert_eq!(AixError::ShellExtraArgs.exit_code(), 2);
+        assert_eq!(
+            AixError::ExecutableNotFound {
+                program: "missing-tool".to_string()
+            }
+            .exit_code(),
+            2
+        );
+        assert_eq!(
+            AixError::SecretMissingEnvVar {
+                name: "AIX_KEY".to_string()
+            }
+            .exit_code(),
+            3
+        );
+        assert_eq!(
+            AixError::GatewayError {
+                status: 403,
+                body: "forbidden".to_string()
+            }
+            .exit_code(),
+            4
+        );
+        assert_eq!(
+            AixError::GatewayError {
+                status: 502,
+                body: "unavailable".to_string()
+            }
+            .exit_code(),
+            5
+        );
+        assert_eq!(
+            AixError::BudgetExceeded {
+                spend: 11.0,
+                max_budget: 10.0
+            }
+            .exit_code(),
+            6
+        );
+        assert_eq!(AixError::NotImplemented("example").exit_code(), 1);
     }
 }

@@ -43,12 +43,16 @@ pub fn resolve_launch_env(
 
 pub fn run_named_tool(
     name: &str,
-    format: config::ApiFormat,
     profile: Option<String>,
     config_path: Option<PathBuf>,
     dry_run: bool,
     args: Vec<String>,
 ) -> Result<()> {
+    let format = if name == "claude" {
+        config::ApiFormat::Anthropic
+    } else {
+        config::ApiFormat::OpenAi
+    };
     let env = resolve_launch_env(profile, config_path, Some(format))?;
     run_command(name, &args, &env, dry_run)
 }

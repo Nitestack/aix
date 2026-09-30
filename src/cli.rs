@@ -12,6 +12,10 @@ pub struct Cli {
     #[arg(long, global = true, env = "AIX_CONFIG")]
     pub config: Option<PathBuf>,
 
+    /// Emit a stable JSON envelope for supported informational commands
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -19,11 +23,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// List available profiles
-    Profiles {
-        /// Emit profiles as a JSON array (no secrets)
-        #[arg(long)]
-        json: bool,
-    },
+    Profiles,
     /// Print environment variables for the selected profile
     Env {
         /// Profile name (positional; overrides the global --profile flag)
@@ -63,9 +63,6 @@ pub enum Command {
     Spend {
         /// Profile name (positional; overrides the global --profile flag)
         profile: Option<String>,
-        /// Output raw JSON instead of formatted text
-        #[arg(long)]
-        json: bool,
         /// Always fetch fresh data, bypassing the cache (result is still cached)
         #[arg(long)]
         no_cache: bool,
@@ -80,6 +77,12 @@ pub enum Command {
     /// Usage: aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]
     #[command(external_subcommand)]
     Tool(Vec<String>),
+}
+
+impl Command {
+    pub fn supports_json(&self) -> bool {
+        matches!(self, Self::Profiles | Self::Spend { .. })
+    }
 }
 
 #[derive(Subcommand)]

@@ -100,7 +100,7 @@ fn profiles_text_uses_name_when_no_label() {
 // --- profiles --json ---
 
 #[test]
-fn profiles_json_is_valid_json_array_sorted_by_name() {
+fn profiles_json_is_one_versioned_envelope_with_sorted_profiles() {
     let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
     file.write_str(CONFIG).unwrap();
 
@@ -115,13 +115,42 @@ fn profiles_json_is_valid_json_array_sorted_by_name() {
 
     let parsed: serde_json::Value =
         serde_json::from_slice(&out).expect("output must be valid JSON");
-    let arr = parsed.as_array().expect("must be an array");
+    assert_eq!(parsed["schema_version"], 1);
+    assert_eq!(parsed["command"], "profiles");
+    let arr = parsed["data"].as_array().expect("data must be an array");
     assert_eq!(arr.len(), 2);
     // sorted by name: fast < work
     assert_eq!(arr[0]["name"], "fast");
     assert_eq!(arr[0]["label"], "Fast model");
     assert_eq!(arr[1]["name"], "work");
     assert_eq!(arr[1]["label"], "Work account");
+}
+
+#[test]
+fn global_json_before_profiles_matches_subcommand_json_flag() {
+    let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    file.write_str(CONFIG).unwrap();
+
+    let after = cmd()
+        .env("AIX_CONFIG", file.path())
+        .args(["profiles", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let before = cmd()
+        .env("AIX_CONFIG", file.path())
+        .args(["--json", "profiles"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(before, after);
+    let parsed: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(parsed["command"], "profiles");
 }
 
 #[test]
@@ -160,7 +189,7 @@ fn profiles_json_label_falls_back_to_name() {
         .clone();
 
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let arr = parsed["data"].as_array().unwrap();
     assert_eq!(arr[0]["name"], "alpha");
     assert_eq!(arr[0]["label"], "alpha");
 }

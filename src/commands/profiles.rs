@@ -1,5 +1,6 @@
 use crate::config;
 use crate::error::AixError;
+use crate::output;
 use color_eyre::Result;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -12,7 +13,11 @@ pub fn run(config_path: Option<PathBuf>, json: bool) -> Result<()> {
     let profiles = config::sorted_profiles(&cfg)?;
 
     if json {
-        print_json(&profiles)?;
+        let entries: Vec<ProfileEntry<'_>> = profiles
+            .iter()
+            .map(|(name, label)| ProfileEntry { name, label })
+            .collect();
+        output::print_json("profiles", entries)?;
     } else {
         print_text(&profiles);
     }
@@ -23,17 +28,6 @@ pub fn run(config_path: Option<PathBuf>, json: bool) -> Result<()> {
 struct ProfileEntry<'a> {
     name: &'a str,
     label: &'a str,
-}
-
-fn print_json(profiles: &[(&str, String)]) -> Result<()> {
-    let entries: Vec<ProfileEntry<'_>> = profiles
-        .iter()
-        .map(|(name, label)| ProfileEntry { name, label })
-        .collect();
-    let mut out = serde_json::to_string_pretty(&entries)?;
-    out.push('\n');
-    print!("{out}");
-    Ok(())
 }
 
 fn print_text(profiles: &[(&str, String)]) {

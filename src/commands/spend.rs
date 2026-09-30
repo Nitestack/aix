@@ -3,8 +3,10 @@ use crate::commands::env::resolve_profile;
 use crate::config;
 use crate::error::AixError;
 use crate::gateway::LiteLlmAdminClient;
+use crate::output;
 use color_eyre::Result;
 use owo_colors::{OwoColorize, Rgb, Stream::Stdout};
+use serde::Serialize;
 use std::path::PathBuf;
 
 pub async fn run(
@@ -56,7 +58,11 @@ pub async fn run(
                     (fresh, None)
                 }
                 Err(AixError::BudgetExceeded { spend, max_budget }) => {
-                    let fresh = serde_json::json!({ "spend": spend, "max_budget": max_budget });
+                    let fresh = serde_json::json!({
+                        "spend": spend,
+                        "max_budget": max_budget,
+                        "_aix_budget_exceeded": true
+                    });
                     cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);
                     (fresh, None)
                 }
@@ -66,11 +72,15 @@ pub async fn run(
     };
 
     if json {
-        let mut out = serde_json::to_string_pretty(&data)?;
-        out.push('\n');
-        print!("{out}");
+        if let Some(error) = budget_error(&data) {
+            return Err(error.into());
+        }
+        output::print_json("spend", spend_summary(&data, api_key.expose_secret()))?;
     } else {
         print_human(&data, api_key.expose_secret(), cached_at);
+        if let Some(error) = budget_error(&data) {
+            return Err(error.into());
+        }
     }
     Ok(())
 }
@@ -93,6 +103,51 @@ fn format_age(age_secs: u64) -> String {
         3600..=86399 => format!("{}h ago", age_secs / 3600),
         _ => format!("{}d ago", age_secs / 86400),
     }
+}
+
+fn budget_error(data: &serde_json::Value) -> Option<AixError> {
+    data.get("_aix_budget_exceeded")
+        .and_then(serde_json::Value::as_bool)
+        .filter(|exceeded| *exceeded)
+        .map(|_| AixError::BudgetExceeded {
+            spend: data
+                .get("spend")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0),
+            max_budget: data
+                .get("max_budget")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0),
+        })
+}
+
+#[derive(Serialize)]
+struct SpendSummary {
+    spend: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_budget: Option<f64>,
+}
+
+fn spend_summary(data: &serde_json::Value, api_key: &str) -> SpendSummary {
+    let keys: &[serde_json::Value] = data
+        .get("keys")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+
+    let (spend, max_budget) = if let Some(key) = find_matching_key(keys, api_key) {
+        (
+            key.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            key.get("max_budget").and_then(|v| v.as_f64()),
+        )
+    } else {
+        (
+            data.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            data.get("max_budget").and_then(|v| v.as_f64()),
+        )
+    };
+
+    SpendSummary { spend, max_budget }
 }
 
 const GRADIENT_STOPS: [(f64, Rgb); 4] = [
@@ -129,28 +184,14 @@ fn position_color(index: usize, bar_len: usize) -> Rgb {
 }
 
 fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) {
-    let keys: &[serde_json::Value] = data
-        .get("keys")
-        .and_then(|v| v.as_array())
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-
-    let (spend, budget) = if let Some(key) = find_matching_key(keys, api_key) {
-        let spend = key.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let budget = key.get("max_budget").and_then(|v| v.as_f64());
-        (spend, budget)
-    } else {
-        let spend = data.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let budget = data.get("max_budget").and_then(|v| v.as_f64());
-        (spend, budget)
-    };
+    let SpendSummary { spend, max_budget } = spend_summary(data, api_key);
 
     let cache_suffix = cached_at.map_or(String::new(), |t| {
         let age = crate::cache::now_secs().saturating_sub(t);
         format!("  ·  cached {}", format_age(age))
     });
 
-    if let Some(b) = budget {
+    if let Some(b) = max_budget {
         let remaining = b - spend;
         let pct_used = if b > 0.0 {
             (spend / b * 100.0).clamp(0.0, 100.0)

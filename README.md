@@ -20,6 +20,7 @@ Profile-aware credential injector for AI tools backed by a LiteLLM-compatible AI
 - [Shell integration](#shell-integration)
 - [Running tools directly](#running-tools-directly)
 - [Spend and budget](#spend-and-budget)
+- [JSON output and exit codes](#json-output-and-exit-codes)
 - [Cache](#cache)
 - [Security notes](#security-notes)
 
@@ -492,8 +493,11 @@ aix opencode work --dry-run
 # Human-readable list
 aix profiles
 
-# JSON array of { name, label } objects (no secrets)
+# JSON envelope with { name, label } objects in data (no secrets)
 aix profiles --json
+
+# The global flag is also accepted before the command
+aix --json profiles
 ```
 
 ---
@@ -506,8 +510,11 @@ aix profiles --json
 # Show spend for the default or selected profile
 aix spend work
 
-# JSON output — full /user/info payload
+# JSON envelope containing aix's spend and optional max_budget fields
 aix spend work --json
+
+# The global flag is also accepted before the command
+aix --json spend work
 
 # Always fetch fresh data (result is still cached for future calls)
 aix spend work --no-cache
@@ -523,6 +530,40 @@ $41.53 of $500.00  ·  $458.47 available (92%)  ·  cached 5m ago
 Responses are cached locally for 1 hour by default (configurable via `[cache]`). The `·  cached N ago` suffix appears when the result was served from cache. Use `--no-cache` to bypass the cache for a single call; the fresh response is still written to cache for subsequent calls.
 
 `aix spend` requires a LiteLLM-compatible gateway. If `gateway` is set in your config to a non-LiteLLM value, `aix spend` will refuse to run with a clear error. Leaving `gateway` unset (or setting it to `"litellm"`) is accepted.
+
+---
+
+## JSON output and exit codes
+
+The global `--json` flag is currently supported by `profiles` and `spend`. It can appear before or after the command. Existing forms such as `aix profiles --json` and `aix spend work --json` remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
+
+JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty. The envelope is owned by `aix`:
+
+```json
+{
+  "schema_version": 1,
+  "command": "profiles",
+  "data": [
+    { "name": "work", "label": "Work" }
+  ]
+}
+```
+
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. It does not expose the raw LiteLLM response, credentials, cache annotations, or unrelated upstream fields.
+
+When LiteLLM reports a budget-exceeded response, `aix spend` returns exit code `6`. Human mode still shows the spend summary; JSON mode treats it as an error and leaves stdout empty.
+
+Process exit codes are stable:
+
+| Code | Meaning |
+|---:|---|
+| `0` | Success |
+| `1` | Uncategorized or internal failure |
+| `2` | CLI or configuration validation failure |
+| `3` | Secret resolution failure |
+| `4` | Authentication or authorization failure |
+| `5` | Network or gateway failure |
+| `6` | Budget or policy failure |
 
 ---
 
