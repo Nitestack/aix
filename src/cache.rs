@@ -55,8 +55,11 @@ impl Cache {
         (|| {
             let dir = self.endpoint_dir(base_url);
             let index = load_index(&dir);
-            let identity = key_identity(api_key);
-            let user_id = index.get(&identity)?.clone();
+            let identities = key_identities(api_key);
+            let user_id = identities
+                .iter()
+                .find_map(|identity| index.get(identity))?
+                .clone();
             let content = std::fs::read_to_string(dir.join(format!("{user_id}.json"))).ok()?;
             let entry: CacheEntry = serde_json::from_str(&content).ok()?;
             if entry.version != CACHE_VERSION {
@@ -73,7 +76,10 @@ impl Cache {
             // Entries written by older versions have no scope marker, so they miss and
             // refresh instead of reusing a possibly wrong per-key response.
             if data_is_key_scoped(&entry.data)
-                && entry.key_identity.as_deref() != Some(identity.as_str())
+                && !entry
+                    .key_identity
+                    .as_deref()
+                    .is_some_and(|cached| identities.iter().any(|identity| identity == cached))
             {
                 return None;
             }
@@ -102,16 +108,19 @@ impl Cache {
             };
             // Load index BEFORE writing data file to narrow the TOCTOU window
             let mut index = load_index(&dir);
+            let identity = key_identity(api_key);
             let entry = CacheEntry {
                 version: CACHE_VERSION,
                 key_data_version: KEY_DATA_SANITIZATION_VERSION,
                 fetched_at: now_secs(),
                 data: data.clone(),
-                key_identity: key_scoped.then(|| key_identity(api_key)),
+                key_identity: key_scoped.then_some(identity),
             };
             let json = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
             write_atomic(&dir.join(format!("{user_id}.json")), &json)?;
-            index.insert(key_identity(api_key), user_id.clone());
+            for identity in key_identities(api_key) {
+                index.insert(identity, user_id.clone());
+            }
             if let Some(keys) = data.get("keys").and_then(|v| v.as_array()) {
                 for k in keys {
                     if let Some(kn) = k.get("key_name").and_then(|v| v.as_str()) {
@@ -150,17 +159,40 @@ impl Cache {
 pub(crate) fn key_identity(api_key: &str) -> String {
     let characters = api_key.chars().collect::<Vec<_>>();
     if characters.len() <= 4 {
-        return fnv1a_hex(api_key.as_bytes());
+        return hashed_identity("short", api_key);
     }
     characters[characters.len() - 4..].iter().collect()
 }
 
 pub(crate) fn sanitized_key_name(api_key: &str) -> String {
-    let identity = key_identity(api_key);
-    if api_key.chars().count() <= 4 {
+    if api_key.starts_with("sk-short-") {
+        return api_key.to_string();
+    }
+    let masked_suffix = api_key.strip_prefix("sk-...");
+    let identity_source = masked_suffix.unwrap_or(api_key);
+    let identity = if masked_suffix.is_some() && identity_source.chars().count() <= 4 {
+        hashed_identity("suffix", identity_source)
+    } else {
+        key_identity(identity_source)
+    };
+    if identity_source.chars().count() <= 4 {
         format!("sk-short-{identity}")
     } else {
         format!("sk-...{identity}")
+    }
+}
+
+pub(crate) fn key_identity_matches_name(api_key: &str, key_name: &str) -> bool {
+    if let Some(name_identity) = key_name.strip_prefix("sk-short-") {
+        let identity = key_identity(api_key);
+        let identity = if api_key.chars().count() <= 4 {
+            identity
+        } else {
+            hashed_identity("suffix", &identity)
+        };
+        name_identity == identity
+    } else {
+        key_name.ends_with(&key_identity(api_key))
     }
 }
 
@@ -169,6 +201,22 @@ fn key_identity_from_name(key_name: &str) -> String {
         .strip_prefix("sk-short-")
         .map(str::to_owned)
         .unwrap_or_else(|| key_identity(key_name))
+}
+
+fn key_identities(api_key: &str) -> Vec<String> {
+    let identity = key_identity(api_key);
+    if api_key.chars().count() <= 4 {
+        return vec![identity];
+    }
+    vec![identity.clone(), hashed_identity("suffix", &identity)]
+}
+
+fn hashed_identity(domain: &str, value: &str) -> String {
+    let mut input = Vec::with_capacity(domain.len() + value.len() + 1);
+    input.extend_from_slice(domain.as_bytes());
+    input.push(b':');
+    input.extend_from_slice(value.as_bytes());
+    fnv1a_hex(&input)
 }
 
 fn derive_user_id(api_key: &str, data: &Value) -> String {
@@ -242,19 +290,29 @@ mod tests {
 
     #[test]
     fn short_key_identity_is_hashed() {
-        assert_eq!(key_identity("ab"), fnv1a_hex(b"ab"));
+        assert_eq!(key_identity("ab"), fnv1a_hex(b"short:ab"));
     }
 
     #[test]
     fn four_character_key_identity_is_hashed() {
-        assert_eq!(key_identity("abcd"), fnv1a_hex(b"abcd"));
+        assert_eq!(key_identity("abcd"), fnv1a_hex(b"short:abcd"));
     }
 
     #[test]
-    fn sanitized_short_key_name_preserves_an_opaque_cache_identity() {
+    fn sanitized_short_key_name_preserves_a_stable_cache_identity() {
         let name = sanitized_key_name("ab");
         assert_eq!(key_identity_from_name(&name), key_identity("ab"));
         assert!(!name.contains("ab"));
+    }
+
+    #[test]
+    fn masked_short_key_names_are_sanitized_and_match_long_credentials() {
+        let name = sanitized_key_name("sk-...abcd");
+
+        assert_ne!(name, sanitized_key_name("abcd"));
+        assert!(!name.contains("abcd"));
+        assert!(key_identity_matches_name("sk-user-abcd", &name));
+        assert!(!key_identity_matches_name("abcd", &name));
     }
 
     #[test]
@@ -367,8 +425,8 @@ mod tests {
             "user_id": "u-shared",
             "spend": 1.0,
             "keys": [
-                { "key_name": "sk-...A1B2" },
-                { "key_name": "sk-...C3D4" }
+                { "key_name": sanitized_key_name("sk-...A1B2") },
+                { "key_name": sanitized_key_name("sk-...C3D4") }
             ]
         });
         cache.put("https://api.example.com", "sk-A1B2", &data);

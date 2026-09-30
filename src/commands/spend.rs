@@ -79,11 +79,10 @@ fn find_matching_key<'a>(
     keys: &'a [serde_json::Value],
     api_key: &str,
 ) -> Option<&'a serde_json::Value> {
-    let identity = crate::cache::key_identity(api_key);
     keys.iter().find(|k| {
         k.get("key_name")
             .and_then(|v| v.as_str())
-            .is_some_and(|kn| kn.ends_with(&identity))
+            .is_some_and(|kn| crate::cache::key_identity_matches_name(api_key, kn))
     })
 }
 

@@ -268,7 +268,10 @@ mod tests {
         assert!(result.get("key_name").is_none());
         assert!(result.get("token").is_none());
         assert_eq!(result["keys"].as_array().unwrap().len(), 3);
-        assert_eq!(result["keys"][0]["key_name"], "sk-...1234");
+        assert_eq!(
+            result["keys"][0]["key_name"],
+            crate::cache::sanitized_key_name("sk-...1234")
+        );
         assert!(result["keys"][0].get("api_key").is_none());
         assert!(result["keys"][0].get("token").is_none());
         assert!(result["keys"][0].get("metadata").is_none());

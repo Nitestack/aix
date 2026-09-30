@@ -56,10 +56,7 @@ impl GatewayTransport {
         path: &str,
         query: &[(&str, String)],
     ) -> Result<Value, TransportError> {
-        let request = self
-            .inner
-            .get(self.url(path))
-            .header("Authorization", format!("Bearer {}", self.api_key));
+        let request = self.authenticated(self.inner.get(self.url(path)));
         let request = if query.is_empty() {
             request
         } else {
@@ -75,15 +72,17 @@ impl GatewayTransport {
         body: &Value,
     ) -> Result<Value, TransportError> {
         let request = self
-            .inner
-            .post(self.url(path))
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .authenticated(self.inner.post(self.url(path)))
             .json(body);
         self.send_json(request).await
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
+    }
+
+    fn authenticated(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        request.bearer_auth(&self.api_key)
     }
 
     async fn send_json(&self, request: reqwest::RequestBuilder) -> Result<Value, TransportError> {
