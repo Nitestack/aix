@@ -1,8 +1,8 @@
 use crate::cache::Cache;
-use crate::client::LiteLlmClient;
 use crate::commands::env::resolve_profile;
 use crate::config;
 use crate::error::AixError;
+use crate::gateway::LiteLlmAdminClient;
 use color_eyre::Result;
 use owo_colors::{OwoColorize, Rgb, Stream::Stdout};
 use std::path::PathBuf;
@@ -49,7 +49,7 @@ pub async fn run(
     let (data, cached_at) = match hit {
         Some((data, fetched_at)) => (data, Some(fetched_at)),
         None => {
-            let client = LiteLlmClient::new(base_url.expose_secret(), api_key.expose_secret());
+            let client = LiteLlmAdminClient::new(base_url.expose_secret(), api_key.expose_secret());
             match client.user_info().await {
                 Ok(fresh) => {
                     cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);

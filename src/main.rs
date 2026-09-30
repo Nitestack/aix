@@ -4,10 +4,10 @@ use config::ApiFormat;
 
 mod cache;
 mod cli;
-mod client;
 mod commands;
 mod config;
 mod error;
+mod gateway;
 mod secrets;
 
 #[tokio::main]

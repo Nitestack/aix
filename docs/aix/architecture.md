@@ -54,6 +54,22 @@ Owns the `SecretSource` enum and `SecretString` wrapper.
 `SecretString` zeroes its memory on drop. Its `Debug` and `Display` impls
 emit `[secret]` — never the actual value.
 
+### `src/gateway/` — Gateway capability clients
+
+Gateway HTTP responsibilities are split between a shared transport and
+capability-specific clients:
+
+- `transport.rs` owns the normalized bare gateway URL, API key, and bounded
+  `reqwest::Client`; it provides bearer-authenticated JSON request helpers and
+  common HTTP error handling.
+- `openai.rs` exposes OpenAI-compatible `/v1/*` endpoints.
+- `litellm.rs` owns LiteLLM management endpoints such as `/key/info` and
+  `/key/list`. Management data is sanitized before it is returned to command
+  code, and `aix spend` uses this client.
+
+Keep endpoint-specific behavior in the corresponding capability client rather
+than growing a single catch-all gateway client.
+
 ### `src/commands/env.rs` — Profile resolution and env rendering
 
 The `env` subcommand is the core of the tool.  
