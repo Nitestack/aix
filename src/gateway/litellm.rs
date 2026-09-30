@@ -139,7 +139,8 @@ fn sanitize_key_entry(data: Value) -> Option<Value> {
             source
                 .get(field)
                 .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
+                // A short credential has no non-secret suffix to expose.
+                .filter(|value| value.is_ascii() && value.len() > 4)
                 .map(crate::cache::key_suffix)
         });
 
@@ -263,6 +264,27 @@ mod tests {
             "info-token-secret",
             "nested-secret",
         ] {
+            assert!(
+                !serialized.contains(secret),
+                "leaked {secret} in {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitization_never_returns_short_raw_credentials() {
+        let entry = sanitize_key_entry(json!({
+            "api_key": "abcd",
+            "key_name": "wxyz",
+            "token": "1234",
+            "spend": 1.23
+        }))
+        .unwrap();
+
+        assert!(entry.get("key_name").is_none());
+        assert_eq!(entry["spend"], 1.23);
+        let serialized = entry.to_string();
+        for secret in ["abcd", "wxyz", "1234"] {
             assert!(
                 !serialized.contains(secret),
                 "leaked {secret} in {serialized}"
