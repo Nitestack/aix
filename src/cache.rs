@@ -158,24 +158,21 @@ impl Cache {
 
 pub(crate) fn key_identity(api_key: &str) -> String {
     let characters = api_key.chars().collect::<Vec<_>>();
-    if characters.len() <= 4 {
+    if is_short_key(api_key) {
         return hashed_identity("short", api_key);
     }
     characters[characters.len() - 4..].iter().collect()
 }
 
 pub(crate) fn sanitized_key_name(api_key: &str) -> String {
-    if api_key.starts_with("sk-short-") {
-        return api_key.to_string();
-    }
     let masked_suffix = api_key.strip_prefix("sk-...");
     let identity_source = masked_suffix.unwrap_or(api_key);
-    let identity = if masked_suffix.is_some() && identity_source.chars().count() <= 4 {
+    let identity = if masked_suffix.is_some() && is_short_key(identity_source) {
         hashed_identity("suffix", identity_source)
     } else {
         key_identity(identity_source)
     };
-    if identity_source.chars().count() <= 4 {
+    if is_short_key(identity_source) {
         format!("sk-short-{identity}")
     } else {
         format!("sk-...{identity}")
@@ -185,7 +182,7 @@ pub(crate) fn sanitized_key_name(api_key: &str) -> String {
 pub(crate) fn key_identity_matches_name(api_key: &str, key_name: &str) -> bool {
     if let Some(name_identity) = key_name.strip_prefix("sk-short-") {
         let identity = key_identity(api_key);
-        let identity = if api_key.chars().count() <= 4 {
+        let identity = if is_short_key(api_key) {
             identity
         } else {
             hashed_identity("suffix", &identity)
@@ -205,7 +202,7 @@ fn key_identity_from_name(key_name: &str) -> String {
 
 fn key_identities(api_key: &str) -> Vec<String> {
     let identity = key_identity(api_key);
-    if api_key.chars().count() <= 4 {
+    if is_short_key(api_key) {
         return vec![identity];
     }
     vec![identity.clone(), hashed_identity("suffix", &identity)]
@@ -217,6 +214,10 @@ fn hashed_identity(domain: &str, value: &str) -> String {
     input.push(b':');
     input.extend_from_slice(value.as_bytes());
     fnv1a_hex(&input)
+}
+
+fn is_short_key(api_key: &str) -> bool {
+    api_key.chars().count() <= 4
 }
 
 fn derive_user_id(api_key: &str, data: &Value) -> String {

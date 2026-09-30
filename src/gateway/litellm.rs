@@ -311,6 +311,15 @@ mod tests {
     }
 
     #[test]
+    fn sanitizer_does_not_trust_internal_key_name_prefixes() {
+        let raw_key = "sk-short-sensitive-token";
+        let entry = sanitize_key_entry(json!({ "api_key": raw_key })).unwrap();
+
+        assert_ne!(entry["key_name"], raw_key);
+        assert!(!entry.to_string().contains(raw_key));
+    }
+
+    #[test]
     fn sanitization_drops_nested_values_in_scalar_fields() {
         let data = sanitize_key_info(json!({
             "info": {
