@@ -13,11 +13,14 @@ pub struct Cache {
 }
 
 const CACHE_VERSION: u8 = 1;
+const KEY_DATA_SANITIZATION_VERSION: u8 = 1;
 
 #[derive(Serialize, Deserialize)]
 struct CacheEntry {
     #[serde(default)]
     version: u8,
+    #[serde(default)]
+    key_data_version: u8,
     fetched_at: u64,
     data: Value,
     #[serde(default)]
@@ -52,14 +55,14 @@ impl Cache {
         (|| {
             let dir = self.endpoint_dir(base_url);
             let index = load_index(&dir);
-            let suffix = key_suffix(api_key);
+            let identity = key_identity(api_key);
             let legacy_suffix = legacy_key_suffix(api_key);
             let user_id = index
-                .get(&suffix)
+                .get(&identity)
                 .or_else(|| {
                     legacy_suffix
                         .as_deref()
-                        .filter(|legacy| *legacy != suffix)
+                        .filter(|legacy| *legacy != identity)
                         .and_then(|legacy| index.get(legacy))
                 })?
                 .clone();
@@ -68,11 +71,18 @@ impl Cache {
             if entry.version != CACHE_VERSION {
                 return None;
             }
-            let suffix = key_suffix(api_key);
+            if entry.key_data_version < KEY_DATA_SANITIZATION_VERSION
+                && data_has_key_entries(&entry.data)
+            {
+                // Old cached key lists could contain the full value of a short key.
+                // Refresh once to store the new opaque key names instead.
+                return None;
+            }
+            let identity = key_identity(api_key);
             // Responses without a keys list are scoped to the key that fetched them.
             // Entries written by older versions have no scope marker, so they miss and
             // refresh instead of reusing a possibly wrong per-key response.
-            let entry_matches_key = entry.key_suffix.as_deref() == Some(suffix.as_str())
+            let entry_matches_key = entry.key_suffix.as_deref() == Some(identity.as_str())
                 || legacy_suffix
                     .as_deref()
                     .is_some_and(|legacy| entry.key_suffix.as_deref() == Some(legacy));
@@ -106,17 +116,18 @@ impl Cache {
             let mut index = load_index(&dir);
             let entry = CacheEntry {
                 version: CACHE_VERSION,
+                key_data_version: KEY_DATA_SANITIZATION_VERSION,
                 fetched_at: now_secs(),
                 data: data.clone(),
-                key_suffix: key_scoped.then(|| key_suffix(api_key)),
+                key_suffix: key_scoped.then(|| key_identity(api_key)),
             };
             let json = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
             write_atomic(&dir.join(format!("{user_id}.json")), &json)?;
-            index.insert(key_suffix(api_key), user_id.clone());
+            index.insert(key_identity(api_key), user_id.clone());
             if let Some(keys) = data.get("keys").and_then(|v| v.as_array()) {
                 for k in keys {
                     if let Some(kn) = k.get("key_name").and_then(|v| v.as_str()) {
-                        index.insert(key_suffix_from_name(kn), user_id.clone());
+                        index.insert(key_identity_from_name(kn), user_id.clone());
                     }
                 }
             }
@@ -148,7 +159,7 @@ impl Cache {
     }
 }
 
-pub(crate) fn key_suffix(api_key: &str) -> String {
+pub(crate) fn key_identity(api_key: &str) -> String {
     let characters = api_key.chars().collect::<Vec<_>>();
     if characters.len() <= 4 {
         return fnv1a_hex(api_key.as_bytes());
@@ -156,15 +167,20 @@ pub(crate) fn key_suffix(api_key: &str) -> String {
     characters[characters.len() - 4..].iter().collect()
 }
 
-pub(crate) fn short_key_name(api_key: &str) -> String {
-    format!("sk-short-{}", fnv1a_hex(api_key.as_bytes()))
+pub(crate) fn sanitized_key_name(api_key: &str) -> String {
+    let identity = key_identity(api_key);
+    if api_key.chars().count() <= 4 {
+        format!("sk-short-{identity}")
+    } else {
+        format!("sk-...{identity}")
+    }
 }
 
-fn key_suffix_from_name(key_name: &str) -> String {
+fn key_identity_from_name(key_name: &str) -> String {
     key_name
         .strip_prefix("sk-short-")
         .map(str::to_owned)
-        .unwrap_or_else(|| key_suffix(key_name))
+        .unwrap_or_else(|| key_identity(key_name))
 }
 
 fn legacy_key_suffix(api_key: &str) -> Option<String> {
@@ -183,6 +199,12 @@ fn derive_user_id(api_key: &str, data: &Value) -> String {
 
 fn data_is_key_scoped(data: &Value) -> bool {
     data.get("keys").and_then(|v| v.as_array()).is_none()
+}
+
+fn data_has_key_entries(data: &Value) -> bool {
+    data.get("keys")
+        .and_then(Value::as_array)
+        .is_some_and(|keys| !keys.is_empty())
 }
 
 fn load_index(dir: &Path) -> HashMap<String, String> {
@@ -233,24 +255,24 @@ mod tests {
     }
 
     #[test]
-    fn key_suffix_last_4() {
-        assert_eq!(key_suffix("sk-abcdefgh"), "efgh");
+    fn key_identity_uses_last_4_characters() {
+        assert_eq!(key_identity("sk-abcdefgh"), "efgh");
     }
 
     #[test]
-    fn key_suffix_shorter_than_4() {
-        assert_eq!(key_suffix("ab"), fnv1a_hex(b"ab"));
+    fn short_key_identity_is_hashed() {
+        assert_eq!(key_identity("ab"), fnv1a_hex(b"ab"));
     }
 
     #[test]
-    fn key_suffix_exactly_4() {
-        assert_eq!(key_suffix("abcd"), fnv1a_hex(b"abcd"));
+    fn four_character_key_identity_is_hashed() {
+        assert_eq!(key_identity("abcd"), fnv1a_hex(b"abcd"));
     }
 
     #[test]
-    fn short_key_name_preserves_an_opaque_cache_identity() {
-        let name = short_key_name("ab");
-        assert_eq!(key_suffix_from_name(&name), key_suffix("ab"));
+    fn sanitized_short_key_name_preserves_an_opaque_cache_identity() {
+        let name = sanitized_key_name("ab");
+        assert_eq!(key_identity_from_name(&name), key_identity("ab"));
         assert!(!name.contains("ab"));
     }
 
@@ -382,7 +404,7 @@ mod tests {
         let data = serde_json::json!({
             "user_id": "u-short-keys",
             "spend": 1.0,
-            "keys": [{ "key_name": short_key_name("xy") }]
+            "keys": [{ "key_name": sanitized_key_name("xy") }]
         });
         cache.put("https://api.example.com", "sk-source", &data);
 
@@ -394,6 +416,40 @@ mod tests {
         )
         .unwrap();
         assert!(!content.contains("xy"));
+    }
+
+    #[test]
+    fn get_rejects_legacy_aggregate_key_lists_that_may_contain_raw_short_keys() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
+        std::fs::create_dir_all(&endpoint_dir).unwrap();
+        let current_key = "sk-current-1234";
+        let mut index = serde_json::Map::new();
+        index.insert(
+            key_identity(current_key),
+            Value::String("legacy-aggregate".to_string()),
+        );
+        std::fs::write(
+            endpoint_dir.join("index.json"),
+            Value::Object(index).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            endpoint_dir.join("legacy-aggregate.json"),
+            serde_json::json!({
+                "version": CACHE_VERSION,
+                "fetched_at": now_secs(),
+                "data": {
+                    "user_id": "u-legacy",
+                    "keys": [{ "key_name": "sk-...abcd", "spend": 1.0 }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(cache.get("https://api.example.com", current_key).is_none());
     }
 
     #[test]

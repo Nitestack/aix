@@ -79,11 +79,11 @@ fn find_matching_key<'a>(
     keys: &'a [serde_json::Value],
     api_key: &str,
 ) -> Option<&'a serde_json::Value> {
-    let suffix = crate::cache::key_suffix(api_key);
+    let identity = crate::cache::key_identity(api_key);
     keys.iter().find(|k| {
         k.get("key_name")
             .and_then(|v| v.as_str())
-            .is_some_and(|kn| kn.ends_with(&suffix))
+            .is_some_and(|kn| kn.ends_with(&identity))
     })
 }
 
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn find_matching_key_matches_short_credentials_without_exposing_them() {
         let api_key = "abcd";
-        let key_name = crate::cache::short_key_name(api_key);
+        let key_name = crate::cache::sanitized_key_name(api_key);
         let keys = [serde_json::json!({ "key_name": key_name, "spend": 2.0 })];
 
         let matched = find_matching_key(&keys, api_key).unwrap();

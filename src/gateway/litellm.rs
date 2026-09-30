@@ -140,13 +140,7 @@ fn sanitize_key_entry(data: Value) -> Option<Value> {
                 .get(field)
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
-                .map(|value| {
-                    if value.chars().count() <= 4 {
-                        crate::cache::short_key_name(value)
-                    } else {
-                        format!("sk-...{}", crate::cache::key_suffix(value))
-                    }
-                })
+                .map(crate::cache::sanitized_key_name)
         });
 
     let mut object = serde_json::Map::new();
@@ -283,7 +277,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(entry["key_name"], crate::cache::short_key_name("abcd"));
+        assert_eq!(entry["key_name"], crate::cache::sanitized_key_name("abcd"));
         assert_eq!(entry["spend"], 1.23);
         let serialized = entry.to_string();
         for secret in ["abcd", "wxyz", "1234"] {
