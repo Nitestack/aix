@@ -55,6 +55,12 @@
         exampleWslstationConfig = pkgs.writeText "aix-wslstation.toml" (
           builtins.readFile ./nix/wslstation-config.toml
         );
+
+        homeManagerModelConfigs = import ./tests/home-manager-models.nix {
+          inherit pkgs;
+          lib = pkgs.lib;
+          aixModule = ./nix/home-manager.nix;
+        };
       in
       {
         packages = {
@@ -79,10 +85,22 @@
           ];
         };
 
-        # `nix flake check` (or `nix build .#checks.<system>.aix-rs`) builds
-        # the package to verify it compiles.
+        # `nix flake check` builds the package and validates the generated
+        # Home Manager model config.
         checks = {
           aix-rs = aix-rs;
+          aix-home-manager-models = pkgs.runCommand "aix-home-manager-models-check" { } ''
+            grep -Fxq '[models]' ${homeManagerModelConfigs.configured}
+            grep -Fxq 'default = "gateway/model-default"' ${homeManagerModelConfigs.configured}
+            grep -Fxq '[models.aliases]' ${homeManagerModelConfigs.configured}
+            grep -Fxq 'fast = "gateway/model-fast"' ${homeManagerModelConfigs.configured}
+            grep -Fxq '[profiles.work.models]' ${homeManagerModelConfigs.configured}
+            grep -Fxq 'default = "company/model-default"' ${homeManagerModelConfigs.configured}
+            grep -Fxq '[profiles.work.models.aliases]' ${homeManagerModelConfigs.configured}
+            grep -Fxq 'fast = "company/model-fast"' ${homeManagerModelConfigs.configured}
+            ! grep -q 'models' ${homeManagerModelConfigs.legacy}
+            touch $out
+          '';
         };
       }
     )

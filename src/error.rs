@@ -17,6 +17,18 @@ pub enum AixError {
     #[error("default_profile \"{0}\" is not defined in profiles")]
     UnknownDefaultProfile(String),
 
+    #[error("no model specified and no default model is configured; pass --model <MODEL> or configure [models].default or [profiles.<PROFILE>.models].default")]
+    NoModelConfigured,
+
+    #[error("model default in {scope} must be a non-empty model ID")]
+    EmptyModelDefault { scope: String },
+
+    #[error("model alias name in {scope} must not be empty")]
+    EmptyModelAliasName { scope: String },
+
+    #[error("model alias target for {alias:?} in {scope} must not be empty")]
+    EmptyModelAliasTarget { scope: String, alias: String },
+
     #[allow(dead_code)]
     #[error("ambiguous secret source for {field}: specify exactly one of env / file / command")]
     AmbiguousSecretSource { field: String },

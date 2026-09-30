@@ -21,6 +21,8 @@ pub struct Config {
     pub cache: CacheConfig,
     #[serde(default)]
     pub profiles: HashMap<String, Profile>,
+    #[serde(default)]
+    pub models: ModelConfig,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -77,6 +79,18 @@ pub struct Profile {
     /// Additional environment variables injected when this profile is used.
     #[serde(default)]
     pub env: HashMap<String, SecretSource>,
+    #[serde(default)]
+    pub models: ModelConfig,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelConfig {
+    /// A raw model ID used when the caller does not specify one.
+    pub default: Option<String>,
+    /// Local names that resolve to raw model IDs. Alias targets are not resolved recursively.
+    #[serde(default)]
+    pub aliases: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,6 +198,31 @@ pub fn resolve_base_url(
     }
 }
 
+/// Resolve an explicit model name or the selected profile's effective default.
+pub fn resolve_model(
+    requested: Option<&str>,
+    config: &Config,
+    profile: &Profile,
+) -> Result<String, AixError> {
+    if let Some(requested) = requested {
+        let resolved = profile
+            .models
+            .aliases
+            .get(requested)
+            .or_else(|| config.models.aliases.get(requested))
+            .map(String::as_str)
+            .unwrap_or(requested);
+        return Ok(resolved.to_string());
+    }
+    profile
+        .models
+        .default
+        .as_ref()
+        .or(config.models.default.as_ref())
+        .cloned()
+        .ok_or(AixError::NoModelConfigured)
+}
+
 pub fn validate(config: &Config) -> Result<(), AixError> {
     if config.profiles.is_empty() {
         return Err(AixError::NoProfilesConfigured);
@@ -195,6 +234,8 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
         }
     }
 
+    validate_models(&config.models, "models")?;
+
     // Build the effective display label for every profile: explicit label or name as fallback.
     // The interactive selector uses this same set of labels; duplicates make selection ambiguous.
     let mut sorted_names: Vec<&str> = config.profiles.keys().map(String::as_str).collect();
@@ -202,6 +243,7 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
     let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     for name in sorted_names {
         let profile = &config.profiles[name];
+        validate_models(&profile.models, &format!("profiles.{name}.models"))?;
         for env_name in profile.env.keys() {
             if !is_valid_env_name(env_name) {
                 return Err(AixError::InvalidEnvironmentVariableName {
@@ -223,6 +265,36 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
             });
         }
         seen.insert(effective_label, name);
+    }
+
+    Ok(())
+}
+
+fn validate_models(models: &ModelConfig, scope: &str) -> Result<(), AixError> {
+    if models
+        .default
+        .as_deref()
+        .is_some_and(|model| model.trim().is_empty())
+    {
+        return Err(AixError::EmptyModelDefault {
+            scope: scope.to_string(),
+        });
+    }
+
+    let mut aliases: Vec<_> = models.aliases.iter().collect();
+    aliases.sort_by_key(|(alias, _)| *alias);
+    for (alias, target) in aliases {
+        if alias.trim().is_empty() {
+            return Err(AixError::EmptyModelAliasName {
+                scope: scope.to_string(),
+            });
+        }
+        if target.trim().is_empty() {
+            return Err(AixError::EmptyModelAliasTarget {
+                scope: scope.to_string(),
+                alias: alias.clone(),
+            });
+        }
     }
 
     Ok(())
@@ -287,6 +359,12 @@ mod tests {
     const TOML: &str = r#"
 default_profile = "work"
 
+[models]
+default = "global-model"
+
+[models.aliases]
+fast = "global-fast-model"
+
 [endpoint]
 base_url = { env = "AIX_BASE_URL" }
 provider = "litellm"
@@ -294,6 +372,12 @@ provider = "litellm"
 [profiles.work]
 label = "Work"
 api_key = { env = "AIX_API_KEY" }
+
+[profiles.work.models]
+default = "work-model"
+
+[profiles.work.models.aliases]
+fast = "work-fast-model"
 
 [profiles.local]
 label = "Local"
@@ -303,6 +387,10 @@ base_url = "https://local.example.com"
 
     const YAML: &str = r#"
 default_profile: work
+models:
+  default: global-model
+  aliases:
+    fast: global-fast-model
 endpoint:
   base_url:
     env: AIX_BASE_URL
@@ -312,6 +400,10 @@ profiles:
     label: Work
     api_key:
       env: AIX_API_KEY
+    models:
+      default: work-model
+      aliases:
+        fast: work-fast-model
   local:
     label: Local
     api_key: sk-local-key
@@ -320,27 +412,70 @@ profiles:
 
     const JSON: &str = r#"{
   "default_profile": "work",
+  "models": {
+    "default": "global-model",
+    "aliases": { "fast": "global-fast-model" }
+  },
   "endpoint": {
     "base_url": { "env": "AIX_BASE_URL" },
     "provider": "litellm"
   },
   "profiles": {
-    "work": { "label": "Work", "api_key": { "env": "AIX_API_KEY" } },
+    "work": {
+      "label": "Work",
+      "api_key": { "env": "AIX_API_KEY" },
+      "models": {
+        "default": "work-model",
+        "aliases": { "fast": "work-fast-model" }
+      }
+    },
     "local": { "label": "Local", "api_key": "sk-local-key", "base_url": "https://local.example.com" }
   }
 }"#;
 
     const JSON5: &str = r#"{
   default_profile: "work",
+  models: {
+    default: "global-model",
+    aliases: { fast: "global-fast-model" },
+  },
   endpoint: {
     base_url: { env: "AIX_BASE_URL" },
     provider: "litellm",
   },
   profiles: {
-    work: { label: "Work", api_key: { env: "AIX_API_KEY" } },
+    work: {
+      label: "Work",
+      api_key: { env: "AIX_API_KEY" },
+      models: {
+        default: "work-model",
+        aliases: { fast: "work-fast-model" },
+      },
+    },
     local: { label: "Local", api_key: "sk-local-key", base_url: "https://local.example.com" },
   },
 }"#;
+
+    const MODEL_CONFIG: &str = r#"
+[endpoint]
+base_url = "https://example.com"
+
+[models]
+default = "global-model"
+
+[models.aliases]
+fast = "global-fast-model"
+smart = "global-smart-model"
+
+[profiles.work]
+api_key = "sk-test"
+
+[profiles.work.models]
+default = "work-model"
+
+[profiles.work.models.aliases]
+fast = "work-fast-model"
+"#;
 
     fn assert_standard(cfg: &Config) {
         assert_eq!(cfg.default_profile.as_deref(), Some("work"));
@@ -351,6 +486,23 @@ profiles:
         assert!(matches!(cfg.endpoint.base_url.0, SourceKind::Env(_)));
         assert!(cfg.profiles.contains_key("work"));
         assert!(cfg.profiles.contains_key("local"));
+        assert_eq!(cfg.models.default.as_deref(), Some("global-model"));
+        assert_eq!(
+            cfg.models.aliases.get("fast").map(String::as_str),
+            Some("global-fast-model")
+        );
+        assert_eq!(
+            cfg.profiles["work"].models.default.as_deref(),
+            Some("work-model")
+        );
+        assert_eq!(
+            cfg.profiles["work"]
+                .models
+                .aliases
+                .get("fast")
+                .map(String::as_str),
+            Some("work-fast-model")
+        );
         assert!(matches!(cfg.profiles["work"].api_key.0, SourceKind::Env(_)));
         assert!(matches!(
             cfg.profiles["local"].api_key.0,
@@ -387,6 +539,58 @@ profiles:
     }
 
     #[test]
+    fn model_settings_are_optional_for_existing_configs() {
+        let cfg: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[profiles.work]
+api_key = "sk-test"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.models, ModelConfig::default());
+        assert_eq!(cfg.profiles["work"].models, ModelConfig::default());
+    }
+
+    #[test]
+    fn explicit_raw_model_id_is_returned_unchanged() {
+        let cfg: Config = toml::from_str(MODEL_CONFIG).unwrap();
+        let profile = &cfg.profiles["work"];
+        assert_eq!(
+            resolve_model(Some("provider/model-v2"), &cfg, profile).unwrap(),
+            "provider/model-v2"
+        );
+    }
+
+    #[test]
+    fn explicit_top_level_alias_resolves_to_model_id() {
+        let cfg: Config = toml::from_str(MODEL_CONFIG).unwrap();
+        let profile = &cfg.profiles["work"];
+        assert_eq!(
+            resolve_model(Some("smart"), &cfg, profile).unwrap(),
+            "global-smart-model"
+        );
+    }
+
+    #[test]
+    fn profile_alias_shadows_top_level_alias() {
+        let cfg: Config = toml::from_str(MODEL_CONFIG).unwrap();
+        let profile = &cfg.profiles["work"];
+        assert_eq!(
+            resolve_model(Some("fast"), &cfg, profile).unwrap(),
+            "work-fast-model"
+        );
+    }
+
+    #[test]
+    fn profile_default_overrides_top_level_default() {
+        let cfg: Config = toml::from_str(MODEL_CONFIG).unwrap();
+        let profile = &cfg.profiles["work"];
+        assert_eq!(resolve_model(None, &cfg, profile).unwrap(), "work-model");
+    }
+
+    #[test]
     fn resolve_base_url_prefers_profile_override() {
         let cfg: Config = toml::from_str(TOML).unwrap();
         let profile = &cfg.profiles["local"];
@@ -396,6 +600,23 @@ profiles:
                 .expose_secret(),
             "https://local.example.com"
         );
+    }
+
+    #[test]
+    fn top_level_default_is_used_when_profile_has_none() {
+        let cfg: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[models]
+default = "global-model"
+[profiles.work]
+api_key = "sk-test"
+"#,
+        )
+        .unwrap();
+        let profile = &cfg.profiles["work"];
+        assert_eq!(resolve_model(None, &cfg, profile).unwrap(), "global-model");
     }
 
     #[test]
@@ -409,6 +630,44 @@ profiles:
             result.unwrap().expose_secret(),
             "https://shared.example.com"
         );
+    }
+
+    #[test]
+    fn model_defaults_are_raw_ids_and_not_resolved_as_aliases() {
+        let cfg: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[models]
+default = "fast"
+[models.aliases]
+fast = "expanded-model-id"
+[profiles.work]
+api_key = "sk-test"
+"#,
+        )
+        .unwrap();
+        let profile = &cfg.profiles["work"];
+        assert_eq!(resolve_model(None, &cfg, profile).unwrap(), "fast");
+    }
+
+    #[test]
+    fn missing_model_default_has_actionable_error() {
+        let cfg: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[profiles.work]
+api_key = "sk-test"
+"#,
+        )
+        .unwrap();
+        let profile = &cfg.profiles["work"];
+        let err = resolve_model(None, &cfg, profile).unwrap_err();
+        assert!(matches!(err, AixError::NoModelConfigured));
+        let message = err.to_string();
+        assert!(message.contains("--model <MODEL>"), "got: {message}");
+        assert!(message.contains("[models].default"), "got: {message}");
     }
 
     #[test]
@@ -496,6 +755,83 @@ profiles:
     fn validate_passes_on_well_formed_config() {
         let cfg: Config = toml::from_str(TOML).unwrap();
         assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_global_model_default() {
+        let cfg: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[models]
+default = ""
+[profiles.work]
+api_key = "sk-test"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            validate(&cfg),
+            Err(AixError::EmptyModelDefault { ref scope }) if scope == "models"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_empty_profile_model_default() {
+        let cfg: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[profiles.work]
+api_key = "sk-test"
+[profiles.work.models]
+default = "   "
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            validate(&cfg),
+            Err(AixError::EmptyModelDefault { ref scope }) if scope == "profiles.work.models"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_empty_model_alias_name() {
+        let cfg: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[models.aliases]
+"" = "model-id"
+[profiles.work]
+api_key = "sk-test"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            validate(&cfg),
+            Err(AixError::EmptyModelAliasName { ref scope }) if scope == "models"
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_empty_model_alias_target() {
+        let cfg: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[models.aliases]
+fast = "  "
+[profiles.work]
+api_key = "sk-test"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            validate(&cfg),
+            Err(AixError::EmptyModelAliasTarget { ref scope, ref alias })
+                if scope == "models" && alias == "fast"
+        ));
     }
 
     #[test]
@@ -589,6 +925,7 @@ api_key = "sk-test"
             endpoint: toml::from_str::<Config>(TOML).unwrap().endpoint,
             profiles: Default::default(),
             cache: Default::default(),
+            models: Default::default(),
         };
         load_env_files(&cfg).unwrap();
         assert_eq!(
@@ -612,6 +949,7 @@ api_key = "sk-test"
             endpoint: toml::from_str::<Config>(TOML).unwrap().endpoint,
             profiles: Default::default(),
             cache: Default::default(),
+            models: Default::default(),
         };
         load_env_files(&cfg).unwrap();
         // Process env must win over file value.
@@ -644,6 +982,7 @@ api_key = "sk-test"
             endpoint: toml::from_str::<Config>(TOML).unwrap().endpoint,
             profiles: Default::default(),
             cache: Default::default(),
+            models: Default::default(),
         };
         let err = load_env_files(&cfg).unwrap_err();
         assert!(matches!(err, AixError::EnvFileLoad { .. }));

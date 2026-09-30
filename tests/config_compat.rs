@@ -293,3 +293,93 @@ fn exec_dry_run_never_prints_secret_value() {
         "secret leaked to stderr: {stderr}"
     );
 }
+
+#[test]
+fn model_configuration_is_supported_in_all_file_formats() {
+    let configs = [
+        (
+            "toml",
+            r#"
+[endpoint]
+base_url = "https://compat.example.com"
+[models]
+default = "global-model"
+[models.aliases]
+fast = "global-fast-model"
+[profiles.work]
+api_key = "sk-test"
+[profiles.work.models]
+default = "work-model"
+[profiles.work.models.aliases]
+fast = "work-fast-model"
+"#,
+        ),
+        (
+            "yaml",
+            r#"
+endpoint:
+  base_url: https://compat.example.com
+models:
+  default: global-model
+  aliases:
+    fast: global-fast-model
+profiles:
+  work:
+    api_key: sk-test
+    models:
+      default: work-model
+      aliases:
+        fast: work-fast-model
+"#,
+        ),
+        (
+            "json",
+            r#"{
+  "endpoint": { "base_url": "https://compat.example.com" },
+  "models": {
+    "default": "global-model",
+    "aliases": { "fast": "global-fast-model" }
+  },
+  "profiles": {
+    "work": {
+      "api_key": "sk-test",
+      "models": {
+        "default": "work-model",
+        "aliases": { "fast": "work-fast-model" }
+      }
+    }
+  }
+}"#,
+        ),
+        (
+            "json5",
+            r#"{
+  endpoint: { base_url: "https://compat.example.com" },
+  models: {
+    default: "global-model",
+    aliases: { fast: "global-fast-model" },
+  },
+  profiles: {
+    work: {
+      api_key: "sk-test",
+      models: {
+        default: "work-model",
+        aliases: { fast: "work-fast-model" },
+      },
+    },
+  },
+}"#,
+        ),
+    ];
+
+    for (ext, config) in configs {
+        let file = assert_fs::NamedTempFile::new(format!("aix.{ext}")).unwrap();
+        file.write_str(config).unwrap();
+
+        cmd()
+            .env("AIX_CONFIG", file.path())
+            .args(["config", "validate"])
+            .assert()
+            .success();
+    }
+}

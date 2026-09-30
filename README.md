@@ -266,6 +266,46 @@ label   = "Staging"
 api_key = "sk-fake-staging-0000000000000000000000"
 ```
 
+### Model defaults and aliases
+
+Model settings are optional. Defaults are raw model IDs; aliases are local names for raw IDs:
+
+```toml
+[models]
+default = "gateway/claude-sonnet"
+
+[models.aliases]
+fast = "gateway/gpt-fast"
+smart = "gateway/claude-opus"
+
+[profiles.work.models]
+default = "company/claude-sonnet"
+
+[profiles.work.models.aliases]
+fast = "company/fast-model"
+```
+
+For an explicit model request, a selected profile alias wins over a top-level alias; otherwise the value is treated as a raw model ID. Without an explicit model, `profiles.<name>.models.default` wins over `models.default`. If neither default exists, the caller must pass `--model` or configure one. Defaults are never looked up as aliases, and aliases do not chain. Alias targets need not appear in a live model list; `aix config validate` checks them offline for non-empty values.
+
+The Home Manager module exposes the same structure:
+
+```nix
+programs.aix.models = {
+  default = "gateway/claude-sonnet";
+  aliases = {
+    fast = "gateway/gpt-fast";
+    smart = "gateway/claude-opus";
+  };
+};
+
+programs.aix.profiles.work.models = {
+  default = "company/claude-sonnet";
+  aliases.fast = "company/fast-model";
+};
+```
+
+This adds configuration and the shared resolver only; the current CLI does not issue inference requests.
+
 ### Cache config
 
 ```toml

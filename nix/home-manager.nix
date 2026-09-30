@@ -45,6 +45,34 @@ let
     inherit value;
   }) rawSecretSourceType;
 
+  modelConfigType = lib.types.submodule {
+    options = {
+      default = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "gateway/model-fast";
+        description = "Default raw model ID; aliases are not resolved here.";
+      };
+
+      aliases = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        example = {
+          fast = "gateway/model-fast";
+          smart = "gateway/model-smart";
+        };
+        description = "Local model names mapped to raw model IDs.";
+      };
+    };
+  };
+
+  hasModelConfig = models: models.default != null || models.aliases != { };
+
+  mkModelConfig =
+    models:
+    lib.optionalAttrs (models.default != null) { default = models.default; }
+    // lib.optionalAttrs (models.aliases != { }) { aliases = models.aliases; };
+
   validateSecretSource =
     source:
     let
@@ -84,6 +112,9 @@ let
     }
     // lib.optionalAttrs (profile.env != { }) {
       env = lib.mapAttrs (_: encodeSecretSource) profile.env;
+    }
+    // lib.optionalAttrs (hasModelConfig profile.models) {
+      models = mkModelConfig profile.models;
     };
 
   mkEndpoint =
@@ -99,6 +130,9 @@ let
     // {
       endpoint = mkEndpoint cfg.endpoint;
       profiles = lib.mapAttrs mkProfile cfg.profiles;
+    }
+    // lib.optionalAttrs (hasModelConfig cfg.models) {
+      models = mkModelConfig cfg.models;
     }
     // lib.optionalAttrs (cfg.cache.ttlSecs != 3600 || cfg.cache.disabled) {
       cache = {
@@ -185,6 +219,12 @@ in
       };
     };
 
+    models = lib.mkOption {
+      description = "Default model ID and aliases shared by all profiles.";
+      default = { };
+      type = modelConfigType;
+    };
+
     profiles = lib.mkOption {
       description = "Named API profiles. At least one must be defined when enable = true.";
       default = { };
@@ -235,6 +275,12 @@ in
                 or { command = "cmd"; }. Profile values are applied after aix's
                 standard credential variables, so they can override them when necessary.
               '';
+            };
+
+            models = lib.mkOption {
+              description = "Model defaults and aliases that override the shared programs.aix.models settings.";
+              default = { };
+              type = modelConfigType;
             };
           };
         }
