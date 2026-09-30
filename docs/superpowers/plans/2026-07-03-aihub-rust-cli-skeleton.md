@@ -516,11 +516,11 @@ git commit -m "feat(aix): add Rust CLI skeleton with clap subcommands"
 ### Task 7: Update aix-rust.md convention file
 
 **Files:**
-- Modify: `.claude/rules/aix-rust.md`
+- Modify: `docs/agents/aix-rust.md`
 
 - [ ] **Step 1: Replace the Error handling section**
 
-In `.claude/rules/aix-rust.md`, replace:
+In `docs/agents/aix-rust.md`, replace:
 
 ```markdown
 ## Error handling
@@ -541,6 +541,6 @@ Emit structured errors to stderr; streaming output to stdout only.
 - [ ] **Step 2: Commit**
 
 ```
-git add .claude/rules/aix-rust.md
+git add docs/agents/aix-rust.md
 git commit -m "docs(rules): replace anyhow with color-eyre in aix-rust conventions"
 ```

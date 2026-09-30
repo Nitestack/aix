@@ -1,11 +1,6 @@
----
-paths:
-  - "nix/**"
-  - "flake.nix"
-  - "flake.lock"
----
+# aix Nix integration conventions
 
-# aix Nix integration — conventions
+Apply this guidance to changes in `nix/**`, `flake.nix`, and `flake.lock`.
 
 ## Role of Nix in this project
 

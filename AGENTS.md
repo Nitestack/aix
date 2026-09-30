@@ -1,4 +1,4 @@
-# aix — Claude Code project context
+# aix — repository guidance
 
 ## Repo overview
 
@@ -36,6 +36,20 @@ When adding dependencies, prefer crates that compile without OS-specific build t
 
 ## Scoped rules
 
-Additional path-scoped guidance lives in `.claude/rules/`:
-- `aix-rust.md` — Rust CLI conventions (active for `src/**`, `tests/**`, `Cargo.*`)
-- `aix-nix.md` — Nix integration conventions (active for `modules/home/aix.nix`, `nix/**`, `flake.nix`)
+Additional guidance for specific work:
+- Read `docs/agents/aix-rust.md` for changes to `src/**`, `tests/**`, or `Cargo.toml`/`Cargo.lock`.
+- Read `docs/agents/aix-nix.md` for changes to `nix/**`, `flake.nix`, or `flake.lock`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in this repo's GitHub Issues; use `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context layout (`GLOSSARY.md` and `docs/adr/`). See `docs/agents/domain.md`.

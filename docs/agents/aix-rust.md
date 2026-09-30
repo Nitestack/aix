@@ -1,12 +1,6 @@
----
-paths:
-  - "src/**"
-  - "tests/**"
-  - "Cargo.toml"
-  - "Cargo.lock"
----
+# aix Rust CLI conventions
 
-# aix Rust CLI — conventions
+Apply this guidance to changes in `src/**`, `tests/**`, `Cargo.toml`, and `Cargo.lock`.
 
 ## Project intent
 

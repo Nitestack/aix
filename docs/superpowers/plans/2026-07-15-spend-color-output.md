@@ -18,8 +18,8 @@ with `if_supports_color`.
 - Color tiers: `< 50%` green, `50–74%` yellow, `75–99%` orange (`Rgb(255,165,0)`), `>= 100%` red.
 - Only the filled bar (`█`) and the `"{pct_used:.0}% used"` label are colored. The dollar-amount line and the `░` empty bar portion stay uncolored.
 - `owo-colors` must be added with `features = ["supports-colors"]` so color auto-disables on non-TTY stdout or when `NO_COLOR` is set — no manual detection code.
-- `cargo fmt --all` and `cargo clippy --all-targets -- -D warnings` must pass before any commit (per `.claude/rules/aix-rust.md`).
-- Do not touch files outside `src/`, `tests/`, `Cargo.toml` (per root `CLAUDE.md`).
+- `cargo fmt --all` and `cargo clippy --all-targets -- -D warnings` must pass before any commit (per `docs/agents/aix-rust.md`).
+- Do not touch files outside `src/`, `tests/`, `Cargo.toml` (per root `AGENTS.md`).
 
 ---
 

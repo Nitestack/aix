@@ -77,7 +77,7 @@ owo-colors = { version = "4", features = ["supports-colors"] }
 ```
 
 Pure-Rust, no C build dependencies (consistent with the cross-platform rule in
-`.claude/rules/aix-rust.md`).
+`docs/agents/aix-rust.md`).
 
 In `src/commands/spend.rs`:
 
