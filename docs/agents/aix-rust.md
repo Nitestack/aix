@@ -11,7 +11,7 @@ It must be self-contained and runnable outside Nix.
 
 - `src/main.rs` — entry point, arg parsing only
 - `src/config.rs` — profile/endpoint resolution
-- `src/client.rs` — HTTP client, streaming, retry
+- `src/gateway/` — shared HTTP transport and gateway capability clients
 - `src/secrets.rs` — secret resolution (env → file → store flag)
 - `src/commands/` — one module per subcommand
 
