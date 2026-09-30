@@ -52,7 +52,17 @@ impl Cache {
         (|| {
             let dir = self.endpoint_dir(base_url);
             let index = load_index(&dir);
-            let user_id = index.get(&key_suffix(api_key))?.clone();
+            let suffix = key_suffix(api_key);
+            let legacy_suffix = legacy_key_suffix(api_key);
+            let user_id = index
+                .get(&suffix)
+                .or_else(|| {
+                    legacy_suffix
+                        .as_deref()
+                        .filter(|legacy| *legacy != suffix)
+                        .and_then(|legacy| index.get(legacy))
+                })?
+                .clone();
             let content = std::fs::read_to_string(dir.join(format!("{user_id}.json"))).ok()?;
             let entry: CacheEntry = serde_json::from_str(&content).ok()?;
             if entry.version != CACHE_VERSION {
@@ -62,9 +72,11 @@ impl Cache {
             // Responses without a keys list are scoped to the key that fetched them.
             // Entries written by older versions have no scope marker, so they miss and
             // refresh instead of reusing a possibly wrong per-key response.
-            if data_is_key_scoped(&entry.data)
-                && entry.key_suffix.as_deref() != Some(suffix.as_str())
-            {
+            let entry_matches_key = entry.key_suffix.as_deref() == Some(suffix.as_str())
+                || legacy_suffix
+                    .as_deref()
+                    .is_some_and(|legacy| entry.key_suffix.as_deref() == Some(legacy));
+            if data_is_key_scoped(&entry.data) && !entry_matches_key {
                 return None;
             }
             if self.ttl_secs > 0 {
@@ -104,7 +116,7 @@ impl Cache {
             if let Some(keys) = data.get("keys").and_then(|v| v.as_array()) {
                 for k in keys {
                     if let Some(kn) = k.get("key_name").and_then(|v| v.as_str()) {
-                        index.insert(key_suffix(kn), user_id.clone());
+                        index.insert(key_suffix_from_name(kn), user_id.clone());
                     }
                 }
             }
@@ -137,8 +149,29 @@ impl Cache {
 }
 
 pub(crate) fn key_suffix(api_key: &str) -> String {
-    let len = api_key.len();
-    api_key[len.saturating_sub(4)..].to_string()
+    let characters = api_key.chars().collect::<Vec<_>>();
+    if characters.len() <= 4 {
+        return fnv1a_hex(api_key.as_bytes());
+    }
+    characters[characters.len() - 4..].iter().collect()
+}
+
+pub(crate) fn short_key_name(api_key: &str) -> String {
+    format!("sk-short-{}", fnv1a_hex(api_key.as_bytes()))
+}
+
+fn key_suffix_from_name(key_name: &str) -> String {
+    key_name
+        .strip_prefix("sk-short-")
+        .map(str::to_owned)
+        .unwrap_or_else(|| key_suffix(key_name))
+}
+
+fn legacy_key_suffix(api_key: &str) -> Option<String> {
+    let start = api_key.len().saturating_sub(4);
+    api_key
+        .is_char_boundary(start)
+        .then(|| api_key[start..].to_string())
 }
 
 fn derive_user_id(api_key: &str, data: &Value) -> String {
@@ -206,12 +239,19 @@ mod tests {
 
     #[test]
     fn key_suffix_shorter_than_4() {
-        assert_eq!(key_suffix("ab"), "ab");
+        assert_eq!(key_suffix("ab"), fnv1a_hex(b"ab"));
     }
 
     #[test]
     fn key_suffix_exactly_4() {
-        assert_eq!(key_suffix("abcd"), "abcd");
+        assert_eq!(key_suffix("abcd"), fnv1a_hex(b"abcd"));
+    }
+
+    #[test]
+    fn short_key_name_preserves_an_opaque_cache_identity() {
+        let name = short_key_name("ab");
+        assert_eq!(key_suffix_from_name(&name), key_suffix("ab"));
+        assert!(!name.contains("ab"));
     }
 
     #[test]
@@ -332,6 +372,56 @@ mod tests {
         assert!(
             cache.get("https://api.example.com", "sk-C3D4").is_some(),
             "sibling key from response should be cached"
+        );
+    }
+
+    #[test]
+    fn put_warms_short_sibling_keys_without_storing_them_raw() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let data = serde_json::json!({
+            "user_id": "u-short-keys",
+            "spend": 1.0,
+            "keys": [{ "key_name": short_key_name("xy") }]
+        });
+        cache.put("https://api.example.com", "sk-source", &data);
+
+        assert!(cache.get("https://api.example.com", "xy").is_some());
+        let content = std::fs::read_to_string(
+            cache
+                .endpoint_dir("https://api.example.com")
+                .join("u-short-keys.json"),
+        )
+        .unwrap();
+        assert!(!content.contains("xy"));
+    }
+
+    #[test]
+    fn get_accepts_existing_cache_indexes_for_short_keys() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
+        std::fs::create_dir_all(&endpoint_dir).unwrap();
+        std::fs::write(
+            endpoint_dir.join("index.json"),
+            serde_json::json!({ "ab": "legacy-short-key" }).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            endpoint_dir.join("legacy-short-key.json"),
+            serde_json::json!({
+                "version": CACHE_VERSION,
+                "fetched_at": now_secs(),
+                "data": { "spend": 1.0 },
+                "key_suffix": "ab"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            cache.get("https://api.example.com", "ab").unwrap().0["spend"],
+            1.0
         );
     }
 

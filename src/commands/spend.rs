@@ -227,4 +227,15 @@ mod tests {
         // orange (75%) stops.
         assert_eq!(position_color(20, 40), Rgb(222, 198, 0));
     }
+
+    #[test]
+    fn find_matching_key_matches_short_credentials_without_exposing_them() {
+        let api_key = "abcd";
+        let key_name = crate::cache::short_key_name(api_key);
+        let keys = [serde_json::json!({ "key_name": key_name, "spend": 2.0 })];
+
+        let matched = find_matching_key(&keys, api_key).unwrap();
+        assert_eq!(matched["spend"], 2.0);
+        assert!(!matched.to_string().contains(api_key));
+    }
 }

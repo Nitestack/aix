@@ -82,6 +82,11 @@ impl GatewayTransport {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            let body = if self.api_key.is_empty() {
+                body
+            } else {
+                body.replace(&self.api_key, "[redacted]")
+            };
             return Err(TransportError::Gateway {
                 status: status.as_u16(),
                 body,

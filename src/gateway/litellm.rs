@@ -133,23 +133,25 @@ fn sanitize_key_info(data: Value) -> Value {
 
 fn sanitize_key_entry(data: Value) -> Option<Value> {
     let source = data.as_object()?;
-    let suffix = ["api_key", "key_name", "token"]
+    let key_name = ["api_key", "key_name", "token"]
         .into_iter()
         .find_map(|field| {
             source
                 .get(field)
                 .and_then(Value::as_str)
-                // A short credential has no non-secret suffix to expose.
-                .filter(|value| value.is_ascii() && value.len() > 4)
-                .map(crate::cache::key_suffix)
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    if value.chars().count() <= 4 {
+                        crate::cache::short_key_name(value)
+                    } else {
+                        format!("sk-...{}", crate::cache::key_suffix(value))
+                    }
+                })
         });
 
     let mut object = serde_json::Map::new();
-    if let Some(suffix) = suffix {
-        object.insert(
-            "key_name".to_string(),
-            Value::String(format!("sk-...{suffix}")),
-        );
+    if let Some(key_name) = key_name {
+        object.insert("key_name".to_string(), Value::String(key_name));
     }
     for field in ["spend", "max_budget"] {
         if let Some(value) = source.get(field) {
@@ -281,7 +283,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(entry.get("key_name").is_none());
+        assert_eq!(entry["key_name"], crate::cache::short_key_name("abcd"));
         assert_eq!(entry["spend"], 1.23);
         let serialized = entry.to_string();
         for secret in ["abcd", "wxyz", "1234"] {
@@ -297,7 +299,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(KEY_INFO_PATH))
-            .respond_with(ResponseTemplate::new(403).set_body_string("Forbidden"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("Invalid API key: test-key"))
             .mount(&server)
             .await;
 
@@ -308,7 +310,7 @@ mod tests {
             AixError::GatewayError {
                 status: 403,
                 ref body
-            } if body == "Forbidden"
+            } if body == "Invalid API key: [redacted]"
         ));
         assert!(!err.to_string().contains("test-key"));
     }
