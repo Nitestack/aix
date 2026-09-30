@@ -23,8 +23,8 @@ struct CacheEntry {
     key_data_version: u8,
     fetched_at: u64,
     data: Value,
-    #[serde(default)]
-    key_suffix: Option<String>,
+    #[serde(default, rename = "key_suffix")]
+    key_identity: Option<String>,
 }
 
 impl Cache {
@@ -69,12 +69,11 @@ impl Cache {
                 // Refresh once to store the new opaque key names instead.
                 return None;
             }
-            let identity = key_identity(api_key);
             // Responses without a keys list are scoped to the key that fetched them.
             // Entries written by older versions have no scope marker, so they miss and
             // refresh instead of reusing a possibly wrong per-key response.
             if data_is_key_scoped(&entry.data)
-                && entry.key_suffix.as_deref() != Some(identity.as_str())
+                && entry.key_identity.as_deref() != Some(identity.as_str())
             {
                 return None;
             }
@@ -108,7 +107,7 @@ impl Cache {
                 key_data_version: KEY_DATA_SANITIZATION_VERSION,
                 fetched_at: now_secs(),
                 data: data.clone(),
-                key_suffix: key_scoped.then(|| key_identity(api_key)),
+                key_identity: key_scoped.then(|| key_identity(api_key)),
             };
             let json = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
             write_atomic(&dir.join(format!("{user_id}.json")), &json)?;

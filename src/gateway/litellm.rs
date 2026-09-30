@@ -128,7 +128,13 @@ fn sanitize_key_info(data: Value) -> Value {
     };
     let mut info = serde_json::Map::new();
     for field in ["user_id", "spend", "max_budget"] {
-        if let Some(value) = source.get(field) {
+        if let Some(value) = source.get(field).filter(|value| {
+            if field == "user_id" {
+                value.is_string()
+            } else {
+                value.is_number()
+            }
+        }) {
             info.insert(field.to_string(), value.clone());
         }
     }
@@ -161,7 +167,7 @@ fn sanitize_key_entry(data: Value) -> Option<Value> {
         object.insert("key_name".to_string(), Value::String(key_name));
     }
     for field in ["spend", "max_budget"] {
-        if let Some(value) = source.get(field) {
+        if let Some(value) = source.get(field).filter(|value| value.is_number()) {
             object.insert(field.to_string(), value.clone());
         }
     }
@@ -294,6 +300,39 @@ mod tests {
         assert_eq!(entry["spend"], 1.23);
         let serialized = entry.to_string();
         for secret in ["abcd", "wxyz", "1234"] {
+            assert!(
+                !serialized.contains(secret),
+                "leaked {secret} in {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitization_drops_nested_values_in_scalar_fields() {
+        let data = sanitize_key_info(json!({
+            "info": {
+                "user_id": { "token": "raw-user-token" },
+                "spend": { "token": "raw-spend-token" },
+                "max_budget": { "metadata": { "api_key": "raw-budget-key" } },
+                "keys": [{
+                    "api_key": "server-token",
+                    "spend": { "metadata": { "token": "nested-spend-token" } },
+                    "max_budget": { "api_key": "nested-budget-key" }
+                }]
+            }
+        }));
+
+        assert!(data.get("user_id").is_none());
+        assert!(data.get("spend").is_none());
+        assert!(data.get("max_budget").is_none());
+        let serialized = data.to_string();
+        for secret in [
+            "raw-user-token",
+            "raw-spend-token",
+            "raw-budget-key",
+            "nested-spend-token",
+            "nested-budget-key",
+        ] {
             assert!(
                 !serialized.contains(secret),
                 "leaked {secret} in {serialized}"
