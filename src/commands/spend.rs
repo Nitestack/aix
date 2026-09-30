@@ -237,4 +237,14 @@ mod tests {
         assert_eq!(matched["spend"], 2.0);
         assert!(!matched.to_string().contains(api_key));
     }
+
+    #[test]
+    fn find_matching_key_matches_masked_short_key_suffix() {
+        let api_key = "abcd";
+        let key_name = crate::cache::sanitized_key_name("sk-...abcd");
+        let keys = [serde_json::json!({ "key_name": key_name, "spend": 2.0 })];
+
+        let matched = find_matching_key(&keys, api_key).unwrap();
+        assert_eq!(matched["spend"], 2.0);
+    }
 }

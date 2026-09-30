@@ -181,13 +181,12 @@ pub(crate) fn sanitized_key_name(api_key: &str) -> String {
 
 pub(crate) fn key_identity_matches_name(api_key: &str, key_name: &str) -> bool {
     if let Some(name_identity) = key_name.strip_prefix("sk-short-") {
-        let identity = key_identity(api_key);
-        let identity = if is_short_key(api_key) {
-            identity
+        if is_short_key(api_key) {
+            name_identity == key_identity(api_key)
+                || name_identity == hashed_identity("suffix", api_key)
         } else {
-            hashed_identity("suffix", &identity)
-        };
-        name_identity == identity
+            name_identity == hashed_identity("suffix", &key_identity(api_key))
+        }
     } else {
         key_name.ends_with(&key_identity(api_key))
     }
@@ -203,7 +202,7 @@ fn key_identity_from_name(key_name: &str) -> String {
 fn key_identities(api_key: &str) -> Vec<String> {
     let identity = key_identity(api_key);
     if is_short_key(api_key) {
-        return vec![identity];
+        return vec![identity, hashed_identity("suffix", api_key)];
     }
     vec![identity.clone(), hashed_identity("suffix", &identity)]
 }
@@ -307,13 +306,13 @@ mod tests {
     }
 
     #[test]
-    fn masked_short_key_names_are_sanitized_and_match_long_credentials() {
+    fn masked_short_key_names_are_sanitized_and_match_short_and_long_credentials() {
         let name = sanitized_key_name("sk-...abcd");
 
         assert_ne!(name, sanitized_key_name("abcd"));
         assert!(!name.contains("abcd"));
         assert!(key_identity_matches_name("sk-user-abcd", &name));
-        assert!(!key_identity_matches_name("abcd", &name));
+        assert!(key_identity_matches_name("abcd", &name));
     }
 
     #[test]
@@ -456,6 +455,20 @@ mod tests {
         )
         .unwrap();
         assert!(!content.contains("xy"));
+    }
+
+    #[test]
+    fn put_warms_masked_short_suffix_for_short_key_lookup() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let data = serde_json::json!({
+            "user_id": "u-masked-short-key",
+            "spend": 1.0,
+            "keys": [{ "key_name": sanitized_key_name("sk-...abcd") }]
+        });
+        cache.put("https://api.example.com", "sk-source", &data);
+
+        assert!(cache.get("https://api.example.com", "abcd").is_some());
     }
 
     #[test]
