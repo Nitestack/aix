@@ -117,7 +117,7 @@ fn sanitize_error_body(body: &str, api_key: &str) -> String {
 fn redact_error_value(value: &mut Value, api_key: &str) {
     match value {
         Value::Object(object) => object.retain(|field, value| {
-            if is_sensitive_error_field(field) {
+            if is_sensitive_error_field(field) || (!api_key.is_empty() && field.contains(api_key)) {
                 return false;
             }
             redact_error_value(value, api_key);

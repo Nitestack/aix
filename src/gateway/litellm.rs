@@ -374,20 +374,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn json_error_body_redacts_credentials_without_changing_field_names() {
+    async fn json_error_body_redacts_credentials_and_secret_field_names() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(KEY_INFO_PATH))
             .respond_with(ResponseTemplate::new(403).set_body_json(json!({
-                "message": "credential age rejected",
+                "message": "credential test-key rejected",
                 "api_key": "other-key",
                 "access_token": "other-token",
-                "metadata": { "token": "nested-token" }
+                "metadata": { "token": "nested-token" },
+                "test-key-field": "other-secret"
             })))
             .mount(&server)
             .await;
 
-        let client = LiteLlmAdminClient::new(server.uri(), "age");
+        let client = LiteLlmAdminClient::new(server.uri(), "test-key");
         let err = client.user_info().await.unwrap_err();
         let AixError::GatewayError { status: 403, body } = err else {
             panic!("expected GatewayError, got {err:?}");
@@ -397,6 +398,7 @@ mod tests {
         assert!(body.get("api_key").is_none());
         assert!(body.get("access_token").is_none());
         assert!(body.get("metadata").is_none());
+        assert!(body.get("test-key-field").is_none());
     }
 
     #[tokio::test]
