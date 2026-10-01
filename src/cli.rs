@@ -137,6 +137,32 @@ pub enum Command {
         /// User instruction
         prompt: Option<String>,
     },
+    /// Run a command with profile credentials and durable run history
+    Run {
+        /// Optional human-readable run name
+        #[arg(long)]
+        name: Option<String>,
+        /// Workflow label for this invocation
+        #[arg(long)]
+        workflow: Option<String>,
+        /// External task or ticket identifier
+        #[arg(long)]
+        task_id: Option<String>,
+        /// Repeatable run tag
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Command and arguments to run (after --)
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Inspect durable run history
+    Runs {
+        /// Show only the newest N records
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[command(subcommand)]
+        action: Option<RunsAction>,
+    },
     /// Manage the local response cache
     Cache {
         #[command(subcommand)]
@@ -173,6 +199,7 @@ impl Command {
                 | Self::Models { .. }
                 | Self::Usage { .. }
                 | Self::Ask { .. }
+                | Self::Runs { .. }
         )
     }
 }
@@ -195,6 +222,12 @@ pub enum UseFormat {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum CurrentFormat {
     Short,
+}
+
+#[derive(Subcommand)]
+pub enum RunsAction {
+    /// Show one complete run record
+    Show { run_id: String },
 }
 
 #[derive(Subcommand)]

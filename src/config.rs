@@ -23,6 +23,8 @@ pub struct Config {
     pub profiles: HashMap<String, Profile>,
     #[serde(default)]
     pub models: ModelConfig,
+    #[serde(default)]
+    pub tools: HashMap<String, Tool>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -51,7 +53,7 @@ pub enum Gateway {
     Custom(String),
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 pub enum ApiFormat {
     #[serde(rename = "anthropic")]
     Anthropic,
@@ -59,6 +61,15 @@ pub enum ApiFormat {
     OpenAi,
     #[serde(rename = "both")]
     Both,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tool {
+    pub command: Option<String>,
+    pub api_format: ApiFormat,
+    #[serde(default)]
+    pub env: HashMap<String, SecretSource>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,6 +276,30 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
             });
         }
         seen.insert(effective_label, name);
+    }
+
+    let mut tool_names: Vec<_> = config.tools.keys().collect();
+    tool_names.sort();
+    for name in tool_names {
+        let tool = &config.tools[name];
+        if name.trim().is_empty() {
+            return Err(AixError::EmptyToolName);
+        }
+        if tool
+            .command
+            .as_deref()
+            .is_some_and(|command| command.trim().is_empty())
+        {
+            return Err(AixError::EmptyToolCommand { name: name.clone() });
+        }
+        for env_name in tool.env.keys() {
+            if !is_valid_env_name(env_name) {
+                return Err(AixError::InvalidToolEnvironmentVariableName {
+                    tool: name.clone(),
+                    name: env_name.clone(),
+                });
+            }
+        }
     }
 
     Ok(())
@@ -926,6 +961,7 @@ api_key = "sk-test"
             profiles: Default::default(),
             cache: Default::default(),
             models: Default::default(),
+            tools: Default::default(),
         };
         load_env_files(&cfg).unwrap();
         assert_eq!(
@@ -950,6 +986,7 @@ api_key = "sk-test"
             profiles: Default::default(),
             cache: Default::default(),
             models: Default::default(),
+            tools: Default::default(),
         };
         load_env_files(&cfg).unwrap();
         // Process env must win over file value.
@@ -983,6 +1020,7 @@ api_key = "sk-test"
             profiles: Default::default(),
             cache: Default::default(),
             models: Default::default(),
+            tools: Default::default(),
         };
         let err = load_env_files(&cfg).unwrap_err();
         assert!(matches!(err, AixError::EnvFileLoad { .. }));

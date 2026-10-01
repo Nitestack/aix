@@ -8,6 +8,7 @@ mod config;
 mod error;
 mod gateway;
 mod output;
+mod run_history;
 mod secrets;
 
 #[tokio::main]

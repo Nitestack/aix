@@ -27,6 +27,13 @@ reqwest     = { version = "0.12", default-features = false, features = ["json", 
 tokio       = { version = "1", features = ["macros", "rt-multi-thread"] }
 owo-colors  = { version = "4", features = ["supports-colors"] }
 chrono      = { version = "0.4", default-features = false, features = ["clock", "std"] }
+uuid        = { version = "1", features = ["serde", "v4"] }
+ctrlc       = "3"
+time        = { version = "0.3", features = ["formatting"] }
+signal-hook = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["process", "signal"] }
 
 [dev-dependencies]
 assert_cmd = "2"

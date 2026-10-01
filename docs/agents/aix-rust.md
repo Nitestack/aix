@@ -23,10 +23,17 @@ Profiles are named sets of `(label, api_key)`. Gateway config (`base_url`) lives
 The active profile is chosen by `--profile` flag, a positional argument, or the `default_profile` config key.
 Never embed a URL, key, or profile name as a compile-time constant in command logic.
 
-`api_format` is **not** a config field. `aix env`/`aix exec` always emit all seven credential vars
-(Anthropic, OpenAI, and LiteLLM-named sets). `aix claude` emits Anthropic + LiteLLM-named vars;
-`aix <other>` emits OpenAI + LiteLLM-named vars. `LITELLM_API_KEY`/`LITELLM_BASE_URL` are always
-emitted regardless of tool name — they alias the same credential as the OpenAI-named vars.
+`api_format` is a launch setting only: it may appear under `[tools.<name>]`, not on a profile or
+endpoint. `aix env`/`aix exec` always emit all seven credential vars (Anthropic, OpenAI, and
+LiteLLM-named sets). `aix run` uses a configured tool's `api_format` when the command token matches
+`[tools.<name>]`; an unconfigured command receives all seven vars. The legacy unconfigured
+`aix claude` form emits Anthropic + LiteLLM-named vars; other unconfigured named tools emit OpenAI
+and LiteLLM-named vars. `LITELLM_API_KEY`/`LITELLM_BASE_URL` are always emitted — they alias the same
+credential as the OpenAI-named vars.
+
+Tool entries are generic launch wiring: `command` is optional and defaults to the tool name,
+`api_format` is `anthropic`, `openai`, or `both`, and optional `env` entries use the same secret
+sources as profile env. Launch env precedence is generated credentials, profile env, then tool env.
 
 Example config shape (TOML):
 ```toml

@@ -8,6 +8,8 @@ pub mod init;
 pub mod launch;
 pub mod models;
 pub mod profiles;
+pub mod run;
+pub mod runs;
 pub mod shell;
 pub mod spend;
 pub mod status;

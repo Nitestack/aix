@@ -110,6 +110,25 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             )
             .await
         }
+        Command::Run {
+            name,
+            workflow,
+            task_id,
+            tags,
+            args,
+        } => {
+            let effective_profile = global_profile;
+            crate::commands::run::run(
+                effective_profile,
+                config_path,
+                name,
+                workflow,
+                task_id,
+                tags,
+                args,
+            )
+        }
+        Command::Runs { limit, action } => crate::commands::runs::run(action, limit, json),
         Command::Cache { action } => crate::commands::cache::run(action, config_path),
         Command::Tool(raw) => {
             let tool = raw[0].clone();

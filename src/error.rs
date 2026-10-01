@@ -117,6 +117,15 @@ pub enum AixError {
     #[error("invalid environment variable name {name:?} in profile {profile:?}")]
     InvalidEnvironmentVariableName { profile: String, name: String },
 
+    #[error("tool names must not be empty")]
+    EmptyToolName,
+
+    #[error("configured command for tool {name:?} must not be empty")]
+    EmptyToolCommand { name: String },
+
+    #[error("invalid environment variable name {name:?} in tool {tool:?}")]
+    InvalidToolEnvironmentVariableName { tool: String, name: String },
+
     #[allow(dead_code)]
     #[error("profile selection cancelled")]
     SelectionCancelled,
@@ -128,13 +137,32 @@ pub enum AixError {
     #[error("exec requires a command after --")]
     ExecNoCommand,
 
+    #[error("run requires a command after --")]
+    RunNoCommand,
+
+    #[error("run history I/O failed at {path}: {source}")]
+    RunHistoryIo {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("run record {run_id} was not found")]
+    RunNotFound { run_id: String },
+
+    #[error("failed to encode run record: {0}")]
+    RunRecordSerialization(#[from] serde_json::Error),
+
+    #[error("failed to install interrupt handler: {0}")]
+    RunInterruptHandler(#[source] std::io::Error),
+
     #[error(
         "`aix shell` does not accept commands after --; use `aix exec` to run a command directly"
     )]
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix current`, `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix usage`, and `aix ask`"
+        "JSON output is only supported by `aix current`, `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix usage`, `aix ask`, and `aix runs`"
     )]
     JsonUnsupportedCommand,
 
@@ -152,6 +180,13 @@ pub enum AixError {
 
     #[error("failed to spawn {program}: {source}")]
     ProcessSpawn {
+        program: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed while waiting for {program}: {source}")]
+    ProcessWait {
         program: String,
         #[source]
         source: std::io::Error,
@@ -197,9 +232,14 @@ impl AixError {
             | Self::DuplicateLabel { .. }
             | Self::NoProfilesConfigured
             | Self::InvalidEnvironmentVariableName { .. }
+            | Self::EmptyToolName
+            | Self::EmptyToolCommand { .. }
+            | Self::InvalidToolEnvironmentVariableName { .. }
             | Self::SelectionCancelled
             | Self::NoInteractiveTerminal
             | Self::ExecNoCommand
+            | Self::RunNoCommand
+            | Self::RunNotFound { .. }
             | Self::ShellExtraArgs
             | Self::JsonUnsupportedCommand
             | Self::InvalidUsageRange { .. }
@@ -222,7 +262,12 @@ impl AixError {
             | Self::HttpError(_)
             | Self::UsageUnavailable => 5,
             Self::BudgetExceeded { .. } => 6,
-            Self::NotImplemented(_) | Self::ProcessSpawn { .. } => 1,
+            Self::NotImplemented(_)
+            | Self::ProcessSpawn { .. }
+            | Self::ProcessWait { .. }
+            | Self::RunHistoryIo { .. }
+            | Self::RunRecordSerialization(_)
+            | Self::RunInterruptHandler(_) => 1,
         }
     }
 }
