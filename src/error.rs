@@ -115,9 +115,18 @@ pub enum AixError {
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix profiles`, `aix spend`, `aix models`, and `aix status`"
+        "JSON output is only supported by `aix profiles`, `aix spend`, `aix models`, `aix status`, and `aix usage`"
     )]
     JsonUnsupportedCommand,
+
+    #[error("invalid usage date range: {reason}")]
+    InvalidUsageRange { reason: String },
+
+    #[error("`aix usage` requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
+    UsageNotLiteLlm,
+
+    #[error("usage history is unavailable on this gateway or LiteLLM version (the daily activity endpoint is unsupported)")]
+    UsageUnavailable,
 
     #[error("executable not found: {program}")]
     ExecutableNotFound { program: String },
@@ -167,8 +176,10 @@ impl AixError {
             | Self::ExecNoCommand
             | Self::ShellExtraArgs
             | Self::JsonUnsupportedCommand
+            | Self::InvalidUsageRange { .. }
             | Self::ExecutableNotFound { .. }
-            | Self::NotLiteLlm => 2,
+            | Self::NotLiteLlm
+            | Self::UsageNotLiteLlm => 2,
             Self::SecretMissingEnvVar { .. }
             | Self::SecretFileRead { .. }
             | Self::SecretCommandFailed { .. }
@@ -178,7 +189,10 @@ impl AixError {
             Self::GatewayError {
                 status: 401 | 403, ..
             } => 4,
-            Self::GatewayError { .. } | Self::GatewayProtocolError | Self::HttpError(_) => 5,
+            Self::GatewayError { .. }
+            | Self::GatewayProtocolError
+            | Self::HttpError(_)
+            | Self::UsageUnavailable => 5,
             Self::BudgetExceeded { .. } => 6,
             Self::NotImplemented(_) | Self::ProcessSpawn { .. } => 1,
         }

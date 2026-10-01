@@ -8,3 +8,4 @@ pub mod profiles;
 pub mod shell;
 pub mod spend;
 pub mod status;
+pub mod usage;

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -83,6 +83,16 @@ pub enum Command {
         #[arg(long, value_name = "TEXT")]
         filter: Option<String>,
     },
+    /// Show historical usage from the LiteLLM daily activity endpoint
+    Usage {
+        /// Profile name (positional; overrides the global --profile flag)
+        profile: Option<String>,
+        #[command(flatten)]
+        date_range: UsageRangeArgs,
+        /// Filter usage to an exact model ID returned by LiteLLM
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Manage the local response cache
     Cache {
         #[command(subcommand)]
@@ -95,11 +105,28 @@ pub enum Command {
     Tool(Vec<String>),
 }
 
+#[derive(Args, Default)]
+pub struct UsageRangeArgs {
+    /// Number of calendar days to include, ending today (for example, 7d)
+    #[arg(long, conflicts_with_all = ["start", "end"])]
+    pub since: Option<String>,
+    /// Inclusive start date in YYYY-MM-DD format (requires --end)
+    #[arg(long, requires = "end", conflicts_with = "since")]
+    pub start: Option<String>,
+    /// Inclusive end date in YYYY-MM-DD format (requires --start)
+    #[arg(long, requires = "start", conflicts_with = "since")]
+    pub end: Option<String>,
+}
+
 impl Command {
     pub fn supports_json(&self) -> bool {
         matches!(
             self,
-            Self::Profiles | Self::Spend { .. } | Self::Status { .. } | Self::Models { .. }
+            Self::Profiles
+                | Self::Spend { .. }
+                | Self::Status { .. }
+                | Self::Models { .. }
+                | Self::Usage { .. }
         )
     }
 }

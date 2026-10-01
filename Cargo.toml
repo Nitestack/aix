@@ -26,6 +26,7 @@ zeroize     = "1"
 reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio       = { version = "1", features = ["macros", "rt-multi-thread"] }
 owo-colors  = { version = "4", features = ["supports-colors"] }
+chrono      = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -19,6 +19,7 @@ The old Nix shell-script implementation has been superseded; see `docs/aix/migra
 | `aix config path` | Print the resolved config file path |
 | `aix config validate` | Validate the config file and exit |
 | `aix spend [PROFILE] [--json] [--no-cache]` | Show LiteLLM spend and budget information |
+| `aix usage [PROFILE] [--since Nd | --start DATE --end DATE] [--model MODEL] [--json]` | Show historical LiteLLM spend, token, request, and model usage |
 | `aix cache clear` | Delete all cached spend-response files |
 
 ---

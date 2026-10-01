@@ -18,7 +18,7 @@ Owns the CLI surface: flags, subcommands, value types.
 **Rule:** contains no business logic. Parsing only.
 
 - Global flags: `--profile`, `--config`
-- Subcommands: `profiles`, `env`, `shell`, `exec`, `config`, `spend`, `cache`, `<tool>` (external catch-all)
+- Subcommands: `profiles`, `env`, `shell`, `exec`, `config`, `spend`, `usage`, `cache`, `<tool>` (external catch-all)
 - Format enum (`EnvFormat`): sh / json / nu / fish / powershell / cmd
 
 ### `src/config.rs` — Config loading and validation
@@ -36,7 +36,7 @@ Owns the config file data model and all file I/O related to config.
 
 Config types: `Config`, `Endpoint`, `Profile`, `Provider`, `Gateway`, `CacheConfig`.
 A profile can override `endpoint.base_url` with `base_url` and append custom, secret-backed variables with `env`; those custom values can override generated variables.
-`gateway` and `provider` are optional metadata for most commands, but `aix spend` accepts only an unset gateway or `litellm`.
+`gateway` and `provider` are optional metadata for most commands, but `aix spend` and `aix usage` accept only an unset gateway or `litellm`.
 `ApiFormat` exists as an internal code enum used by `collect_vars()` but is not a config-file field.
 
 ### `src/secrets.rs` — Secret resolution
@@ -65,7 +65,9 @@ capability-specific clients:
 - `openai.rs` exposes OpenAI-compatible `/v1/*` endpoints.
 - `litellm.rs` owns LiteLLM management endpoints such as `/key/info` and
   `/key/list`. Management data is sanitized before it is returned to command
-  code, and `aix spend` uses this client.
+  code, and `aix spend` uses this client. Historical activity requests use the
+  same client; `aix usage` normalizes the response into aix-owned daily and
+  model aggregates and discards API-key breakdowns.
 
 Keep endpoint-specific behavior in the corresponding capability client rather
 than growing a single catch-all gateway client.
@@ -163,7 +165,7 @@ No Rust changes are required for most provider additions.
 
 1. Set `base_url` to the gateway URL via env var, file, or command.
 2. Add a named profile under `[profiles.<name>]` with the appropriate `api_key`.
-3. Optionally set `provider` and `gateway` as metadata. Set `gateway = "litellm"` (or leave it unset) when the profile will be used with `aix spend`; other gateway values are rejected by that command.
+3. Optionally set `provider` and `gateway` as metadata. Set `gateway = "litellm"` (or leave it unset) when the profile will be used with `aix spend` or `aix usage`; other gateway values are rejected by those commands.
 
 `aix env` and `aix exec` always emit Anthropic, OpenAI, and LiteLLM credential sets.
 `aix claude` adds Anthropic variables to the common `AIX_PROFILE` and `LITELLM_*` variables; `aix <other-tool>` adds OpenAI variables.

@@ -22,6 +22,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses Li
 - [Model discovery](#model-discovery)
 - [Spend and budget](#spend-and-budget)
 - [Gateway status](#gateway-status)
+- [Historical usage](#historical-usage)
 - [JSON output and exit codes](#json-output-and-exit-codes)
 - [Cache](#cache)
 - [Security notes](#security-notes)
@@ -583,9 +584,34 @@ For a non-LiteLLM gateway, or when the LiteLLM management endpoint is unsupporte
 
 ---
 
+## Historical usage
+
+`aix usage` is the historical counterpart to `aix spend`. `spend` is the quick current-budget check: it reads LiteLLM's key information and caches the response for an hour by default. `usage` queries LiteLLM's `/user/daily/activity` accounting endpoint for daily spend, tokens, request counts, and model breakdowns. It does not estimate costs locally and does not use the `spend` cache.
+
+```bash
+# Default: the last 30 local calendar dates, including today
+aix usage work
+
+# Last seven calendar dates, including today
+aix usage work --since 7d
+
+# Inclusive explicit date range
+aix usage work --start 2026-09-01 --end 2026-09-30
+
+# Filter and aggregate metrics for an exact model ID returned by LiteLLM
+aix usage work --model gpt-6-luna
+
+# Stable JSON envelope
+aix usage work --json
+```
+
+`--since Nd` requires a positive whole number of days and cannot be combined with `--start`/`--end`. Explicit dates must both be supplied as inclusive `YYYY-MM-DD` dates, with the end on or after the start. An unset `gateway` is accepted for compatibility; an explicitly non-LiteLLM gateway is rejected. If the gateway or LiteLLM version does not provide the daily activity endpoint, `aix usage` reports that history is unavailable. Authentication failures remain separate errors.
+
+JSON output uses the shared envelope. `usage.data` contains `start_date`, `end_date`, aggregate `spend`, `prompt_tokens`, `completion_tokens`, `total_tokens`, and `request_count`, plus `daily` and spend-sorted `models` arrays. `model_filter` is included when `--model` is applied. Only aix-owned fields are emitted; upstream API-key breakdowns and arbitrary response fields are discarded.
+
 ## JSON output and exit codes
 
-The global `--json` flag is currently supported by `profiles`, `spend`, `models`, and `status`. It can appear before or after the command. Existing forms such as `aix profiles --json`, `aix spend work --json`, `aix models work --json`, and `aix status work --json` remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
+The global `--json` flag is currently supported by `profiles`, `spend`, `models`, `status`, and `usage`. It can appear before or after the command. Existing forms such as `aix profiles --json`, `aix spend work --json`, `aix models work --json`, `aix status work --json`, and `aix usage work --json` remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
 
 JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty. The envelope is owned by `aix`:
 
@@ -599,7 +625,7 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. These commands do not expose raw upstream responses, credentials, or unrelated upstream fields.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
 
 ```json
 {
@@ -626,7 +652,6 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
   }
 }
 ```
-
 When LiteLLM reports a budget-exceeded response, `aix spend` returns exit code `6`. Human mode still shows the spend summary; JSON mode treats it as an error and leaves stdout empty.
 
 Process exit codes are stable:

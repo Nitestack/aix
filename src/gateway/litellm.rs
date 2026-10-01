@@ -4,6 +4,7 @@ use serde_json::Value;
 
 const KEY_INFO_PATH: &str = "/key/info";
 const KEY_LIST_PATH: &str = "/key/list";
+const USER_DAILY_ACTIVITY_PATH: &str = "/user/daily/activity";
 
 pub(crate) struct LiteLlmAdminClient {
     transport: GatewayTransport,
@@ -48,6 +49,31 @@ impl LiteLlmAdminClient {
         }
 
         Ok(info)
+    }
+
+    pub(crate) async fn daily_activity(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<Value, AixError> {
+        match self
+            .transport
+            .get_json(
+                USER_DAILY_ACTIVITY_PATH,
+                &[
+                    ("start_date", start_date.to_string()),
+                    ("end_date", end_date.to_string()),
+                ],
+            )
+            .await
+        {
+            Ok(data) => Ok(data),
+            Err(TransportError::Gateway {
+                status: 404 | 405 | 501,
+                ..
+            }) => Err(AixError::UsageUnavailable),
+            Err(error) => Err(map_admin_error(error)),
+        }
     }
 
     async fn list_keys(&self, user_id: &str) -> Result<Vec<Value>, AixError> {
