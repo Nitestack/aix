@@ -167,7 +167,11 @@ fn resolve_launch_env_inner(
 pub(crate) fn native_clear_vars() -> Vec<String> {
     [
         "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "LITELLM_API_KEY",

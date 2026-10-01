@@ -13,9 +13,13 @@ let
       native ? false,
     }:
     let
+      nativeModules = [
+        ../nix/chatgpt-example.nix
+        ../nix/anthropic-example.nix
+      ];
       evaluated = lib.evalModules {
         specialArgs = { inherit pkgs; };
-        modules = lib.optional native ../nix/chatgpt-example.nix ++ [
+        modules = lib.optionals native nativeModules ++ [
           aixModule
           (
             { lib, ... }:

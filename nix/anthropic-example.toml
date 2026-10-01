@@ -1,0 +1,50 @@
+# Claude Pro/Max subscription profile. Merge into your aix config alongside
+# ChatGPT and gateway profiles. Install Claude Code and sign in with claude.ai:
+#   aix claude anthropic -- auth login
+#
+# Usage:
+#   aix claude anthropic
+#   aix --profile anthropic run -- claude
+#   aix --profile anthropic ask "Explain this text"
+#
+# Claude Code stores and refreshes its own subscription login. aix does not copy
+# OAuth tokens. forceLoginMethod prevents using a Console/API-key login in this
+# profile. Native launches clear inherited gateway credentials and Claude cloud
+# provider selectors; explicit profile/tool env still takes precedence.
+#
+# The model default uses Claude Code's current Sonnet alias. Change it to another
+# Claude Code model/alias if desired. aix ask also accepts --model and local aliases.
+#
+# aix ask uses Claude Code's text mode with built-in tools and MCP disabled,
+# customizations disabled, no user/project/local settings, and no saved session.
+# Its system instruction replaces Claude Code's coding prompt. A recent Claude
+# Code version with --safe-mode is required. JSON token counts are null for text
+# backends. On failure, check the subscription login in Claude Code directly.
+#
+# This example targets Claude Code. OpenCode no longer bundles Anthropic
+# subscription authentication; use a separately billed API key for that tool.
+#
+# Sources:
+# https://code.claude.com/docs/en/authentication
+# https://code.claude.com/docs/en/cli-reference
+# https://opencode.ai/docs/providers/#anthropic
+
+[profiles.anthropic]
+label = "Claude subscription"
+auth = "native"
+
+[profiles.anthropic.models]
+default = "sonnet"
+
+[profiles.anthropic.tools.claude]
+args = ["--model", "{model}", "--settings", '{"forceLoginMethod":"claudeai"}']
+
+[profiles.anthropic.ask]
+command = "claude"
+args = [
+  "--print", "--output-format", "text", "--no-session-persistence",
+  "--safe-mode", "--tools", "", "--disable-slash-commands",
+  "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+  "--setting-sources", "", "--settings", '{"forceLoginMethod":"claudeai"}',
+  "--model", "{model}", "--system-prompt", "{system}",
+]

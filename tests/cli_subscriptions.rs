@@ -31,7 +31,11 @@ fn cmd(config: &std::path::Path) -> Command {
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
         "LITELLM_API_KEY",
         "LITELLM_BASE_URL",
         "CODEX_API_KEY",
@@ -108,6 +112,50 @@ SUBSCRIPTION_ENV = "tool-override"
         .success()
         .stderr(predicate::str::contains("Would unset:"))
         .stderr(predicate::str::contains("inherited-sentinel").not());
+}
+
+#[test]
+fn native_claude_profile_launches_and_asks_without_gateway_auth_or_cloud_selectors() {
+    let (_dir, config) = fixture(
+        r#"
+[profiles.anthropic]
+auth = "native"
+[profiles.anthropic.models]
+default = "sonnet"
+[profiles.anthropic.tools.claude]
+command = "BACKEND"
+args = ["--model", "{model}", "--settings", '{"forceLoginMethod":"claudeai"}']
+[profiles.anthropic.ask]
+command = "BACKEND"
+args = ["--print", "--tools", "", "--model", "{model}", "--system-prompt", "{system}"]
+"#,
+        "#!/bin/sh\nprintf '<%s>\\n' \"$@\"\nprintf '%s\\n' \"${ANTHROPIC_AUTH_TOKEN-unset}\" \"${CLAUDE_CODE_USE_BEDROCK-unset}\" \"${CLAUDE_CODE_USE_VERTEX-unset}\" \"${CLAUDE_CODE_USE_FOUNDRY-unset}\"\ncat\n",
+    );
+    cmd(&config)
+        .args(["claude", "anthropic", "--", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<sonnet>"))
+        .stdout(predicate::str::contains(
+            "<{\"forceLoginMethod\":\"claudeai\"}>",
+        ))
+        .stdout(predicate::str::contains("inherited-sentinel").not());
+    cmd(&config)
+        .args([
+            "--profile",
+            "anthropic",
+            "ask",
+            "--system",
+            "Answer briefly",
+            "user input",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<--tools>\n<>\n"))
+        .stdout(predicate::str::contains("<sonnet>"))
+        .stdout(predicate::str::contains("<Answer briefly>"))
+        .stdout(predicate::str::contains("user input"))
+        .stdout(predicate::str::contains("inherited-sentinel").not());
 }
 
 #[test]
