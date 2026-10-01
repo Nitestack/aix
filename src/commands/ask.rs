@@ -102,15 +102,9 @@ fn collect_messages(
     prompt: Option<String>,
     files: &[PathBuf],
 ) -> Result<Vec<Value>, AixError> {
-    if prompt.is_none() && !files.is_empty() {
-        return Err(AixError::AskInstructionRequired);
-    }
-
     let stdin = std::io::stdin();
     let stdin_is_terminal = stdin.is_terminal();
-    if prompt.is_none() && stdin_is_terminal {
-        return Err(AixError::AskInputRequired);
-    }
+    validate_input_shape(prompt.is_some(), !files.is_empty(), stdin_is_terminal)?;
 
     let stdin_context = if stdin_is_terminal {
         None
@@ -157,6 +151,20 @@ fn collect_messages(
     Ok(messages)
 }
 
+fn validate_input_shape(
+    has_prompt: bool,
+    has_files: bool,
+    stdin_is_terminal: bool,
+) -> Result<(), AixError> {
+    if !has_prompt && has_files {
+        return Err(AixError::AskInstructionRequired);
+    }
+    if !has_prompt && stdin_is_terminal {
+        return Err(AixError::AskInputRequired);
+    }
+    Ok(())
+}
+
 fn assistant_content(response: &Value) -> Result<String> {
     response
         .get("choices")
@@ -170,4 +178,25 @@ fn assistant_content(response: &Value) -> Result<String> {
         .ok_or_else(|| {
             AixError::GatewayProtocolError("response contained no assistant text").into()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_prompt_on_terminal_fails_with_usage_guidance() {
+        assert!(matches!(
+            validate_input_shape(false, false, true),
+            Err(AixError::AskInputRequired)
+        ));
+    }
+
+    #[test]
+    fn files_without_prompt_require_an_instruction_even_if_stdin_is_piped() {
+        assert!(matches!(
+            validate_input_shape(false, true, false),
+            Err(AixError::AskInstructionRequired)
+        ));
+    }
 }
