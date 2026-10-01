@@ -112,7 +112,7 @@ pub(crate) fn has_spend_data(data: &serde_json::Value, api_key: &str) -> bool {
     })
 }
 
-fn format_age(age_secs: u64) -> String {
+pub(crate) fn format_age(age_secs: u64) -> String {
     match age_secs {
         0..=59 => format!("{age_secs}s ago"),
         60..=3599 => format!("{}m ago", age_secs / 60),

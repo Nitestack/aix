@@ -1,6 +1,6 @@
 use crate::cache::Cache;
 use crate::commands::env::resolve_profile;
-use crate::commands::spend::{has_spend_data, spend_summary};
+use crate::commands::spend::{format_age, has_spend_data, spend_summary};
 use crate::config::{self, Gateway, KnownGateway, KnownProvider, Provider};
 use crate::error::AixError;
 use crate::gateway::{openai::OpenAiClient, LiteLlmAdminClient};
@@ -317,14 +317,5 @@ fn print_spend_human(spend: &SpendData) {
             println!("Spend       ${amount:.2} · no budget set{cache_suffix}");
         }
         _ => println!("Spend       unavailable"),
-    }
-}
-
-fn format_age(age_secs: u64) -> String {
-    match age_secs {
-        0..=59 => format!("{age_secs}s ago"),
-        60..=3599 => format!("{}m ago", age_secs / 60),
-        3600..=86399 => format!("{}h ago", age_secs / 3600),
-        _ => format!("{}d ago", age_secs / 86400),
     }
 }
