@@ -440,6 +440,24 @@ fn ask_without_a_prompt_or_piped_input_fails_with_usage_guidance() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("non-empty piped stdin"));
 }
 
+#[cfg(unix)]
+#[test]
+fn ask_with_terminal_stdin_and_no_prompt_fails_before_interaction() {
+    let terminal = nix::pty::openpty(None, None).expect("can create a pseudoterminal");
+    drop(terminal.master);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aix"))
+        .args(["ask"])
+        .stdin(std::fs::File::from(terminal.slave))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("non-empty piped stdin"));
+}
+
 #[test]
 fn ask_help_exposes_only_the_instruction_as_a_positional_argument() {
     let output = cmd().args(["ask", "--help"]).output().unwrap();
