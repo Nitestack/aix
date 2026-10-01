@@ -25,7 +25,15 @@ pub fn run(
             available_hint: config::format_available_profiles(&cfg),
         })?;
 
-    let api_key = profile.api_key.resolve()?;
+    if profile.auth == config::ProfileAuth::Native {
+        let mut vars = vec![("AIX_PROFILE".to_string(), profile_name)];
+        append_custom_vars(&mut vars, &profile.env)?;
+        let clear_vars = crate::commands::launch::native_clear_vars();
+        print!("{}", format_native_vars(&vars, &clear_vars, &format));
+        return Ok(());
+    }
+
+    let api_key = profile.resolve_api_key()?;
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
 
     let vars = collect_profile_vars(
@@ -85,13 +93,50 @@ pub(crate) fn collect_profile_vars(
 
     // Append profile values last so explicit profile configuration can override
     // a generated variable when a provider requires different naming or values.
-    let mut custom_vars: Vec<_> = profile.env.iter().collect();
+    append_custom_vars(&mut vars, &profile.env)?;
+    Ok(vars)
+}
+
+pub(crate) fn append_custom_vars(
+    vars: &mut Vec<(String, String)>,
+    env: &std::collections::HashMap<String, crate::secrets::SecretSource>,
+) -> Result<(), AixError> {
+    let mut custom_vars: Vec<_> = env.iter().collect();
     custom_vars.sort_unstable_by_key(|(key, _)| key.as_str());
     for (key, value) in custom_vars {
         vars.push((key.clone(), value.resolve()?.expose_secret().to_string()));
     }
+    Ok(())
+}
 
-    Ok(vars)
+fn format_native_vars(vars: &[(String, String)], clear: &[String], format: &EnvFormat) -> String {
+    // JSON represents removals as null, so callers can distinguish unset from an empty value.
+    if matches!(format, EnvFormat::Json) {
+        let mut values: BTreeMap<&str, Option<&str>> =
+            clear.iter().map(|key| (key.as_str(), None)).collect();
+        for (key, value) in vars {
+            values.insert(key, Some(value));
+        }
+        return format!(
+            "{}\n",
+            serde_json::to_string_pretty(&values).expect("string map is serializable")
+        );
+    }
+    let mut output = String::new();
+    for key in clear {
+        output.push_str(&match format {
+            EnvFormat::Sh => format!("unset {key}\n"),
+            EnvFormat::Nu => format!("hide-env --ignore-errors {key}\n"),
+            EnvFormat::Fish => format!("set -e {key}\n"),
+            EnvFormat::Powershell => {
+                format!("Remove-Item Env:{key} -ErrorAction SilentlyContinue\n")
+            }
+            EnvFormat::Cmd => format!("set \"{key}=\"\n"),
+            EnvFormat::Json => unreachable!(),
+        });
+    }
+    output.push_str(&format_vars(vars, format));
+    output
 }
 
 fn format_vars(vars: &[(String, String)], format: &EnvFormat) -> String {

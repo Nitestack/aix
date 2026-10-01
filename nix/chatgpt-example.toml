@@ -1,0 +1,60 @@
+# ChatGPT subscription profile. Merge this into your aix config; API-key profiles
+# can coexist with it. Replace the model below with an ID supported by your plan.
+# No endpoint or API key is needed for auth = "native".
+#
+# Install the tools you use and authenticate separately in each tool:
+#   codex login                     (or codex login --device-auth on WSL/headless)
+#   opencode -> /connect -> OpenAI -> ChatGPT Plus/Pro
+#   pi -> /login -> OpenAI Codex
+# Tools own their login storage and token refresh; aix does not copy OAuth tokens.
+#
+# Usage:
+#   aix codex chatgpt
+#   aix opencode chatgpt
+#   aix pi chatgpt
+#   aix --profile chatgpt run -- pi
+#   aix --profile chatgpt ask "Explain this text"
+#   cat input.txt | aix --profile chatgpt ask --system "Answer concisely" "Summarize"
+#
+# Native profiles clear inherited Anthropic/OpenAI/LiteLLM gateway variables and
+# CODEX_API_KEY. Profile/tool env is applied afterwards as an explicit override.
+# Profile tool entries replace shared [tools.<name>] entries. Configured args are
+# prepended to user args, and {model} expands to the profile's effective default.
+# API gateway commands (models, status, spend, usage) require an API-key profile.
+#
+# aix ask delegates text-only inference to Pi, which must be installed and logged
+# in. It sends the prompt/context on stdin and returns the assistant text. The
+# {model} and {system} placeholders are required; --model still resolves aliases.
+# --json keeps the standard ask envelope, with null token counts for text backends.
+# The backend's stderr is suppressed; on failure, check the login in Pi directly.
+#
+# Sources:
+# https://learn.chatgpt.com/docs/auth
+# https://opencode.ai/docs/providers/#openai
+# https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md
+# https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md
+
+[profiles.chatgpt]
+label = "ChatGPT subscription"
+auth = "native"
+
+[profiles.chatgpt.models]
+default = "gpt-5.4"
+
+[profiles.chatgpt.tools.codex]
+args = ["-c", 'model_provider="openai"', "-c", 'forced_login_method="chatgpt"', "--model", "{model}"]
+
+[profiles.chatgpt.tools.opencode]
+args = ["--model", "openai/{model}"]
+
+[profiles.chatgpt.tools.pi]
+args = ["--provider", "openai-codex", "--model", "{model}"]
+
+[profiles.chatgpt.ask]
+command = "pi"
+args = [
+  "--print", "--mode", "text", "--no-session", "--no-tools",
+  "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files",
+  "--provider", "openai-codex", "--model", "{model}",
+  "--system-prompt", "{system}",
+]

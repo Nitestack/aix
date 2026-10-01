@@ -76,13 +76,22 @@ let
       };
 
       apiFormat = lib.mkOption {
-        type = lib.types.enum [
-          "anthropic"
-          "openai"
-          "both"
-        ];
+        type = lib.types.nullOr (
+          lib.types.enum [
+            "anthropic"
+            "openai"
+            "both"
+          ]
+        );
+        default = null;
         example = "openai";
         description = "Credential variable format to provide to this tool.";
+      };
+
+      args = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = "Arguments prepended to user arguments. {model} expands to the profile model default.";
       };
 
       env = lib.mkOption {
@@ -106,9 +115,10 @@ let
 
   mkTool =
     _name: tool:
-    {
+    lib.optionalAttrs (tool.apiFormat != null) {
       api_format = tool.apiFormat;
     }
+    // lib.optionalAttrs (tool.args != [ ]) { args = tool.args; }
     // lib.optionalAttrs (tool.command != null) {
       command = tool.command;
     }
@@ -144,8 +154,13 @@ let
 
   mkProfile =
     _name: profile:
-    {
+    lib.optionalAttrs (profile.auth != "api_key") { auth = profile.auth; }
+    // lib.optionalAttrs (profile.apiKey != null) {
       api_key = encodeSecretSource profile.apiKey;
+    }
+    // lib.optionalAttrs (profile.tools != { }) { tools = lib.mapAttrs mkTool profile.tools; }
+    // lib.optionalAttrs (profile.ask != null) {
+      ask = { inherit (profile.ask) command args; };
     }
     // lib.optionalAttrs (profile.label != null) {
       label = encodeSecretSource profile.label;
@@ -162,7 +177,7 @@ let
 
   mkEndpoint =
     ep:
-    {
+    lib.optionalAttrs (ep.baseUrl != null) {
       base_url = encodeSecretSource ep.baseUrl;
     }
     // lib.optionalAttrs (ep.gateway != null) { gateway = ep.gateway; }
@@ -212,12 +227,14 @@ in
     };
 
     endpoint = lib.mkOption {
-      description = "Gateway endpoint shared by all profiles.";
+      description = "Gateway endpoint shared by API-key profiles; optional for native subscription profiles.";
+      default = { };
       type = lib.types.submodule {
         options = {
           baseUrl = lib.mkOption {
-            type = secretSourceType;
-            apply = validateSecretSource;
+            type = lib.types.nullOr secretSourceType;
+            default = null;
+            apply = v: if v != null then validateSecretSource v else null;
             example = lib.literalExpression ''{ file = "/run/secrets/aix/base-url"; }'';
             description = "Gateway base URL. Accepts any secret source.";
           };
@@ -278,7 +295,7 @@ in
     };
 
     profiles = lib.mkOption {
-      description = "Named API profiles. At least one must be defined when enable = true.";
+      description = "Named API-key or native subscription profiles. At least one must be defined when enable = true.";
       default = { };
       type = lib.types.attrsOf (
         lib.types.submodule {
@@ -295,9 +312,41 @@ in
               '';
             };
 
+            auth = lib.mkOption {
+              type = lib.types.enum [
+                "api_key"
+                "native"
+              ];
+              default = "api_key";
+              description = "Use gateway credentials or the launched tool's own subscription login.";
+            };
+
+            tools = lib.mkOption {
+              type = lib.types.attrsOf toolConfigType;
+              default = { };
+              description = "Launch entries for this profile; each entry replaces a matching shared tool entry.";
+            };
+
+            ask = lib.mkOption {
+              default = null;
+              description = "Text-only inference command for native subscriptions. Receives user context on stdin and returns assistant text on stdout; args must contain {model} and {system}. JSON token usage is unavailable.";
+              type = lib.types.nullOr (
+                lib.types.submodule {
+                  options = {
+                    command = lib.mkOption { type = lib.types.str; };
+                    args = lib.mkOption {
+                      type = lib.types.listOf lib.types.str;
+                      default = [ ];
+                    };
+                  };
+                }
+              );
+            };
+
             apiKey = lib.mkOption {
-              type = secretSourceType;
-              apply = validateSecretSource;
+              type = lib.types.nullOr secretSourceType;
+              default = null;
+              apply = v: if v != null then validateSecretSource v else null;
               example = lib.literalExpression ''{ file = "/run/secrets/aix/work-key"; }'';
               description = ''
                 API key for this profile. Accepts any secret source.
@@ -346,7 +395,19 @@ in
         assertion = cfg.profiles != { };
         message = "programs.aix.profiles must define at least one profile when programs.aix.enable = true.";
       }
-    ];
+    ]
+    ++ lib.mapAttrsToList (name: profile: {
+      assertion =
+        if profile.auth == "native" then
+          profile.apiKey == null && profile.baseUrl == null
+        else
+          profile.apiKey != null && (profile.baseUrl != null || cfg.endpoint.baseUrl != null);
+      message = "programs.aix.profiles.${name}: API-key profiles require apiKey and a base URL; native profiles must omit apiKey and baseUrl.";
+    }) cfg.profiles
+    ++ lib.mapAttrsToList (name: tool: {
+      assertion = tool.apiFormat != null;
+      message = "programs.aix.tools.${name} requires apiFormat.";
+    }) cfg.tools;
 
     home.packages = [ cfg.package ];
 

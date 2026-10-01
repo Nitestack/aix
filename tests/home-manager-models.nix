@@ -10,11 +10,12 @@ let
       models ? { },
       workModels ? { },
       tools ? { },
+      native ? false,
     }:
     let
       evaluated = lib.evalModules {
         specialArgs = { inherit pkgs; };
-        modules = [
+        modules = lib.optional native ../nix/chatgpt-example.nix ++ [
           aixModule
           (
             { lib, ... }:
@@ -41,16 +42,22 @@ let
               programs.aix = {
                 enable = true;
                 package = pkgs.hello;
-                endpoint.baseUrl = {
-                  env = "AIX_GATEWAY_URL";
-                };
+                endpoint.baseUrl =
+                  if native then
+                    null
+                  else
+                    {
+                      env = "AIX_GATEWAY_URL";
+                    };
                 inherit models;
                 inherit tools;
-                profiles.work = {
-                  apiKey = {
-                    env = "AIX_TEST_API_KEY";
+                profiles = lib.optionalAttrs (!native) {
+                  work = {
+                    apiKey = {
+                      env = "AIX_TEST_API_KEY";
+                    };
+                    models = workModels;
                   };
-                  models = workModels;
                 };
               };
             }
@@ -58,6 +65,7 @@ let
         ];
       };
     in
+    assert builtins.all (entry: entry.assertion) evaluated.config.assertions;
     evaluated.config.xdg.configFile."aix/aix.toml".source;
 in
 {
@@ -88,4 +96,6 @@ in
   };
 
   legacy = render { };
+
+  native = render { native = true; };
 }

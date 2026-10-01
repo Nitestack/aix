@@ -108,6 +108,15 @@
             grep -Fxq 'api_format = "anthropic"' ${homeManagerConfigs.configured}
             ! grep -q 'models' ${homeManagerConfigs.legacy}
             ! grep -q 'tools' ${homeManagerConfigs.legacy}
+            grep -Fxq '[profiles.chatgpt]' ${homeManagerConfigs.native}
+            grep -Fxq 'auth = "native"' ${homeManagerConfigs.native}
+            grep -Fxq '[profiles.chatgpt.tools.pi]' ${homeManagerConfigs.native}
+            grep -q 'openai-codex' ${homeManagerConfigs.native}
+            grep -Fxq '[profiles.chatgpt.ask]' ${homeManagerConfigs.native}
+            grep -Fxq 'command = "pi"' ${homeManagerConfigs.native}
+            ! grep -q 'api_key' ${homeManagerConfigs.native}
+            ! grep -q 'base_url' ${homeManagerConfigs.native}
+            ${aix-rs}/bin/aix --config ${homeManagerConfigs.native} config validate
             touch $out
           '';
         };

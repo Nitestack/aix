@@ -17,6 +17,48 @@ pub enum AixError {
     #[error("default_profile \"{0}\" is not defined in profiles")]
     UnknownDefaultProfile(String),
 
+    #[error("API-key profiles require api_key; use auth = \"native\" for a tool-managed subscription login")]
+    MissingProfileApiKey,
+
+    #[error("API-key profiles require endpoint.base_url or a profile base_url")]
+    MissingEndpointUrl,
+
+    #[error("native profile {name:?} must omit api_key and base_url; credentials are managed by the tool")]
+    NativeProfileCredentials { name: String },
+
+    #[error("this command requires an API-key profile; for a native subscription use a named tool, aix run, or aix ask with a configured profiles.<name>.ask command")]
+    NativeProfileGatewayUnsupported,
+
+    #[error("shared tool {name:?} requires api_format")]
+    MissingToolApiFormat { name: String },
+
+    #[error("profile ask.command must not be empty")]
+    EmptyAskCommand,
+
+    #[error(
+        "profile ask.args must include {model} to pass the selected model",
+        model = "{model}"
+    )]
+    AskCommandModelRequired,
+
+    #[error(
+        "profile ask.args must include {system} to pass the system instruction",
+        system = "{system}"
+    )]
+    AskCommandSystemRequired,
+
+    #[error("native profile requires profiles.<name>.ask with a text-only command; see nix/chatgpt-example.toml")]
+    NativeAskNotConfigured,
+
+    #[error("ask backend {program:?} failed (exit code: {exit_code:?}); check the tool's subscription login")]
+    AskCommandFailed {
+        program: String,
+        exit_code: Option<i32>,
+    },
+
+    #[error("ask backend did not return non-empty UTF-8 text")]
+    AskCommandOutput,
+
     #[error("no model specified and no default model is configured; pass --model <MODEL> or configure [models].default or [profiles.<PROFILE>.models].default")]
     NoModelConfigured,
 
@@ -214,7 +256,16 @@ pub enum AixError {
 impl AixError {
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::UnknownFormat { .. }
+            Self::MissingProfileApiKey
+            | Self::MissingEndpointUrl
+            | Self::NativeProfileCredentials { .. }
+            | Self::NativeProfileGatewayUnsupported
+            | Self::MissingToolApiFormat { .. }
+            | Self::EmptyAskCommand
+            | Self::AskCommandSystemRequired
+            | Self::AskCommandModelRequired
+            | Self::NativeAskNotConfigured
+            | Self::UnknownFormat { .. }
             | Self::ParseError { .. }
             | Self::UnknownDefaultProfile(_)
             | Self::NoModelConfigured
@@ -262,7 +313,9 @@ impl AixError {
             | Self::HttpError(_)
             | Self::UsageUnavailable => 5,
             Self::BudgetExceeded { .. } => 6,
-            Self::NotImplemented(_)
+            Self::AskCommandFailed { .. }
+            | Self::AskCommandOutput
+            | Self::NotImplemented(_)
             | Self::ProcessSpawn { .. }
             | Self::ProcessWait { .. }
             | Self::RunHistoryIo { .. }

@@ -16,6 +16,7 @@ pub struct Config {
     /// when the variable is not already set.
     #[serde(default)]
     pub env_files: Vec<PathBuf>,
+    #[serde(default)]
     pub endpoint: Endpoint,
     #[serde(default)]
     pub cache: CacheConfig,
@@ -67,15 +68,18 @@ pub enum ApiFormat {
 #[serde(deny_unknown_fields)]
 pub struct Tool {
     pub command: Option<String>,
-    pub api_format: ApiFormat,
+    pub api_format: Option<ApiFormat>,
+    /// Arguments prepended to the user-supplied arguments. {model} resolves the profile default.
+    #[serde(default)]
+    pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, SecretSource>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
-    pub base_url: SecretSource,
+    pub base_url: Option<SecretSource>,
     pub provider: Option<Provider>,
     pub gateway: Option<Gateway>,
 }
@@ -84,7 +88,9 @@ pub struct Endpoint {
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub label: Option<DynamicValue>,
-    pub api_key: SecretSource,
+    #[serde(default)]
+    pub auth: ProfileAuth,
+    pub api_key: Option<SecretSource>,
     /// Overrides the shared endpoint URL for this profile when configured.
     pub base_url: Option<SecretSource>,
     /// Additional environment variables injected when this profile is used.
@@ -92,6 +98,39 @@ pub struct Profile {
     pub env: HashMap<String, SecretSource>,
     #[serde(default)]
     pub models: ModelConfig,
+    /// Profile entries replace matching shared tool entries.
+    #[serde(default)]
+    pub tools: HashMap<String, Tool>,
+    /// Optional text-only subprocess backend for one-shot inference.
+    pub ask: Option<AskCommand>,
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileAuth {
+    #[default]
+    ApiKey,
+    Native,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AskCommand {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+impl Profile {
+    pub fn resolve_api_key(&self) -> Result<crate::secrets::SecretString, AixError> {
+        if self.auth == ProfileAuth::Native {
+            return Err(AixError::NativeProfileGatewayUnsupported);
+        }
+        self.api_key
+            .as_ref()
+            .ok_or(AixError::MissingProfileApiKey)?
+            .resolve()
+    }
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
@@ -203,10 +242,15 @@ pub fn resolve_base_url(
     profile: &Profile,
     endpoint: &Endpoint,
 ) -> Result<crate::secrets::SecretString, AixError> {
-    match &profile.base_url {
-        Some(base_url) => base_url.resolve(),
-        None => endpoint.base_url.resolve(),
+    if profile.auth == ProfileAuth::Native {
+        return Err(AixError::NativeProfileGatewayUnsupported);
     }
+    profile
+        .base_url
+        .as_ref()
+        .or(endpoint.base_url.as_ref())
+        .ok_or(AixError::MissingEndpointUrl)?
+        .resolve()
 }
 
 /// Resolve an explicit model name or the selected profile's effective default.
@@ -255,6 +299,35 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
     for name in sorted_names {
         let profile = &config.profiles[name];
         validate_models(&profile.models, &format!("profiles.{name}.models"))?;
+        match profile.auth {
+            ProfileAuth::ApiKey => {
+                if profile.api_key.is_none() {
+                    return Err(AixError::MissingProfileApiKey);
+                }
+                if profile.base_url.is_none() && config.endpoint.base_url.is_none() {
+                    return Err(AixError::MissingEndpointUrl);
+                }
+            }
+            ProfileAuth::Native => {
+                if profile.api_key.is_some() || profile.base_url.is_some() {
+                    return Err(AixError::NativeProfileCredentials {
+                        name: name.to_string(),
+                    });
+                }
+            }
+        }
+        validate_tools(&profile.tools, false)?;
+        if let Some(ask) = &profile.ask {
+            if ask.command.trim().is_empty() {
+                return Err(AixError::EmptyAskCommand);
+            }
+            if !ask.args.iter().any(|arg| arg.contains("{system}")) {
+                return Err(AixError::AskCommandSystemRequired);
+            }
+            if !ask.args.iter().any(|arg| arg.contains("{model}")) {
+                return Err(AixError::AskCommandModelRequired);
+            }
+        }
         for env_name in profile.env.keys() {
             if !is_valid_env_name(env_name) {
                 return Err(AixError::InvalidEnvironmentVariableName {
@@ -278,10 +351,15 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
         seen.insert(effective_label, name);
     }
 
-    let mut tool_names: Vec<_> = config.tools.keys().collect();
+    validate_tools(&config.tools, true)?;
+    Ok(())
+}
+
+fn validate_tools(tools: &HashMap<String, Tool>, require_format: bool) -> Result<(), AixError> {
+    let mut tool_names: Vec<_> = tools.keys().collect();
     tool_names.sort();
     for name in tool_names {
-        let tool = &config.tools[name];
+        let tool = &tools[name];
         if name.trim().is_empty() {
             return Err(AixError::EmptyToolName);
         }
@@ -291,6 +369,9 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
             .is_some_and(|command| command.trim().is_empty())
         {
             return Err(AixError::EmptyToolCommand { name: name.clone() });
+        }
+        if require_format && tool.api_format.is_none() {
+            return Err(AixError::MissingToolApiFormat { name: name.clone() });
         }
         for env_name in tool.env.keys() {
             if !is_valid_env_name(env_name) {
@@ -390,6 +471,52 @@ pub fn sorted_profiles(cfg: &Config) -> Result<Vec<(&str, String)>, AixError> {
 mod tests {
     use super::*;
     use crate::secrets::SourceKind;
+
+    #[test]
+    fn native_subscription_needs_no_gateway_credentials() {
+        let cfg: Config = toml::from_str("[profiles.chatgpt]\nauth = 'native'").unwrap();
+        validate(&cfg).unwrap();
+        let profile = &cfg.profiles["chatgpt"];
+        assert_eq!(profile.auth, ProfileAuth::Native);
+        assert!(profile.api_key.is_none());
+        assert!(cfg.endpoint.base_url.is_none());
+        assert!(matches!(
+            profile.resolve_api_key(),
+            Err(AixError::NativeProfileGatewayUnsupported)
+        ));
+    }
+
+    #[test]
+    fn native_profiles_parse_in_every_supported_format() {
+        for cfg in [
+            serde_json::from_str::<Config>(r#"{"profiles":{"chatgpt":{"auth":"native"}}}"#)
+                .unwrap(),
+            serde_yaml::from_str::<Config>("profiles:\n  chatgpt:\n    auth: native\n").unwrap(),
+            json5::from_str::<Config>("{profiles:{chatgpt:{auth:'native'}}}").unwrap(),
+        ] {
+            validate(&cfg).unwrap();
+            assert_eq!(cfg.profiles["chatgpt"].auth, ProfileAuth::Native);
+        }
+    }
+
+    #[test]
+    fn profile_credentials_are_required_only_for_api_key_auth() {
+        for invalid in [
+            "[profiles.work]",
+            "[profiles.work]\napi_key = 'test'",
+            "[profiles.work]\nauth = 'native'\napi_key = 'test'",
+            "[profiles.work]\nauth = 'native'\nbase_url = 'https://example.com'",
+            "[profiles.work]\nauth = 'native'\n[profiles.work.ask]\ncommand = 'pi'\nargs = ['{model}']",
+            "[profiles.work]\nauth = 'native'\n[profiles.work.ask]\ncommand = 'pi'\nargs = ['{system}']",
+        ] {
+            let cfg: Config = toml::from_str(invalid).unwrap();
+            assert!(validate(&cfg).is_err(), "accepted {invalid}");
+        }
+        let cfg: Config =
+            toml::from_str("[profiles.work]\napi_key = 'test'\nbase_url = 'https://example.com'")
+                .unwrap();
+        validate(&cfg).unwrap();
+    }
 
     const TOML: &str = r#"
 default_profile = "work"
@@ -518,7 +645,10 @@ fast = "work-fast-model"
             cfg.endpoint.provider,
             Some(Provider::Known(KnownProvider::LiteLlm))
         );
-        assert!(matches!(cfg.endpoint.base_url.0, SourceKind::Env(_)));
+        assert!(matches!(
+            cfg.endpoint.base_url.as_ref().unwrap().0,
+            SourceKind::Env(_)
+        ));
         assert!(cfg.profiles.contains_key("work"));
         assert!(cfg.profiles.contains_key("local"));
         assert_eq!(cfg.models.default.as_deref(), Some("global-model"));
@@ -538,9 +668,12 @@ fast = "work-fast-model"
                 .map(String::as_str),
             Some("work-fast-model")
         );
-        assert!(matches!(cfg.profiles["work"].api_key.0, SourceKind::Env(_)));
         assert!(matches!(
-            cfg.profiles["local"].api_key.0,
+            cfg.profiles["work"].api_key.as_ref().unwrap().0,
+            SourceKind::Env(_)
+        ));
+        assert!(matches!(
+            cfg.profiles["local"].api_key.as_ref().unwrap().0,
             SourceKind::Direct(_)
         ));
         assert!(matches!(

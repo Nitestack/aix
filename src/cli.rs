@@ -123,7 +123,7 @@ pub enum Command {
         #[arg(long)]
         model: Option<String>,
     },
-    /// Send a one-shot text request to the configured AI gateway
+    /// Send a one-shot text request through the profile gateway or native ask command
     Ask {
         /// Model name, alias, or raw model ID (defaults to the configured model)
         #[arg(long)]

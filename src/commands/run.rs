@@ -21,6 +21,12 @@ pub fn run(
 ) -> Result<()> {
     let (requested_program, command_args) = args.split_first().ok_or(AixError::RunNoCommand)?;
     let resolved = launch::resolve_run_launch(profile, config_path, requested_program)?;
+    let command_args = resolved
+        .args
+        .iter()
+        .chain(command_args)
+        .cloned()
+        .collect::<Vec<_>>();
     let executable_name = executable_name(&resolved.program);
     let run_id = Uuid::new_v4();
     let started_at_unix_ms = RunRecord::now_unix_ms();
@@ -86,7 +92,7 @@ pub fn run(
     let started = Instant::now();
     let child_result = launch::run_command_status_interruptible(
         &resolved.program,
-        command_args,
+        &command_args,
         &env,
         &interrupt_requested,
         &terminated,
