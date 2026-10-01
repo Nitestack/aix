@@ -58,24 +58,30 @@ pub async fn run(
             available_hint: config::format_available_profiles(&cfg),
         })?;
     let resolved_model = config::resolve_model(requested_model.as_deref(), &cfg, profile)?;
-    let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
-    let api_key = profile.api_key.resolve()?;
-
-    let request = json!({ "model": resolved_model.clone(), "messages": messages });
-    let client = OpenAiClient::new(base_url.expose_secret(), api_key.expose_secret());
-    let response = client
-        .chat_completions(&request)
-        .await
-        .map_err(|error| match error {
-            AixError::GatewayError { status, .. } => AixError::GatewayRequestFailed { status },
-            error => error,
-        })?;
-
-    let content = assistant_content(&response)?;
+    let (content, usage) = if profile.auth == config::ProfileAuth::Native {
+        let content = super::ask_command::run(profile, &profile_name, &resolved_model, &messages)?;
+        (content, Usage::default())
+    } else {
+        let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
+        let api_key = profile.resolve_api_key()?;
+        let request = json!({ "model": resolved_model.clone(), "messages": messages });
+        let client = OpenAiClient::new(base_url.expose_secret(), api_key.expose_secret());
+        let response = client
+            .chat_completions(&request)
+            .await
+            .map_err(|error| match error {
+                AixError::GatewayError { status, .. } => AixError::GatewayRequestFailed { status },
+                error => error,
+            })?;
+        (
+            assistant_content(&response)?,
+            Usage::from_response(&response),
+        )
+    };
     let result = AskOutput {
         model: resolved_model,
         content,
-        usage: Usage::from_response(&response),
+        usage,
     };
 
     if json_output {
