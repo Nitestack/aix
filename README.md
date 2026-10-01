@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Not IBM AIX.** This project has no relation to IBM's AIX operating system.
 
-Profile-aware credential injector for AI tools backed by a LiteLLM-compatible AI gateway.
+Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway.
 
 `aix` reads a config file, resolves API keys and gateway URLs from various secret sources, and either exports them as shell variables or runs a command with those variables pre-set. No credentials are stored in shell history or process lists.
 
@@ -19,6 +19,7 @@ Profile-aware credential injector for AI tools backed by a LiteLLM-compatible AI
 - [Environment variables emitted](#environment-variables-emitted)
 - [Shell integration](#shell-integration)
 - [Running tools directly](#running-tools-directly)
+- [Model discovery](#model-discovery)
 - [Spend and budget](#spend-and-budget)
 - [Gateway status](#gateway-status)
 - [JSON output and exit codes](#json-output-and-exit-codes)
@@ -29,7 +30,7 @@ Profile-aware credential injector for AI tools backed by a LiteLLM-compatible AI
 
 ## How it works
 
-The gateway is a LiteLLM proxy that exposes Anthropic- and OpenAI-compatible endpoints. `aix` manages one or more named *profiles*, each pairing an API key with a gateway URL, and injects the right set of variables into a subprocess or your shell session.
+`aix` manages one or more named *profiles*, each pairing an API key with a gateway URL. It injects credentials into subprocesses and shells, reads spend data from LiteLLM gateways, and discovers model IDs through the standard OpenAI-compatible endpoint.
 
 ```
 config file → profile selection → secret resolution → env vars → your tool
@@ -503,6 +504,25 @@ aix --json profiles
 
 ---
 
+## Model discovery
+
+`aix models` fetches model IDs live from the selected profile's OpenAI-compatible `/v1/models` endpoint. It does not cache the response or assume provider-specific metadata.
+
+```bash
+# List model IDs for the default or selected profile
+aix models work
+
+# Filter IDs by a case-insensitive substring
+aix models work --filter gpt
+
+# Emit the stable JSON envelope for scripts
+aix --json models work
+```
+
+Human output contains one sorted model ID per line. If no IDs match a filter, the command succeeds with empty output. Use `--filter <TEXT>` rather than a second positional argument so the profile position remains unambiguous.
+
+---
+
 ## Spend and budget
 
 `aix spend` fetches live spend and budget data from your LiteLLM gateway and displays it as a human-readable progress bar.
@@ -565,7 +585,7 @@ For a non-LiteLLM gateway, or when the LiteLLM management endpoint is unsupporte
 
 ## JSON output and exit codes
 
-The global `--json` flag is currently supported by `profiles`, `spend`, and `status`. It can appear before or after the command. Existing forms such as `aix profiles --json`, `aix spend work --json`, and `aix status work --json` remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
+The global `--json` flag is currently supported by `profiles`, `spend`, `models`, and `status`. It can appear before or after the command. Existing forms such as `aix profiles --json`, `aix spend work --json`, `aix models work --json`, and `aix status work --json` remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
 
 JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty. The envelope is owned by `aix`:
 
@@ -579,7 +599,7 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. These commands do not expose raw upstream responses, credentials, or unrelated upstream fields.
 
 ```json
 {

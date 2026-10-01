@@ -114,7 +114,9 @@ pub enum AixError {
     )]
     ShellExtraArgs,
 
-    #[error("JSON output is only supported by `aix profiles` and `aix spend`")]
+    #[error(
+        "JSON output is only supported by `aix profiles`, `aix spend`, `aix models`, and `aix status`"
+    )]
     JsonUnsupportedCommand,
 
     #[error("executable not found: {program}")]
@@ -129,6 +131,9 @@ pub enum AixError {
 
     #[error("gateway returned HTTP {status}: {body}")]
     GatewayError { status: u16, body: String },
+
+    #[error("gateway returned a malformed JSON response")]
+    GatewayProtocolError,
 
     #[error("budget exceeded: ${spend:.2} of ${max_budget:.2}")]
     BudgetExceeded { spend: f64, max_budget: f64 },
@@ -173,7 +178,7 @@ impl AixError {
             Self::GatewayError {
                 status: 401 | 403, ..
             } => 4,
-            Self::GatewayError { .. } | Self::HttpError(_) => 5,
+            Self::GatewayError { .. } | Self::GatewayProtocolError | Self::HttpError(_) => 5,
             Self::BudgetExceeded { .. } => 6,
             Self::NotImplemented(_) | Self::ProcessSpawn { .. } => 1,
         }

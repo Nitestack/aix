@@ -75,6 +75,14 @@ pub enum Command {
         #[arg(long)]
         refresh: bool,
     },
+    /// List model IDs exposed by the selected OpenAI-compatible gateway
+    Models {
+        /// Profile name (positional; overrides the global --profile flag)
+        profile: Option<String>,
+        /// Filter model IDs by a case-insensitive substring
+        #[arg(long, value_name = "TEXT")]
+        filter: Option<String>,
+    },
     /// Manage the local response cache
     Cache {
         #[command(subcommand)]
@@ -91,7 +99,7 @@ impl Command {
     pub fn supports_json(&self) -> bool {
         matches!(
             self,
-            Self::Profiles | Self::Spend { .. } | Self::Status { .. }
+            Self::Profiles | Self::Spend { .. } | Self::Status { .. } | Self::Models { .. }
         )
     }
 }

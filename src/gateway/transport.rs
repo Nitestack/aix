@@ -12,6 +12,7 @@ pub(crate) struct GatewayTransport {
 
 pub(crate) enum TransportError {
     Http(reqwest::Error),
+    Protocol,
     Gateway {
         status: u16,
         body: String,
@@ -23,6 +24,7 @@ impl TransportError {
     pub(crate) fn into_aix_error(self) -> AixError {
         match self {
             Self::Http(error) => AixError::HttpError(error.without_url()),
+            Self::Protocol => AixError::GatewayProtocolError,
             Self::Gateway {
                 status, safe_body, ..
             } => AixError::GatewayError {
@@ -96,7 +98,8 @@ impl GatewayTransport {
                 body,
             });
         }
-        Ok(response.json().await?)
+        let body = response.bytes().await?;
+        serde_json::from_slice(&body).map_err(|_| TransportError::Protocol)
     }
 }
 
