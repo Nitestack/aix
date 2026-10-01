@@ -18,7 +18,7 @@ Owns the CLI surface: flags, subcommands, value types.
 **Rule:** contains no business logic. Parsing only.
 
 - Global flags: `--profile`, `--config`, `--json`
-- Subcommands: `init`, `use`, `current`, `profiles`, `env`, `shell`, `exec`, `config`, `spend`, `status`, `models`, `usage`, `ask`, `run`, `runs`, `cache`, `<tool>` (external catch-all)
+- Subcommands: `init`, `use`, `current`, `profiles`, `env`, `shell`, `exec`, `config`, `spend`, `status`, `models`, `usage`, `ask`, `prompt`, `run`, `runs`, `cache`, `<tool>` (external catch-all)
 - Format enum (`EnvFormat`): sh / json / nu / fish / powershell / cmd
 
 ### `src/config.rs` — Config loading and validation
@@ -30,11 +30,11 @@ Owns the config file data model and all file I/O related to config.
 |---|---|
 | `find_config_path()` | Discover config file: explicit path → XDG dirs |
 | `load()` | Parse by extension: TOML · YAML · JSON · JSON5 |
-| `validate()` | Check profile labels, model settings, tool names/commands/env names, and related config invariants |
+| `validate()` | Check profile labels, model settings, prompt presets, tool names/commands/env names, and related config invariants |
 | `load_env_files()` | Load `.env` files listed under `env_files`; real env wins |
 | `sorted_profiles()` | Return `(name, label)` pairs sorted by name |
 
-Config types: `Config`, `Endpoint`, `Profile`, `Provider`, `Gateway`, `CacheConfig`, `ModelConfig`, and `Tool`.
+Config types: `Config`, `Endpoint`, `Profile`, `Provider`, `Gateway`, `CacheConfig`, `ModelConfig`, `PromptPreset`, and `Tool`.
 A profile can override `endpoint.base_url` with `base_url` and append custom, secret-backed variables with `env`; those custom values can override generated variables.
 `gateway` and `provider` are optional metadata for most commands, but `aix spend` and `aix usage` accept only an unset gateway or `litellm`.
 `models` contains defaults and aliases. `tools.<name>` contains optional `command`, required `api_format`, and optional secret-backed `env` launch settings. `ApiFormat` is serialized as `anthropic`, `openai`, or `both` for tool entries.
@@ -68,12 +68,22 @@ capability-specific clients:
   code, and `aix spend` and `aix status` use this client. Historical activity
   requests use the same client; `aix usage` normalizes the response into
   aix-owned daily and model aggregates and discards API-key breakdowns.
-- `aix models` discovers model IDs and `aix ask` sends one-shot text requests
+- `aix models` discovers model IDs and `aix ask` / `aix prompt` send one-shot text requests
   through the OpenAI-compatible client. `aix status` uses its models endpoint
   for a live authenticated connectivity probe.
 
 Keep endpoint-specific behavior in the corresponding capability client rather
 than growing a single catch-all gateway client.
+
+### `src/inference.rs` — Shared one-shot inference service
+
+Owns the common `ask`/`prompt` input collection, model and profile resolution,
+env-file loading, gateway request, response parsing, and output behavior.
+Command modules provide the instruction and options; they do not duplicate HTTP
+or context handling.
+
+Prompt presets are generic user configuration. They add no template language,
+implicit filesystem/Git discovery, shell execution, or domain-specific dispatch.
 
 ### `src/commands/env.rs` — Credential collection and env rendering
 
@@ -136,8 +146,8 @@ All application errors. Uses `thiserror`.
 
 ### Nix integration (`nix/home-manager.nix`)
 
-Generates the TOML config file read by the CLI, including profile/model settings
-and generic `programs.aix.tools` launch wiring.
+Generates the TOML config file read by the CLI, including profile/model settings,
+generic `programs.aix.prompts` presets, and `programs.aix.tools` launch wiring.
 **Rule:** this layer may only generate config. No runtime dependency on Nix from Rust.
 
 ---

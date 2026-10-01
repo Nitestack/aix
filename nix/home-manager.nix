@@ -66,6 +66,28 @@ let
     };
   };
 
+  promptConfigType = lib.types.submodule {
+    options = {
+      prompt = lib.mkOption {
+        type = lib.types.str;
+        description = "Instruction text sent as the user message for this preset.";
+      };
+
+      system = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional system message sent before the instruction.";
+      };
+
+      model = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "fast";
+        description = "Optional model alias or raw model ID override.";
+      };
+    };
+  };
+
   toolConfigType = lib.types.submodule {
     options = {
       command = lib.mkOption {
@@ -114,6 +136,18 @@ let
     }
     // lib.optionalAttrs (tool.env != { }) {
       env = lib.mapAttrs (_: encodeSecretSource) tool.env;
+    };
+
+  mkPrompt =
+    _name: prompt:
+    {
+      inherit (prompt) prompt;
+    }
+    // lib.optionalAttrs (prompt.system != null) {
+      system = prompt.system;
+    }
+    // lib.optionalAttrs (prompt.model != null) {
+      model = prompt.model;
     };
 
   validateSecretSource =
@@ -179,6 +213,9 @@ let
     }
     // lib.optionalAttrs (cfg.tools != { }) {
       tools = lib.mapAttrs mkTool cfg.tools;
+    }
+    // lib.optionalAttrs (cfg.prompts != { }) {
+      prompts = lib.mapAttrs mkPrompt cfg.prompts;
     }
     // lib.optionalAttrs (cfg.cache.ttlSecs != 3600 || cfg.cache.disabled) {
       cache = {
@@ -275,6 +312,12 @@ in
       description = "Generic launch wiring for named tools.";
       default = { };
       type = lib.types.attrsOf toolConfigType;
+    };
+
+    prompts = lib.mkOption {
+      description = "User-defined, domain-agnostic one-shot inference presets.";
+      default = { };
+      type = lib.types.attrsOf promptConfigType;
     };
 
     profiles = lib.mkOption {

@@ -24,6 +24,8 @@ pub struct Config {
     #[serde(default)]
     pub models: ModelConfig,
     #[serde(default)]
+    pub prompts: HashMap<String, PromptPreset>,
+    #[serde(default)]
     pub tools: HashMap<String, Tool>,
 }
 
@@ -102,6 +104,14 @@ pub struct ModelConfig {
     /// Local names that resolve to raw model IDs. Alias targets are not resolved recursively.
     #[serde(default)]
     pub aliases: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PromptPreset {
+    pub prompt: String,
+    pub system: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,6 +257,39 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
 
     validate_models(&config.models, "models")?;
 
+    for name in sorted_prompt_names(config) {
+        if name.trim().is_empty() {
+            return Err(AixError::EmptyPromptName);
+        }
+        let preset = &config.prompts[name];
+        if preset.prompt.trim().is_empty() {
+            return Err(AixError::EmptyPromptField {
+                name: name.to_string(),
+                field: "prompt",
+            });
+        }
+        if preset
+            .system
+            .as_deref()
+            .is_some_and(|system| system.trim().is_empty())
+        {
+            return Err(AixError::EmptyPromptField {
+                name: name.to_string(),
+                field: "system",
+            });
+        }
+        if preset
+            .model
+            .as_deref()
+            .is_some_and(|model| model.trim().is_empty())
+        {
+            return Err(AixError::EmptyPromptField {
+                name: name.to_string(),
+                field: "model",
+            });
+        }
+    }
+
     // Build the effective display label for every profile: explicit label or name as fallback.
     // The interactive selector uses this same set of labels; duplicates make selection ambiguous.
     let mut sorted_names: Vec<&str> = config.profiles.keys().map(String::as_str).collect();
@@ -384,6 +427,12 @@ pub fn sorted_profiles(cfg: &Config) -> Result<Vec<(&str, String)>, AixError> {
     }
     pairs.sort_by_key(|(name, _)| *name);
     Ok(pairs)
+}
+
+pub fn sorted_prompt_names(cfg: &Config) -> Vec<&str> {
+    let mut names: Vec<_> = cfg.prompts.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    names
 }
 
 #[cfg(test)]
@@ -571,6 +620,70 @@ fast = "work-fast-model"
     fn parse_json5() {
         let cfg: Config = json5::from_str(JSON5).unwrap();
         assert_standard(&cfg);
+    }
+
+    #[test]
+    fn prompt_presets_parse_in_all_supported_formats() {
+        let toml = r#"
+[endpoint]
+base_url = "https://example.com"
+[profiles.work]
+api_key = "test-key"
+[prompts.diagnose]
+prompt = "Diagnose the supplied output."
+system = "Separate evidence from inference."
+model = "smart"
+"#;
+        let yaml = r#"
+endpoint:
+  base_url: https://example.com
+profiles:
+  work:
+    api_key: test-key
+prompts:
+  diagnose:
+    prompt: Diagnose the supplied output.
+    system: Separate evidence from inference.
+    model: smart
+"#;
+        let json = r#"{
+  "endpoint": { "base_url": "https://example.com" },
+  "profiles": { "work": { "api_key": "test-key" } },
+  "prompts": {
+    "diagnose": {
+      "prompt": "Diagnose the supplied output.",
+      "system": "Separate evidence from inference.",
+      "model": "smart"
+    }
+  }
+}"#;
+        let json5 = r#"{
+  endpoint: { base_url: "https://example.com" },
+  profiles: { work: { api_key: "test-key" } },
+  prompts: {
+    diagnose: {
+      prompt: "Diagnose the supplied output.",
+      system: "Separate evidence from inference.",
+      model: "smart",
+    },
+  },
+}"#;
+
+        for cfg in [
+            toml::from_str::<Config>(toml).unwrap(),
+            serde_yaml::from_str::<Config>(yaml).unwrap(),
+            serde_json::from_str::<Config>(json).unwrap(),
+            json5::from_str::<Config>(json5).unwrap(),
+        ] {
+            let preset = &cfg.prompts["diagnose"];
+            assert_eq!(preset.prompt, "Diagnose the supplied output.");
+            assert_eq!(
+                preset.system.as_deref(),
+                Some("Separate evidence from inference.")
+            );
+            assert_eq!(preset.model.as_deref(), Some("smart"));
+            assert!(validate(&cfg).is_ok());
+        }
     }
 
     #[test]
@@ -961,6 +1074,7 @@ api_key = "sk-test"
             profiles: Default::default(),
             cache: Default::default(),
             models: Default::default(),
+            prompts: Default::default(),
             tools: Default::default(),
         };
         load_env_files(&cfg).unwrap();
@@ -986,6 +1100,7 @@ api_key = "sk-test"
             profiles: Default::default(),
             cache: Default::default(),
             models: Default::default(),
+            prompts: Default::default(),
             tools: Default::default(),
         };
         load_env_files(&cfg).unwrap();
@@ -1020,6 +1135,7 @@ api_key = "sk-test"
             profiles: Default::default(),
             cache: Default::default(),
             models: Default::default(),
+            prompts: Default::default(),
             tools: Default::default(),
         };
         let err = load_env_files(&cfg).unwrap_err();

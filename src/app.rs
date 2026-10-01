@@ -110,6 +110,23 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             )
             .await
         }
+        Command::Prompt {
+            name,
+            list,
+            model,
+            files,
+        } => {
+            crate::commands::prompt::run(
+                global_profile,
+                config_path,
+                json,
+                name,
+                list,
+                model,
+                files,
+            )
+            .await
+        }
         Command::Run {
             name,
             workflow,

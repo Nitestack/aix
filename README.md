@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Not IBM AIX.** This project has no relation to IBM's AIX operating system.
 
-Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway, and `aix ask` provides domain-agnostic one-shot inference.
+Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway, and `aix ask` plus configured `aix prompt` presets provide domain-agnostic one-shot inference.
 
 `aix` reads a config file, resolves API keys and gateway URLs from various secret sources, and either exports them as shell variables, runs a command with those variables pre-set, or sends a one-shot text request to the gateway. No credentials are stored in shell history or process lists.
 
@@ -24,6 +24,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses Li
 - [Gateway status](#gateway-status)
 - [Historical usage](#historical-usage)
 - [One-shot inference](#one-shot-inference)
+  - [Reusable prompt presets](#reusable-prompt-presets)
 - [Managed runs](#managed-runs)
 - [JSON output and exit codes](#json-output-and-exit-codes)
 - [Cache](#cache)
@@ -311,6 +312,65 @@ programs.aix.profiles.work.models = {
 ```
 
 `aix ask` uses this configuration and shared resolver for one-shot inference.
+
+### Reusable prompt presets
+
+Define named instructions under `[prompts.<name>]` to reuse them with `aix prompt`:
+
+```toml
+[prompts.summarize]
+prompt = "Summarize the supplied material clearly and concisely."
+
+[prompts.diagnose]
+prompt = "Analyze the supplied diagnostic output and suggest the next verification step."
+system = "Be precise and distinguish evidence from inference."
+model = "smart"
+
+[prompts.extract-actions]
+prompt = "Extract concrete actions, owners, dates, and unresolved questions from the supplied notes."
+
+# An optional user-defined code-oriented preset is ordinary prompt text too.
+[prompts.review-code]
+prompt = "Review the supplied change for correctness, regressions, and security issues."
+```
+
+`prompt` is required and non-empty. `system` and `model` are optional and must
+be non-empty when present. A model can be an alias or raw model ID. Selection
+uses `--model`, then the preset's model, then the selected profile's default,
+then the global default. Aliases resolve through the same model configuration
+as `aix ask`.
+
+```sh
+# Presets are user-defined; aix ships no prompt catalog.
+aix prompt --list
+aix prompt --json --list
+
+# Only explicitly piped or named-file context is supplied.
+cat meeting-notes.txt | aix prompt summarize
+journalctl -u nginx -n 100 | aix prompt diagnose
+aix prompt extract-actions --file notes.txt
+git diff | aix prompt review-code --model smart
+```
+
+`--file` can be repeated. Stdin and files are passed as opaque context with the
+same boundaries and ordering as `aix ask`. Preset text is sent literally: there
+is no template substitution, shell execution, or environment expansion. Listing
+sorts names and shows only model overrides; JSON entries contain `name`,
+`model`, and `has_system`, never prompt or system bodies. Presets do not inspect
+the working directory, Git state, project files, or a coding harness.
+
+Home Manager exposes the same settings declaratively:
+
+```nix
+programs.aix.prompts = {
+  summarize.prompt = "Summarize the supplied material clearly and concisely.";
+  diagnose = {
+    prompt = "Analyze the supplied diagnostic output.";
+    system = "Distinguish evidence from inference.";
+    model = "smart";
+  };
+};
+```
 
 ### Named tool launch configuration
 
@@ -733,7 +793,7 @@ JSON output uses the shared envelope. `usage.data` contains `start_date`, `end_d
 
 ## One-shot inference
 
-`aix ask` sends one instruction and any explicitly supplied text context to the selected profile's OpenAI-compatible `/v1/chat/completions` endpoint. It uses `--model` or the configured model default and returns the assistant's text without caching prompts or responses.
+`aix ask` sends one instruction and any explicitly supplied text context to the selected profile's OpenAI-compatible `/v1/chat/completions` endpoint. `aix prompt NAME` sends the configured preset instruction, optional system message, and explicit context through the same inference pipeline. Neither command caches prompts or responses.
 
 ```sh
 # Diagnose a service log; stdin becomes explicit context.
@@ -751,7 +811,7 @@ aix --profile work ask --model smart "Explain TCP slow start"
 
 The optional `--system TEXT` is sent as the only system message. Repeated `--file PATH` values are sent after piped stdin, in command-line order, with file boundaries that include each supplied path. If there is no instruction, non-empty piped stdin becomes the user message; file context alone requires an instruction. `aix ask` does not start an interactive chat.
 
-Input to `ask` is sent to the configured gateway. Only the prompt, non-TTY stdin, and paths passed through `--file` are read. **aix does not inspect the current project or coding harness, inspect Git state, discover neighboring files, or infer project context.** This is a domain-agnostic inference command; pipes and files are ordinary user-supplied context.
+Input to `ask` and `prompt` is sent to the configured gateway. Only the instruction, non-TTY stdin, and paths passed through `--file` are read. **aix does not inspect the current project or coding harness, inspect Git state, discover neighboring files, or infer project context.** These are domain-agnostic inference commands; pipes and files are ordinary user-supplied context.
 
 Human output contains only the assistant's text and a trailing newline. Use `--json` for the stable aix JSON envelope, which includes the resolved model, assistant content, and token usage (null when the gateway omits a field).
 
@@ -794,7 +854,7 @@ does not manage worktrees, tasks, retries, or orchestration.
 
 ## JSON output and exit codes
 
-The global `--json` flag is currently supported by `current`, `profiles`, `spend`, `models`, `status`, `usage`, `ask`, and `runs`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
+The global `--json` flag is currently supported by `current`, `profiles`, `spend`, `models`, `status`, `usage`, `ask`, `prompt`, and `runs`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
 
 JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty. The envelope is owned by `aix`:
 
@@ -808,7 +868,7 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
 
 ```json
 {

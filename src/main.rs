@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod error;
 mod gateway;
+mod inference;
 mod output;
 mod run_history;
 mod secrets;

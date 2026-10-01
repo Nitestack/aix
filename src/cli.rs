@@ -137,6 +137,25 @@ pub enum Command {
         /// User instruction
         prompt: Option<String>,
     },
+    /// Run a configured reusable prompt preset, or list available presets
+    Prompt {
+        /// Preset name
+        #[arg(
+            value_name = "NAME",
+            required_unless_present = "list",
+            conflicts_with = "list"
+        )]
+        name: Option<String>,
+        /// List configured presets without printing their prompt text
+        #[arg(long, conflicts_with_all = ["name", "model", "files"])]
+        list: bool,
+        /// Override the preset model (alias or raw model ID)
+        #[arg(long, requires = "name")]
+        model: Option<String>,
+        /// Explicit file to include as context (may be repeated)
+        #[arg(long = "file", value_name = "PATH", requires = "name")]
+        files: Vec<PathBuf>,
+    },
     /// Run a command with profile credentials and durable run history
     Run {
         /// Optional human-readable run name
@@ -198,6 +217,7 @@ impl Command {
                 | Self::Models { .. }
                 | Self::Usage { .. }
                 | Self::Ask { .. }
+                | Self::Prompt { .. }
                 | Self::Runs { .. }
         )
     }

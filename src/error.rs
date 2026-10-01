@@ -26,6 +26,21 @@ pub enum AixError {
     #[error("`aix ask` needs a prompt or non-empty piped stdin; see `aix ask --help`")]
     AskInputRequired,
 
+    #[error("prompt names must not be empty")]
+    EmptyPromptName,
+
+    #[error("`aix prompt` needs a preset NAME or `--list`")]
+    PromptNameRequired,
+
+    #[error("prompt preset {name:?} must have a non-empty {field}")]
+    EmptyPromptField { name: String, field: &'static str },
+
+    #[error("prompt preset {name:?} is not defined\n\nAvailable prompts:\n{available_hint}")]
+    PromptNotFound {
+        name: String,
+        available_hint: String,
+    },
+
     #[error("failed to read stdin: {source}")]
     AskStdinRead {
         #[source]
@@ -162,7 +177,7 @@ pub enum AixError {
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix current`, `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix usage`, `aix ask`, and `aix runs`"
+        "JSON output is only supported by `aix current`, `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix usage`, `aix ask`, `aix prompt`, and `aix runs`"
     )]
     JsonUnsupportedCommand,
 
@@ -220,6 +235,10 @@ impl AixError {
             | Self::NoModelConfigured
             | Self::AskInstructionRequired
             | Self::AskInputRequired
+            | Self::EmptyPromptName
+            | Self::PromptNameRequired
+            | Self::EmptyPromptField { .. }
+            | Self::PromptNotFound { .. }
             | Self::AskStdinRead { .. }
             | Self::AskFileRead { .. }
             | Self::EmptyModelDefault { .. }

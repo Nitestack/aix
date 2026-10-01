@@ -61,6 +61,12 @@
           lib = pkgs.lib;
           aixModule = ./nix/home-manager.nix;
         };
+
+        homeManagerPromptConfigs = import ./tests/home-manager-prompts.nix {
+          inherit pkgs;
+          lib = pkgs.lib;
+          aixModule = ./nix/home-manager.nix;
+        };
       in
       {
         packages = {
@@ -108,6 +114,16 @@
             grep -Fxq 'api_format = "anthropic"' ${homeManagerConfigs.configured}
             ! grep -q 'models' ${homeManagerConfigs.legacy}
             ! grep -q 'tools' ${homeManagerConfigs.legacy}
+            touch $out
+          '';
+          aix-home-manager-prompts = pkgs.runCommand "aix-home-manager-prompts-check" { } ''
+            grep -Fxq '[prompts.diagnose]' ${homeManagerPromptConfigs.configured}
+            grep -Fxq 'prompt = "Analyze the supplied diagnostic output."' ${homeManagerPromptConfigs.configured}
+            grep -Fxq 'system = "Distinguish evidence from inference."' ${homeManagerPromptConfigs.configured}
+            grep -Fxq 'model = "smart"' ${homeManagerPromptConfigs.configured}
+            grep -Fxq '[prompts.summarize]' ${homeManagerPromptConfigs.configured}
+            grep -Fxq 'prompt = "Summarize the supplied material clearly and concisely."' ${homeManagerPromptConfigs.configured}
+            ! grep -q 'prompts' ${homeManagerPromptConfigs.legacy}
             touch $out
           '';
         };

@@ -8,6 +8,7 @@ pub mod init;
 pub mod launch;
 pub mod models;
 pub mod profiles;
+pub mod prompt;
 pub mod run;
 pub mod runs;
 pub mod shell;

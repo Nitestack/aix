@@ -26,6 +26,8 @@ The old Nix shell-script implementation has been superseded; see `docs/aix/migra
 | `aix models [PROFILE] [--filter TEXT] [--json]` | Discover sorted model IDs from `/v1/models` |
 | `aix usage [PROFILE] [--since Nd | --start DATE --end DATE] [--model MODEL] [--json]` | Show historical LiteLLM spend, token, request, and model usage |
 | `aix ask [--model MODEL] [--system TEXT] [--file PATH]... [PROMPT]` | Send one instruction and explicit context to the gateway |
+| `aix prompt NAME [--model MODEL] [--file PATH]...` | Run a configured reusable prompt preset |
+| `aix prompt --list [--json]` | List preset names and model metadata without printing preset bodies |
 | `aix run [OPTIONS] -- CMD...` | Run a child with a run ID and durable, metadata-only local history |
 | `aix runs [--limit N] [--json]` | List newest run records without contacting the gateway |
 | `aix runs show RUN_ID [--json]` | Show one complete non-secret run record |
@@ -45,10 +47,18 @@ For commands with a positional profile, **selection order** is:
 4. Interactive picker via `inquire::Select` — only when both stdin and stdout are a TTY
 
 If none applies and stdin/stdout are not both TTYs, profile-resolving commands exit
-with an error. `aix ask` uses the global selection only (no positional profile).
+with an error. `aix ask` and `aix prompt` use the global selection only (no positional profile).
 `aix current` never prompts: it reports a valid `AIX_PROFILE`, then a valid
 `default_profile`, otherwise `none`. `aix use` validates profile existence without
 selecting a profile or resolving credentials.
+
+Prompt presets are user-defined entries under `[prompts.<name>]`, with a required
+`prompt` instruction and optional `system` and `model` fields. Model selection
+is CLI override → preset model → profile default → global default. Preset
+execution shares `aix ask`'s inference and input pipeline; it reads only stdin
+and files explicitly supplied with `--file`. Listing is sorted and does not
+expose prompt or system text. There are no built-in presets or project/Git
+discovery behaviors.
 
 ---
 
@@ -155,5 +165,7 @@ are atomic. `aix exec` remains unrecorded.
 Commands with JSON support return the versioned aix-owned envelope
 `{ "schema_version": 1, "command": "...", "data": ... }`. The global
 `--json` flag is supported by `current`, `profiles`, `spend`, `status`, `models`,
-`usage`, `ask`, and `runs`. `runs show` reports its canonical command name as
+`usage`, `ask`, `prompt`, and `runs`. Prompt listing returns sorted preset
+summaries (`name`, `model`, and `has_system`); execution returns the resolved
+model, assistant content, and usage. `runs show` reports its canonical command name as
 `runs show`. Failed JSON commands leave stdout empty; diagnostics go to stderr.
