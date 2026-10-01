@@ -27,7 +27,12 @@ impl OpenAiClient {
         self.transport
             .post_json(CHAT_COMPLETIONS_PATH, request)
             .await
-            .map_err(TransportError::into_aix_error)
+            .map_err(|error| match error {
+                TransportError::Http(error) if error.is_decode() => {
+                    AixError::GatewayProtocolError("response was not valid JSON")
+                }
+                error => error.into_aix_error(),
+            })
     }
 }
 

@@ -624,6 +624,39 @@ async fn ask_treats_success_without_assistant_text_as_a_gateway_protocol_error()
 }
 
 #[tokio::test]
+async fn ask_treats_a_successful_non_json_response_as_a_protocol_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("invalid upstream payload"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let config = write_config(
+        &dir,
+        &server.uri(),
+        "[models]\ndefault = \"gateway/general-model\"",
+    );
+    let output = cmd()
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "ask",
+            "Summarize this document",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(5));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("protocol error"));
+    assert!(!stderr.contains("invalid upstream payload"));
+}
+
+#[tokio::test]
 async fn ask_does_not_echo_prompt_context_or_secret_in_gateway_errors() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
