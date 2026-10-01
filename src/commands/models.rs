@@ -62,12 +62,13 @@ struct ModelsOutput {
 }
 
 fn extract_models(response: Value) -> Result<Vec<ModelEntry>, AixError> {
-    let data = response
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or(AixError::GatewayProtocolError(
-            "models response did not contain a model list",
-        ))?;
+    let data =
+        response
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or(AixError::GatewayProtocolError(
+                "malformed models response: missing model list",
+            ))?;
 
     let mut models = data
         .iter()
@@ -78,7 +79,7 @@ fn extract_models(response: Value) -> Result<Vec<ModelEntry>, AixError> {
                 .filter(|id| !id.is_empty())
                 .map(|id| ModelEntry { id: id.to_string() })
                 .ok_or(AixError::GatewayProtocolError(
-                    "model entry did not contain a non-empty ID",
+                    "malformed models response: model entry has no non-empty ID",
                 ))
         })
         .collect::<Result<Vec<_>, _>>()?;

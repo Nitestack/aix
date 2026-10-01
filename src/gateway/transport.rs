@@ -24,7 +24,9 @@ impl TransportError {
     pub(crate) fn into_aix_error(self) -> AixError {
         match self {
             Self::Http(error) => AixError::HttpError(error.without_url()),
-            Self::Protocol => AixError::GatewayProtocolError("response was not valid JSON"),
+            Self::Protocol => {
+                AixError::GatewayProtocolError("gateway returned a malformed JSON response")
+            }
             Self::Gateway {
                 status, safe_body, ..
             } => AixError::GatewayError {
