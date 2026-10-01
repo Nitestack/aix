@@ -177,7 +177,7 @@ pub enum AixError {
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix current`, `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix usage`, `aix ask`, `aix prompt`, and `aix runs`"
+        "JSON output is only supported by `aix current`, `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix doctor`, `aix usage`, `aix ask`, `aix prompt`, and `aix runs`"
     )]
     JsonUnsupportedCommand,
 
@@ -224,6 +224,32 @@ pub enum AixError {
 
     #[error("aix spend requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
     NotLiteLlm,
+
+    #[error("doctor found one or more failed checks")]
+    DoctorChecksFailed { category: DoctorFailureCategory },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DoctorFailureCategory {
+    Internal,
+    Config,
+    Secret,
+    Authentication,
+    Network,
+    Budget,
+}
+
+impl DoctorFailureCategory {
+    fn exit_code(self) -> i32 {
+        match self {
+            Self::Internal => 1,
+            Self::Config => 2,
+            Self::Secret => 3,
+            Self::Authentication => 4,
+            Self::Network => 5,
+            Self::Budget => 6,
+        }
+    }
 }
 
 impl AixError {
@@ -281,6 +307,7 @@ impl AixError {
             | Self::HttpError(_)
             | Self::UsageUnavailable => 5,
             Self::BudgetExceeded { .. } => 6,
+            Self::DoctorChecksFailed { category } => category.exit_code(),
             Self::NotImplemented(_)
             | Self::ProcessSpawn { .. }
             | Self::ProcessWait { .. }

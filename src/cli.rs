@@ -105,6 +105,11 @@ pub enum Command {
         #[arg(long)]
         refresh: bool,
     },
+    /// Diagnose config, credentials, gateway capabilities, and cache access
+    Doctor {
+        /// Profile name (positional; overrides the global --profile flag)
+        profile: Option<String>,
+    },
     /// List model IDs exposed by the selected OpenAI-compatible gateway
     Models {
         /// Profile name (positional; overrides the global --profile flag)
@@ -214,6 +219,7 @@ impl Command {
                 | Self::Profiles
                 | Self::Spend { .. }
                 | Self::Status { .. }
+                | Self::Doctor { .. }
                 | Self::Models { .. }
                 | Self::Usage { .. }
                 | Self::Ask { .. }

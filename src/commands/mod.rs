@@ -2,6 +2,7 @@ pub mod ask;
 pub mod cache;
 pub mod config;
 pub mod current;
+pub mod doctor;
 pub mod env;
 pub mod exec;
 pub mod init;

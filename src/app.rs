@@ -80,6 +80,10 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             let effective_profile = profile.or(global_profile);
             crate::commands::status::run(effective_profile, config_path, json, refresh).await
         }
+        Command::Doctor { profile } => {
+            let effective_profile = profile.or(global_profile);
+            crate::commands::doctor::run(effective_profile, config_path, json).await
+        }
         Command::Models { profile, filter } => {
             let effective_profile = profile.or(global_profile);
             crate::commands::models::run(effective_profile, config_path, json, filter).await

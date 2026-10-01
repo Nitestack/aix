@@ -22,6 +22,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses Li
 - [Model discovery](#model-discovery)
 - [Spend and budget](#spend-and-budget)
 - [Gateway status](#gateway-status)
+- [Diagnostics](#diagnostics)
 - [Historical usage](#historical-usage)
 - [One-shot inference](#one-shot-inference)
   - [Reusable prompt presets](#reusable-prompt-presets)
@@ -764,6 +765,40 @@ For a non-LiteLLM gateway, or when the LiteLLM management endpoint is unsupporte
 
 ---
 
+## Diagnostics
+
+`aix doctor [PROFILE]` runs read-only checks for config discovery and validation, profile and secret resolution, gateway authentication and model discovery, LiteLLM management access, and cache-directory writability. It never opens the profile picker. If no profile is available from the positional argument, `--profile`/`AIX_PROFILE`, or `default_profile`, the profile check fails instead of prompting.
+
+```bash
+# Human-readable checks
+aix doctor
+aix doctor work
+
+# Stable JSON report (global --json may appear before or after the command)
+aix doctor work --json
+aix --json doctor work
+```
+
+Each row has one of four statuses: `PASS` means the check succeeded; `FAIL` includes a remediation hint; `SKIP` means a prerequisite failed; and `N/A` means the check does not apply. The checks run in this order:
+
+| Check | What it verifies |
+|---|---|
+| `config_discovery` | A config path can be found from `--config`, `AIX_CONFIG`, or the platform config directory. |
+| `config_validation` | The config can be parsed and structurally validated, and its configured `env_files` can be loaded. |
+| `profile_selection` | The requested/global/default profile exists; no interactive picker is used. |
+| `api_key` | The selected profile's API-key source resolves to a non-empty value. The value is never displayed. |
+| `base_url` | The profile or endpoint base-URL source resolves to a non-empty value. The value is never displayed. |
+| `gateway_auth` | An authenticated OpenAI-compatible request to the gateway succeeds. |
+| `model_discovery` | `/v1/models` returns a parseable model list with non-empty string IDs. |
+| `litellm_admin` | When `endpoint.gateway` is unset or `litellm`, the same safe `/key/info` management capability used by spend is reachable. An explicitly non-LiteLLM gateway is `N/A`. |
+| `cache_directory` | The configured/default cache directory can be created and a temporary write probe succeeds; existing data is not deleted. |
+
+Checks that do not require the network have `duration_ms: null`; network checks report elapsed milliseconds. `doctor --json` uses the shared JSON envelope with an ordered `data.checks` array. It includes failed checks in that report even when the process exits non-zero, so scripts can inspect each failure. The process exits `0` only when every applicable check passes; otherwise it uses the exit category for the first failing layer (config `2`, secret `3`, authentication `4`, gateway/network `5`, cache/internal `1`, or budget/policy `6`). Skipped and not-applicable checks do not fail the command by themselves.
+
+Neither mode prints API keys, resolved secret-backed URLs, secret-file contents, secret-command stdout, or raw upstream error bodies.
+
+---
+
 ## Historical usage
 
 `aix usage` is the historical counterpart to `aix spend`. `spend` is the quick current-budget check: it reads LiteLLM's key information and caches the response for an hour by default. `usage` queries LiteLLM's `/user/daily/activity` accounting endpoint for daily spend, tokens, request counts, and model breakdowns. It does not estimate costs locally and does not use the `spend` cache.
@@ -854,9 +889,9 @@ does not manage worktrees, tasks, retries, or orchestration.
 
 ## JSON output and exit codes
 
-The global `--json` flag is currently supported by `current`, `profiles`, `spend`, `models`, `status`, `usage`, `ask`, `prompt`, and `runs`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
+The global `--json` flag is currently supported by `current`, `profiles`, `spend`, `models`, `status`, `doctor`, `usage`, `ask`, `prompt`, and `runs`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
 
-JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty. The envelope is owned by `aix`:
+JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty except `doctor`, which keeps its diagnostic report on stdout so callers can inspect failed checks. The envelope is owned by `aix`:
 
 ```json
 {
@@ -868,7 +903,7 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; unlike ordinary command errors, a doctor report remains on stdout when checks fail so automation can inspect the findings. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
 
 ```json
 {

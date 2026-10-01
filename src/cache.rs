@@ -3,6 +3,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -149,6 +150,28 @@ impl Cache {
             }
         }
         Ok(count)
+    }
+
+    /// Create and remove a uniquely named probe file to verify the cache directory is writable.
+    /// Existing cache data is never opened, changed, or deleted.
+    pub fn check_writable(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.base_dir)?;
+
+        let probe_path = self.base_dir.join(format!(
+            ".aix-doctor-write-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe_path)?;
+        let write_result = file.write_all(b"aix doctor writable check\n");
+        drop(file);
+
+        let cleanup_result = std::fs::remove_file(&probe_path);
+        write_result?;
+        cleanup_result
     }
 
     fn endpoint_dir(&self, base_url: &str) -> PathBuf {

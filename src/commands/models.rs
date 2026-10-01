@@ -88,6 +88,10 @@ fn extract_models(response: Value) -> Result<Vec<ModelEntry>, AixError> {
     Ok(models)
 }
 
+pub(crate) fn validate_response(response: Value) -> Result<(), AixError> {
+    extract_models(response).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
