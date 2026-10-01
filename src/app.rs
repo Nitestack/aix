@@ -85,6 +85,23 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             crate::commands::usage::run(effective_profile, config_path, json, date_range, model)
                 .await
         }
+        Command::Ask {
+            model,
+            system,
+            files,
+            prompt,
+        } => {
+            crate::commands::ask::run(
+                global_profile,
+                config_path,
+                json,
+                model,
+                system,
+                files,
+                prompt,
+            )
+            .await
+        }
         Command::Cache { action } => crate::commands::cache::run(action, config_path),
         Command::Tool(raw) => {
             let tool = raw[0].clone();

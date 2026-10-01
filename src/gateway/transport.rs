@@ -24,7 +24,7 @@ impl TransportError {
     pub(crate) fn into_aix_error(self) -> AixError {
         match self {
             Self::Http(error) => AixError::HttpError(error.without_url()),
-            Self::Protocol => AixError::GatewayProtocolError,
+            Self::Protocol => AixError::GatewayProtocolError("response was not valid JSON"),
             Self::Gateway {
                 status, safe_body, ..
             } => AixError::GatewayError {
@@ -67,7 +67,6 @@ impl GatewayTransport {
         self.send_json(request).await
     }
 
-    #[allow(dead_code)] // Used by the OpenAI-compatible capability client.
     pub(crate) async fn post_json(
         &self,
         path: &str,

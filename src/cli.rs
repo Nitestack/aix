@@ -2,7 +2,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "aix", version, about = "profile-aware wrapper for AI tools")]
+#[command(
+    name = "aix",
+    version,
+    about = "profile-aware AI gateway client and tool launcher"
+)]
 pub struct Cli {
     /// Profile to use (overrides AIX_PROFILE env var)
     #[arg(long, short, global = true, env = "AIX_PROFILE")]
@@ -12,7 +16,7 @@ pub struct Cli {
     #[arg(long, global = true, env = "AIX_CONFIG")]
     pub config: Option<PathBuf>,
 
-    /// Emit a stable JSON envelope for supported informational commands
+    /// Emit a stable JSON envelope when supported by the command
     #[arg(long, global = true)]
     pub json: bool,
 
@@ -93,6 +97,20 @@ pub enum Command {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Send a one-shot text request to the configured AI gateway
+    Ask {
+        /// Model name, alias, or raw model ID (defaults to the configured model)
+        #[arg(long)]
+        model: Option<String>,
+        /// Optional system message sent before the user content
+        #[arg(long)]
+        system: Option<String>,
+        /// Explicit file to include as context (may be repeated)
+        #[arg(long = "file", value_name = "PATH")]
+        files: Vec<PathBuf>,
+        /// User instruction
+        prompt: Option<String>,
+    },
     /// Manage the local response cache
     Cache {
         #[command(subcommand)]
@@ -127,6 +145,7 @@ impl Command {
                 | Self::Status { .. }
                 | Self::Models { .. }
                 | Self::Usage { .. }
+                | Self::Ask { .. }
         )
     }
 }

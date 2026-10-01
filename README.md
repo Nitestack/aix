@@ -3,9 +3,9 @@
 > [!NOTE]
 > **Not IBM AIX.** This project has no relation to IBM's AIX operating system.
 
-Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway.
+Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway, and `aix ask` provides domain-agnostic one-shot inference.
 
-`aix` reads a config file, resolves API keys and gateway URLs from various secret sources, and either exports them as shell variables or runs a command with those variables pre-set. No credentials are stored in shell history or process lists.
+`aix` reads a config file, resolves API keys and gateway URLs from various secret sources, and either exports them as shell variables, runs a command with those variables pre-set, or sends a one-shot text request to the gateway. No credentials are stored in shell history or process lists.
 
 ---
 
@@ -23,6 +23,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses Li
 - [Spend and budget](#spend-and-budget)
 - [Gateway status](#gateway-status)
 - [Historical usage](#historical-usage)
+- [One-shot inference](#one-shot-inference)
 - [JSON output and exit codes](#json-output-and-exit-codes)
 - [Cache](#cache)
 - [Security notes](#security-notes)
@@ -308,7 +309,7 @@ programs.aix.profiles.work.models = {
 };
 ```
 
-This adds configuration and the shared resolver only; the current CLI does not issue inference requests.
+`aix ask` uses this configuration and shared resolver for one-shot inference.
 
 ### Cache config
 
@@ -609,9 +610,37 @@ aix usage work --json
 
 JSON output uses the shared envelope. `usage.data` contains `start_date`, `end_date`, aggregate `spend`, `prompt_tokens`, `completion_tokens`, `total_tokens`, and `request_count`, plus `daily` and spend-sorted `models` arrays. `model_filter` is included when `--model` is applied. Only aix-owned fields are emitted; upstream API-key breakdowns and arbitrary response fields are discarded.
 
+---
+
+## One-shot inference
+
+`aix ask` sends one instruction and any explicitly supplied text context to the selected profile's OpenAI-compatible `/v1/chat/completions` endpoint. It uses `--model` or the configured model default and returns the assistant's text without caching prompts or responses.
+
+```sh
+# Diagnose a service log; stdin becomes explicit context.
+journalctl -u nginx -n 100 | aix ask "Identify the likely failure and suggest the next diagnostic step"
+
+# Summarize a document from a pipe.
+cat contract.txt | aix ask "Summarize the obligations and deadlines"
+
+# Add one or more explicitly named files as context.
+aix ask --file notes.md "Turn these notes into a concise summary"
+
+# Select a profile and model alias.
+aix --profile work ask --model smart "Explain TCP slow start"
+```
+
+The optional `--system TEXT` is sent as the only system message. Repeated `--file PATH` values are sent after piped stdin, in command-line order, with file boundaries that include each supplied path. If there is no instruction, non-empty piped stdin becomes the user message; file context alone requires an instruction. `aix ask` does not start an interactive chat.
+
+Input to `ask` is sent to the configured gateway. Only the prompt, non-TTY stdin, and paths passed through `--file` are read. **aix does not inspect the current project or coding harness, inspect Git state, discover neighboring files, or infer project context.** This is a domain-agnostic inference command; pipes and files are ordinary user-supplied context.
+
+Human output contains only the assistant's text and a trailing newline. Use `--json` for the stable aix JSON envelope, which includes the resolved model, assistant content, and token usage (null when the gateway omits a field).
+
+---
+
 ## JSON output and exit codes
 
-The global `--json` flag is currently supported by `profiles`, `spend`, `models`, `status`, and `usage`. It can appear before or after the command. Existing forms such as `aix profiles --json`, `aix spend work --json`, `aix models work --json`, `aix status work --json`, and `aix usage work --json` remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
+The global `--json` flag is currently supported by `profiles`, `spend`, `models`, `status`, `usage`, and `ask`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
 
 JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty. The envelope is owned by `aix`:
 

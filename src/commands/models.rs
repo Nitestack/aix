@@ -65,7 +65,9 @@ fn extract_models(response: Value) -> Result<Vec<ModelEntry>, AixError> {
     let data = response
         .get("data")
         .and_then(Value::as_array)
-        .ok_or(AixError::GatewayProtocolError)?;
+        .ok_or(AixError::GatewayProtocolError(
+            "models response did not contain a model list",
+        ))?;
 
     let mut models = data
         .iter()
@@ -75,7 +77,9 @@ fn extract_models(response: Value) -> Result<Vec<ModelEntry>, AixError> {
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
                 .map(|id| ModelEntry { id: id.to_string() })
-                .ok_or(AixError::GatewayProtocolError)
+                .ok_or(AixError::GatewayProtocolError(
+                    "model entry did not contain a non-empty ID",
+                ))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -113,7 +117,7 @@ mod tests {
         ] {
             assert!(matches!(
                 extract_models(response),
-                Err(AixError::GatewayProtocolError)
+                Err(AixError::GatewayProtocolError(_))
             ));
         }
     }

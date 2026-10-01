@@ -20,6 +20,25 @@ pub enum AixError {
     #[error("no model specified and no default model is configured; pass --model <MODEL> or configure [models].default or [profiles.<PROFILE>.models].default")]
     NoModelConfigured,
 
+    #[error("`aix ask` needs an instruction: provide PROMPT; files alone are context, not an instruction")]
+    AskInstructionRequired,
+
+    #[error("`aix ask` needs a prompt or non-empty piped stdin; see `aix ask --help`")]
+    AskInputRequired,
+
+    #[error("failed to read stdin: {source}")]
+    AskStdinRead {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to read explicit input file {path}: {source}")]
+    AskFileRead {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("model default in {scope} must be a non-empty model ID")]
     EmptyModelDefault { scope: String },
 
@@ -115,7 +134,7 @@ pub enum AixError {
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix profiles`, `aix spend`, `aix models`, `aix status`, and `aix usage`"
+        "JSON output is only supported by `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix usage`, and `aix ask`"
     )]
     JsonUnsupportedCommand,
 
@@ -141,8 +160,11 @@ pub enum AixError {
     #[error("gateway returned HTTP {status}: {body}")]
     GatewayError { status: u16, body: String },
 
-    #[error("gateway returned a malformed JSON response")]
-    GatewayProtocolError,
+    #[error("gateway protocol error: {0}")]
+    GatewayProtocolError(&'static str),
+
+    #[error("gateway request failed with HTTP {status}")]
+    GatewayRequestFailed { status: u16 },
 
     #[error("budget exceeded: ${spend:.2} of ${max_budget:.2}")]
     BudgetExceeded { spend: f64, max_budget: f64 },
@@ -161,6 +183,10 @@ impl AixError {
             | Self::ParseError { .. }
             | Self::UnknownDefaultProfile(_)
             | Self::NoModelConfigured
+            | Self::AskInstructionRequired
+            | Self::AskInputRequired
+            | Self::AskStdinRead { .. }
+            | Self::AskFileRead { .. }
             | Self::EmptyModelDefault { .. }
             | Self::EmptyModelAliasName { .. }
             | Self::EmptyModelAliasTarget { .. }
@@ -188,9 +214,11 @@ impl AixError {
             | Self::EnvFileLoad { .. } => 3,
             Self::GatewayError {
                 status: 401 | 403, ..
-            } => 4,
+            }
+            | Self::GatewayRequestFailed { status: 401 | 403 } => 4,
             Self::GatewayError { .. }
-            | Self::GatewayProtocolError
+            | Self::GatewayRequestFailed { .. }
+            | Self::GatewayProtocolError(_)
             | Self::HttpError(_)
             | Self::UsageUnavailable => 5,
             Self::BudgetExceeded { .. } => 6,
