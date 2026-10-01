@@ -168,8 +168,7 @@ pub enum Command {
         #[command(subcommand)]
         action: CacheAction,
     },
-    /// Run any AI tool binary with profile environment set.
-    /// Uses Anthropic credentials for `claude`, OpenAI credentials for everything else.
+    /// Run an AI tool using configured launch wiring or the legacy credential-format fallback.
     /// Usage: aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]
     #[command(external_subcommand)]
     Tool(Vec<String>),

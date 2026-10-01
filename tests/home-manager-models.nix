@@ -9,6 +9,7 @@ let
     {
       models ? { },
       workModels ? { },
+      tools ? { },
     }:
     let
       evaluated = lib.evalModules {
@@ -44,6 +45,7 @@ let
                   env = "AIX_GATEWAY_URL";
                 };
                 inherit models;
+                inherit tools;
                 profiles.work = {
                   apiKey = {
                     env = "AIX_TEST_API_KEY";
@@ -63,6 +65,21 @@ in
     models = {
       default = "gateway/model-default";
       aliases.fast = "gateway/model-fast";
+    };
+    tools = {
+      review = {
+        command = "review-agent";
+        apiFormat = "both";
+        env = {
+          REVIEW_MODE = "review";
+          REVIEW_TOKEN = {
+            env = "AIX_REVIEW_TOKEN";
+          };
+        };
+      };
+      claude = {
+        apiFormat = "anthropic";
+      };
     };
     workModels = {
       default = "company/model-default";

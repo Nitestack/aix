@@ -12,7 +12,7 @@ It must be self-contained and runnable outside Nix.
 - `src/main.rs` — entry point, arg parsing only
 - `src/config.rs` — profile/endpoint resolution
 - `src/gateway/` — shared HTTP transport and gateway capability clients
-- `src/secrets.rs` — secret resolution (env → file → store flag)
+- `src/secrets.rs` — resolve configured literal, environment, file, or command sources
 - `src/commands/` — one module per subcommand
 
 Keep modules small. No god files.
@@ -20,16 +20,17 @@ Keep modules small. No god files.
 ## Config model
 
 Profiles are named sets of `(label, api_key)`. Gateway config (`base_url`) lives in the `[endpoint]` block.
-The active profile is chosen by `--profile` flag, a positional argument, or the `default_profile` config key.
+For profile-resolving commands, a positional profile overrides global `--profile`/`AIX_PROFILE`,
+which overrides `default_profile`; interactive selection is the TTY-only final fallback.
 Never embed a URL, key, or profile name as a compile-time constant in command logic.
 
 `api_format` is a launch setting only: it may appear under `[tools.<name>]`, not on a profile or
 endpoint. `aix env`/`aix exec` always emit all seven credential vars (Anthropic, OpenAI, and
-LiteLLM-named sets). `aix run` uses a configured tool's `api_format` when the command token matches
-`[tools.<name>]`; an unconfigured command receives all seven vars. The legacy unconfigured
-`aix claude` form emits Anthropic + LiteLLM-named vars; other unconfigured named tools emit OpenAI
-and LiteLLM-named vars. `LITELLM_API_KEY`/`LITELLM_BASE_URL` are always emitted — they alias the same
-credential as the OpenAI-named vars.
+LiteLLM-named sets). Both `aix <tool>` and `aix run -- <tool>` use configured launch wiring when
+the logical tool name matches `[tools.<name>]`. An unconfigured `aix run` command receives all
+seven vars. The legacy unconfigured `aix claude` form emits Anthropic + LiteLLM-named vars; other
+unconfigured named tools emit OpenAI + LiteLLM-named vars. `LITELLM_API_KEY`/`LITELLM_BASE_URL` are
+always emitted — they alias the same credential as the OpenAI-named vars.
 
 Tool entries are generic launch wiring: `command` is optional and defaults to the tool name,
 `api_format` is `anthropic`, `openai`, or `both`, and optional `env` entries use the same secret
@@ -49,13 +50,12 @@ label   = "Personal"
 api_key = { file = "/run/secrets/aix/personal" }
 ```
 
-## Secret resolution order
+## Secret sources
 
-1. Env var (e.g. `AIX_API_KEY`)
-2. Config file field `api_key` (path from `--config` or `AIX_CONFIG`)
-3. External store via `--secret-cmd <cmd>` (stdout of the command is the key)
-
-The CLI must work if only step 1 is satisfied. Never require Nix secret tooling at runtime.
+The CLI resolves each configured secret source independently: a literal string,
+`{ env = "VAR" }`, `{ file = "/path" }`, or `{ command = "..." }`. Config path
+selection uses `--config` or `AIX_CONFIG`; values such as `AIX_API_KEY` are not
+special implicit overrides. Never require Nix secret tooling at runtime.
 
 ## Error handling
 

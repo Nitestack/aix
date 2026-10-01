@@ -383,3 +383,86 @@ profiles:
             .success();
     }
 }
+
+#[test]
+fn tool_configuration_is_supported_in_all_file_formats() {
+    let configs = [
+        (
+            "toml",
+            r#"
+[endpoint]
+base_url = "https://compat.example.com"
+[profiles.work]
+api_key = "sk-test"
+[tools.review]
+command = "review-agent"
+api_format = "anthropic"
+[tools.review.env]
+AGENT_MODE = "review"
+TOOL_TOKEN = { env = "AIX_REVIEW_TOKEN" }
+"#,
+        ),
+        (
+            "yaml",
+            r#"
+endpoint:
+  base_url: https://compat.example.com
+profiles:
+  work:
+    api_key: sk-test
+tools:
+  review:
+    command: review-agent
+    api_format: anthropic
+    env:
+      AGENT_MODE: review
+      TOOL_TOKEN:
+        env: AIX_REVIEW_TOKEN
+"#,
+        ),
+        (
+            "json",
+            r#"{
+  "endpoint": { "base_url": "https://compat.example.com" },
+  "profiles": { "work": { "api_key": "sk-test" } },
+  "tools": {
+    "review": {
+      "command": "review-agent",
+      "api_format": "anthropic",
+      "env": {
+        "AGENT_MODE": "review",
+        "TOOL_TOKEN": { "env": "AIX_REVIEW_TOKEN" }
+      }
+    }
+  }
+}"#,
+        ),
+        (
+            "json5",
+            r#"{
+  endpoint: { base_url: "https://compat.example.com" },
+  profiles: { work: { api_key: "sk-test" } },
+  tools: {
+    review: {
+      command: "review-agent",
+      api_format: "anthropic",
+      env: {
+        AGENT_MODE: "review",
+        TOOL_TOKEN: { env: "AIX_REVIEW_TOKEN" },
+      },
+    },
+  },
+}"#,
+        ),
+    ];
+
+    for (ext, config) in configs {
+        let file = assert_fs::NamedTempFile::new(format!("aix.{ext}")).unwrap();
+        file.write_str(config).unwrap();
+        cmd()
+            .env("AIX_CONFIG", file.path())
+            .args(["config", "validate"])
+            .assert()
+            .success();
+    }
+}

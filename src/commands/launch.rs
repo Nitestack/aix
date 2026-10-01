@@ -48,11 +48,20 @@ pub fn resolve_run_launch(
     config_path: Option<PathBuf>,
     program: &str,
 ) -> Result<ResolvedRunLaunch> {
-    let (env, effective_program, logical_tool_name) =
-        resolve_launch_env_inner(profile, config_path, None, Some(program))?;
+    resolve_tool_launch(profile, config_path, program, None)
+}
+
+fn resolve_tool_launch(
+    profile: Option<String>,
+    config_path: Option<PathBuf>,
+    tool_name: &str,
+    fallback_format: Option<config::ApiFormat>,
+) -> Result<ResolvedRunLaunch> {
+    let (env, program, logical_tool_name) =
+        resolve_launch_env_inner(profile, config_path, fallback_format, Some(tool_name))?;
     Ok(ResolvedRunLaunch {
         env,
-        program: effective_program,
+        program,
         logical_tool_name,
     })
 }
@@ -140,13 +149,13 @@ pub fn run_named_tool(
     dry_run: bool,
     args: Vec<String>,
 ) -> Result<()> {
-    let format = if name == "claude" {
+    let fallback_format = if name == "claude" {
         config::ApiFormat::Anthropic
     } else {
         config::ApiFormat::OpenAi
     };
-    let env = resolve_launch_env(profile, config_path, Some(format))?;
-    run_command(name, &args, &env, dry_run)
+    let resolved = resolve_tool_launch(profile, config_path, name, Some(fallback_format))?;
+    run_command(&resolved.program, &args, &resolved.env, dry_run)
 }
 
 pub fn detect_shell() -> String {

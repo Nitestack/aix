@@ -24,6 +24,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses Li
 - [Gateway status](#gateway-status)
 - [Historical usage](#historical-usage)
 - [One-shot inference](#one-shot-inference)
+- [Managed runs](#managed-runs)
 - [JSON output and exit codes](#json-output-and-exit-codes)
 - [Cache](#cache)
 - [Security notes](#security-notes)
@@ -32,7 +33,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses Li
 
 ## How it works
 
-`aix` manages one or more named *profiles*, each pairing an API key with a gateway URL. It injects credentials into subprocesses and shells, reads spend data from LiteLLM gateways, and discovers model IDs through the standard OpenAI-compatible endpoint.
+`aix` manages named profiles pairing API keys with gateway URLs. It injects credentials into subprocesses and shells, reads gateway status and usage, discovers model IDs, sends one-shot inference requests, and can record metadata-only history around arbitrary commands.
 
 ```
 config file → profile selection → secret resolution → env vars → your tool
@@ -231,7 +232,7 @@ env_files = ["~/.env.aix"]
 [endpoint]
 # The gateway base URL — accepts any secret source (see below).
 base_url = { env = "AIX_BASE_URL" }
-# Optional metadata. `aix spend` accepts an unset gateway or "litellm" only.
+# Optional metadata. `aix spend` and `aix usage` accept an unset gateway or "litellm" only.
 gateway = "litellm"
 # `provider` is optional metadata for other consumers.
 provider = "litellm"
@@ -311,10 +312,46 @@ programs.aix.profiles.work.models = {
 
 `aix ask` uses this configuration and shared resolver for one-shot inference.
 
+### Named tool launch configuration
+
+An optional `[tools.<name>]` entry controls how a named tool is launched by
+`aix <tool>` and `aix run -- <tool> ...`. The map key is the logical tool name;
+`command` optionally selects a different executable, `api_format` selects
+`anthropic`, `openai`, or `both`, and `env` adds tool-specific variables. Tool
+environment values override profile values, which override generated credentials.
+
+```toml
+[tools.review]
+command = "review-agent"
+api_format = "openai"
+
+[tools.review.env]
+REVIEW_MODE = "review"
+REVIEW_TOKEN = { env = "AIX_REVIEW_TOKEN" }
+```
+
+The equivalent Home Manager options use camelCase option names:
+
+```nix
+programs.aix.tools.review = {
+  command = "review-agent";
+  apiFormat = "openai";
+  env = {
+    REVIEW_MODE = "review";
+    REVIEW_TOKEN = { env = "AIX_REVIEW_TOKEN"; };
+  };
+};
+```
+
+No tool entries or harness adapters are preconfigured. If no matching entry
+exists, `aix <tool>` preserves the legacy fallback (`claude` gets Anthropic
+variables; other names get OpenAI variables), while `aix run` gives an arbitrary
+command both formats.
+
 ### Cache config
 
 ```toml
-# Optional: cache aix spend API responses on disk (default: 1-hour TTL, enabled)
+# Optional: cache aix spend/status LiteLLM responses on disk (default: 1-hour TTL, enabled)
 [cache]
 ttl_secs = 3600  # seconds before a cached response is considered stale; 0 = never expires
 disabled = false # set to true to always fetch fresh data
@@ -324,7 +361,7 @@ disabled = false # set to true to always fetch fresh data
 
 ## Secret sources
 
-Every secret-backed field (`api_key`, `base_url`, and profile `env` values) accepts one of four forms. Profile `label` supports the same dynamic forms:
+Every secret-backed field (`api_key`, `base_url`, profile `env`, and tool `env` values) accepts one of four forms. Profile `label` supports the same dynamic forms:
 
 | Source | Syntax | Notes |
 |--------|--------|-------|
@@ -354,19 +391,24 @@ Only one source per field is allowed. Mixing sources in the same field is a conf
 `LITELLM_API_KEY`/`LITELLM_BASE_URL` are aliases for the same credential and
 gateway as `OPENAI_API_KEY`/`OPENAI_BASE_URL` — not a third distinct secret
 — for tools that specifically look for a `LITELLM_*`-named variable (e.g.
-LiteLLM-aware config formats). They are always present regardless of tool
-name or invocation shape.
+LiteLLM-aware config formats). They are included whenever aix launches a
+profile-backed child, regardless of tool name or selected API format.
 
-Named-tool subcommands (`aix <tool>`) emit a subset of the Anthropic/OpenAI
-pair based on the tool name, but `AIX_PROFILE`, `LITELLM_API_KEY`, and
-`LITELLM_BASE_URL` are always included regardless of tool name:
+Named-tool subcommands use a matching `[tools.<name>]` configuration when
+present. Its `api_format` selects Anthropic, OpenAI, or both; otherwise the
+legacy fallback is Anthropic for `claude` and OpenAI for other names. `aix run`
+uses a matching tool entry too; an unconfigured command receives both formats.
+The LiteLLM pair is included for all these launches:
 
-| Invocation | Anthropic/OpenAI vars set |
+| Launch | Credential variables |
 |---|---|
-| `aix claude ...` | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
-| `aix <any other tool> ...` | `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
+| Configured `aix <tool>` / `aix run -- <tool>` | Selected format from `api_format` |
+| Unconfigured `aix claude ...` | Anthropic pair |
+| Other unconfigured `aix <tool> ...` | OpenAI pair |
+| Unconfigured `aix run -- CMD` | Both Anthropic and OpenAI pairs |
 
-`AIX_API_KEY` and `AIX_BASE_URL` are never emitted. Tools that previously read those variables should switch to the `ANTHROPIC_*` or `OPENAI_*` equivalents.
+`AIX_API_KEY` and `AIX_BASE_URL` are not generated by aix. Tools that previously
+read those variables should switch to the `ANTHROPIC_*` or `OPENAI_*` equivalents.
 
 ---
 
@@ -539,10 +581,12 @@ aix shell work --dry-run
 
 ### Running any AI tool
 
-`aix <tool>` works with any binary on `$PATH` — no configuration needed and no list to maintain. The credential format is chosen automatically:
+`aix <tool>` works with any binary on `$PATH`; tools do not need to be configured.
+If a matching `[tools.<name>]` entry exists, aix uses its executable, credential
+format, and extra environment. Otherwise it preserves the legacy fallback:
 
-- `aix claude ...` → injects `ANTHROPIC_*` variables
-- `aix <anything else> ...` → injects `OPENAI_*` variables
+- `aix claude ...` → Anthropic and LiteLLM variables
+- `aix <anything else> ...` → OpenAI and LiteLLM variables
 
 ```bash
 # aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]
@@ -553,12 +597,18 @@ aix aider work -- --no-auto-commits
 aix goose work -- session start
 aix my-new-agent work -- --prompt "Hello"
 
+# A configured logical name can launch a different executable.
+aix review work -- --summary
+
 # Interactive profile picker (when both stdin and stdout are TTYs)
 aix claude -- chat
 
 # Dry-run: print what would run, never print secrets
 aix opencode work --dry-run
 ```
+
+The `[tools]` map is generic launch wiring only. It does not detect or ship
+adapters for particular harnesses, and it does not define prompts or workflows.
 
 ### Listing profiles
 
@@ -707,9 +757,44 @@ Human output contains only the assistant's text and a trailing newline. Use `--j
 
 ---
 
+## Managed runs
+
+Use `aix run` when a command needs a stable run ID and local, metadata-only
+provenance. The child keeps normal stdin/stdout/stderr behavior; `aix exec`
+remains the stateless wrapper and does not create run records.
+
+```sh
+aix --profile work run \
+  --name "nightly review" \
+  --workflow verification \
+  --task-id task-42 \
+  --tag nightly --tag ci \
+  -- review --summary
+
+# List the newest 20 runs, or request JSON for scripts.
+aix runs
+aix runs --json --limit 10
+
+# Inspect one complete non-secret record.
+aix runs show RUN_ID --json
+```
+
+When the command token matches `[tools.<name>]`, `run` uses that tool's launch
+configuration. An unconfigured command receives both credential formats, as
+with `aix exec`. The child receives `AIX_RUN_ID`, plus the optional
+`AIX_RUN_NAME`, `AIX_WORKFLOW`, `AIX_TASK_ID`, and JSON-array `AIX_RUN_TAGS`.
+
+Records are stored under the platform state directory; set `AIX_STATE_DIR` to
+override it. Records include run metadata and lifecycle status, but never
+command arguments, prompts, stdin/stdout/stderr, API keys, base URLs, or secret
+environment values. Listing is local and does not contact the gateway. `aix`
+does not manage worktrees, tasks, retries, or orchestration.
+
+---
+
 ## JSON output and exit codes
 
-The global `--json` flag is currently supported by `current`, `profiles`, `spend`, `models`, `status`, `usage`, and `ask`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
+The global `--json` flag is currently supported by `current`, `profiles`, `spend`, `models`, `status`, `usage`, `ask`, and `runs`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
 
 JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty. The envelope is owned by `aix`:
 
@@ -723,7 +808,7 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
 
 ```json
 {

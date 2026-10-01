@@ -327,6 +327,239 @@ fn pi_dry_run_shows_pi_command() {
     assert!(!s.contains("sk-swtb-key"), "must not leak value: {s}");
 }
 
+#[test]
+#[cfg(unix)]
+fn configured_named_tool_uses_command_format_and_tool_env_precedence() {
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://ai.example.com"
+
+[profiles.work]
+api_key = "sk-profile-key"
+
+[profiles.work.env]
+LAUNCH_LAYER = "profile"
+
+[tools.review]
+command = "sh"
+api_format = "openai"
+
+[tools.review.env]
+OPENAI_API_KEY = "tool-key"
+LAUNCH_LAYER = "tool"
+TOOL_TOKEN = { env = "AIX_REVIEW_TOKEN" }
+"#,
+        )
+        .unwrap();
+
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .env("AIX_REVIEW_TOKEN", "resolved-review-token")
+        .env("ANTHROPIC_API_KEY", "ambient-key")
+        .env("ANTHROPIC_BASE_URL", "https://ambient.example.com")
+        .args([
+            "review",
+            "work",
+            "--",
+            "-c",
+            "test \"$OPENAI_API_KEY\" = tool-key && test \"$LITELLM_API_KEY\" = sk-profile-key && test \"$LAUNCH_LAYER\" = tool && test \"$TOOL_TOKEN\" = resolved-review-token && test -z \"${ANTHROPIC_API_KEY+x}\" && test -z \"${ANTHROPIC_BASE_URL+x}\" && printf '%s' \"$1\"",
+            "_",
+            "forwarded-unchanged",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(String::from_utf8(output).unwrap(), "forwarded-unchanged");
+}
+
+#[test]
+#[cfg(unix)]
+fn configured_named_tools_support_each_api_format() {
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://ai.example.com"
+
+[profiles.work]
+api_key = "sk-profile-key"
+
+[tools.anthropic]
+command = "sh"
+api_format = "anthropic"
+
+[tools.openai]
+command = "sh"
+api_format = "openai"
+
+[tools.both]
+command = "sh"
+api_format = "both"
+"#,
+        )
+        .unwrap();
+
+    for (tool, check) in [
+        (
+            "anthropic",
+            "test -n \"$ANTHROPIC_API_KEY\" && test -z \"${OPENAI_API_KEY+x}\"",
+        ),
+        (
+            "openai",
+            "test -z \"${ANTHROPIC_API_KEY+x}\" && test -n \"$OPENAI_API_KEY\"",
+        ),
+        (
+            "both",
+            "test -n \"$ANTHROPIC_API_KEY\" && test -n \"$OPENAI_API_KEY\"",
+        ),
+    ] {
+        cmd()
+            .env("AIX_CONFIG", config.path())
+            .args([tool, "work", "--", "-c", check])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn unconfigured_named_tool_keeps_openai_fallback() {
+    let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    file.write_str(CONFIG).unwrap();
+
+    let output = cmd()
+        .env("AIX_CONFIG", file.path())
+        .env_remove("ANTHROPIC_API_KEY")
+        .args([
+            "sh",
+            "swtb",
+            "--",
+            "-c",
+            "printf '%s|%s' \"$OPENAI_API_KEY\" \"${ANTHROPIC_API_KEY-unset}\"",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(String::from_utf8(output).unwrap(), "sk-swtb-key|unset");
+}
+
+#[test]
+fn configured_tool_secrets_are_not_printed_in_dry_run_or_launch_errors() {
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://ai.example.com"
+
+[profiles.work]
+api_key = "sk-profile-key"
+
+[tools.review]
+command = "aix-missing-review-executable"
+api_format = "both"
+
+[tools.review.env]
+TOOL_TOKEN = "tool-secret-sentinel"
+"#,
+        )
+        .unwrap();
+
+    let dry_run = cmd()
+        .env("AIX_CONFIG", config.path())
+        .args(["review", "work", "--dry-run", "--", "--help"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dry_run_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    assert!(dry_run_output.contains("TOOL_TOKEN"));
+    assert!(!dry_run_output.contains("tool-secret-sentinel"));
+
+    let error = cmd()
+        .env("AIX_CONFIG", config.path())
+        .args(["review", "work", "--", "--help"])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    assert!(!String::from_utf8(error)
+        .unwrap()
+        .contains("tool-secret-sentinel"));
+}
+
+#[test]
+fn configured_tool_validation_rejects_invalid_entries() {
+    for invalid_config in [
+        r#"
+[endpoint]
+base_url = "https://ai.example.com"
+[profiles.work]
+api_key = "sk-test"
+[tools.""]
+api_format = "both"
+"#,
+        r#"
+[endpoint]
+base_url = "https://ai.example.com"
+[profiles.work]
+api_key = "sk-test"
+[tools.review]
+command = "  "
+api_format = "both"
+"#,
+        r#"
+[endpoint]
+base_url = "https://ai.example.com"
+[profiles.work]
+api_key = "sk-test"
+[tools.review]
+api_format = "both"
+[tools.review.env]
+"INVALID-NAME" = "value"
+"#,
+        r#"
+[endpoint]
+base_url = "https://ai.example.com"
+[profiles.work]
+api_key = "sk-test"
+[tools.review]
+api_format = "unknown"
+"#,
+        r#"
+[endpoint]
+base_url = "https://ai.example.com"
+[profiles.work]
+api_key = "sk-test"
+[tools.review]
+command = "review-agent"
+"#,
+    ] {
+        let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+        config.write_str(invalid_config).unwrap();
+        cmd()
+            .env("AIX_CONFIG", config.path())
+            .args(["config", "validate"])
+            .assert()
+            .failure();
+    }
+}
+
 // --- shell: dry-run ---
 
 #[test]

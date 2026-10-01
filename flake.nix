@@ -56,7 +56,7 @@
           builtins.readFile ./nix/wslstation-config.toml
         );
 
-        homeManagerModelConfigs = import ./tests/home-manager-models.nix {
+        homeManagerConfigs = import ./tests/home-manager-models.nix {
           inherit pkgs;
           lib = pkgs.lib;
           aixModule = ./nix/home-manager.nix;
@@ -86,19 +86,28 @@
         };
 
         # `nix flake check` builds the package and validates the generated
-        # Home Manager model config.
+        # Home Manager model and tool config.
         checks = {
           aix-rs = aix-rs;
           aix-home-manager-models = pkgs.runCommand "aix-home-manager-models-check" { } ''
-            grep -Fxq '[models]' ${homeManagerModelConfigs.configured}
-            grep -Fxq 'default = "gateway/model-default"' ${homeManagerModelConfigs.configured}
-            grep -Fxq '[models.aliases]' ${homeManagerModelConfigs.configured}
-            grep -Fxq 'fast = "gateway/model-fast"' ${homeManagerModelConfigs.configured}
-            grep -Fxq '[profiles.work.models]' ${homeManagerModelConfigs.configured}
-            grep -Fxq 'default = "company/model-default"' ${homeManagerModelConfigs.configured}
-            grep -Fxq '[profiles.work.models.aliases]' ${homeManagerModelConfigs.configured}
-            grep -Fxq 'fast = "company/model-fast"' ${homeManagerModelConfigs.configured}
-            ! grep -q 'models' ${homeManagerModelConfigs.legacy}
+            grep -Fxq '[models]' ${homeManagerConfigs.configured}
+            grep -Fxq 'default = "gateway/model-default"' ${homeManagerConfigs.configured}
+            grep -Fxq '[models.aliases]' ${homeManagerConfigs.configured}
+            grep -Fxq 'fast = "gateway/model-fast"' ${homeManagerConfigs.configured}
+            grep -Fxq '[profiles.work.models]' ${homeManagerConfigs.configured}
+            grep -Fxq 'default = "company/model-default"' ${homeManagerConfigs.configured}
+            grep -Fxq '[profiles.work.models.aliases]' ${homeManagerConfigs.configured}
+            grep -Fxq 'fast = "company/model-fast"' ${homeManagerConfigs.configured}
+            grep -Fxq '[tools.review]' ${homeManagerConfigs.configured}
+            grep -Fxq 'command = "review-agent"' ${homeManagerConfigs.configured}
+            grep -Fxq 'api_format = "both"' ${homeManagerConfigs.configured}
+            grep -Fxq '[tools.review.env]' ${homeManagerConfigs.configured}
+            grep -Fxq 'REVIEW_MODE = "review"' ${homeManagerConfigs.configured}
+            grep -q 'AIX_REVIEW_TOKEN' ${homeManagerConfigs.configured}
+            grep -Fxq '[tools.claude]' ${homeManagerConfigs.configured}
+            grep -Fxq 'api_format = "anthropic"' ${homeManagerConfigs.configured}
+            ! grep -q 'models' ${homeManagerConfigs.legacy}
+            ! grep -q 'tools' ${homeManagerConfigs.legacy}
             touch $out
           '';
         };

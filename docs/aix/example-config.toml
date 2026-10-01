@@ -14,14 +14,15 @@ default_profile = "work"
 # ---------------------------------------------------------------------------
 
 [endpoint]
-# aix always emits AIX_PROFILE plus credential sets for Anthropic, OpenAI, and LiteLLM:
+# Credential variable sets aix can provide:
 #   ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL
 #   OPENAI_API_KEY,    OPENAI_BASE_URL   (base_url with "/v1" appended)
 #   LITELLM_API_KEY,   LITELLM_BASE_URL  (base_url with "/v1" appended)
 #
-# `aix env` and `aix exec` emit all seven variables.
-# Named tools always include AIX_PROFILE and LITELLM_*; `aix claude` also includes
-# ANTHROPIC_*, while `aix <other-tool>` also includes OPENAI_*.
+# `aix env`, `aix exec`, and unconfigured `aix run` emit all seven variables.
+# Named tools select a format via [tools.<name>].api_format; without an entry,
+# `aix claude` uses Anthropic and other tool names use OpenAI. LITELLM_* is
+# included for all profile-backed child launches.
 
 # Where to find the gateway URL. Supported secret sources:
 #   { env  = "VAR_NAME" }           — read from environment variable
@@ -52,3 +53,20 @@ api_key = "sk-no-key"     # literal — fine for a local dev gateway
 # [profiles.personal]
 # label   = "Personal"
 # api_key = { file = "/run/secrets/aix/personal" }
+
+# Optional shared model default and local aliases for `aix ask`.
+[models]
+default = "gateway/model-default"
+
+[models.aliases]
+fast = "gateway/model-fast"
+
+# Optional generic launch wiring. It applies to both `aix review ...` and
+# `aix run -- review ...`; no harness-specific behavior is built in.
+[tools.review]
+command = "review-agent" # optional; defaults to "review"
+api_format = "both"      # anthropic, openai, or both
+
+[tools.review.env]
+REVIEW_MODE = "review"
+REVIEW_TOKEN = { env = "AIX_REVIEW_TOKEN" }

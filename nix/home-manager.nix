@@ -66,12 +66,55 @@ let
     };
   };
 
+  toolConfigType = lib.types.submodule {
+    options = {
+      command = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "review-agent";
+        description = "Executable to launch; defaults to the tool name.";
+      };
+
+      apiFormat = lib.mkOption {
+        type = lib.types.enum [
+          "anthropic"
+          "openai"
+          "both"
+        ];
+        example = "openai";
+        description = "Credential variable format to provide to this tool.";
+      };
+
+      env = lib.mkOption {
+        type = lib.types.attrsOf secretSourceType;
+        default = { };
+        description = ''
+          Additional environment variables for this tool. Values accept the same
+          secret sources as profile environment variables. Tool values override
+          profile and generated credential variables.
+        '';
+      };
+    };
+  };
+
   hasModelConfig = models: models.default != null || models.aliases != { };
 
   mkModelConfig =
     models:
     lib.optionalAttrs (models.default != null) { default = models.default; }
     // lib.optionalAttrs (models.aliases != { }) { aliases = models.aliases; };
+
+  mkTool =
+    _name: tool:
+    {
+      api_format = tool.apiFormat;
+    }
+    // lib.optionalAttrs (tool.command != null) {
+      command = tool.command;
+    }
+    // lib.optionalAttrs (tool.env != { }) {
+      env = lib.mapAttrs (_: encodeSecretSource) tool.env;
+    };
 
   validateSecretSource =
     source:
@@ -134,6 +177,9 @@ let
     // lib.optionalAttrs (hasModelConfig cfg.models) {
       models = mkModelConfig cfg.models;
     }
+    // lib.optionalAttrs (cfg.tools != { }) {
+      tools = lib.mapAttrs mkTool cfg.tools;
+    }
     // lib.optionalAttrs (cfg.cache.ttlSecs != 3600 || cfg.cache.disabled) {
       cache = {
         ttl_secs = cfg.cache.ttlSecs;
@@ -182,8 +228,8 @@ in
             example = "litellm";
             description = ''
               Optional gateway hint.
-              When set to a value other than "litellm", `aix spend` will refuse to run.
-              Omit or set to "litellm" to use `aix spend` with the default LiteLLM-compatible gateway.
+              When set to a value other than "litellm", `aix spend` and `aix usage` will refuse to run.
+              Omit or set to "litellm" to use those commands with the default LiteLLM-compatible gateway.
             '';
           };
 
@@ -197,7 +243,7 @@ in
     };
 
     cache = lib.mkOption {
-      description = "Cache settings for aix spend API responses.";
+      description = "Cache settings for aix spend and aix status LiteLLM responses.";
       default = { };
       type = lib.types.submodule {
         options = {
@@ -223,6 +269,12 @@ in
       description = "Default model ID and aliases shared by all profiles.";
       default = { };
       type = modelConfigType;
+    };
+
+    tools = lib.mkOption {
+      description = "Generic launch wiring for named tools.";
+      default = { };
+      type = lib.types.attrsOf toolConfigType;
     };
 
     profiles = lib.mkOption {

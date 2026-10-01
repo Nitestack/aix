@@ -10,17 +10,26 @@ The old Nix shell-script implementation has been superseded; see `docs/aix/migra
 | Invocation | Behavior |
 |---|---|
 | `aix profiles` | List available profiles (name + label) |
-| `aix profiles --json` | Emit profiles as a JSON array (no secrets) |
+| `aix profiles --json` | Emit the shared JSON envelope with profile names and labels (no secrets) |
+| `aix init <SHELL>` | Print shell integration for sh, bash, zsh, fish, nu, or PowerShell |
+| `aix use PROFILE [--shell SHELL]` | Emit a shell assignment to select a profile without resolving secrets |
+| `aix use --clear [--shell SHELL]` | Emit a shell command to unset `AIX_PROFILE` |
+| `aix current [--format short] [--json]` | Show `AIX_PROFILE`, then `default_profile`, or `none`; never prompt |
 | `aix env [PROFILE] [--format FORMAT]` | Print env vars to stdout; always emits all 7 vars |
 | `aix shell [PROFILE] [--dry-run]` | Launch the user's detected shell with profile env set |
 | `aix exec [PROFILE] [--dry-run] -- CMD...` | Run a command with profile env set |
-| `aix claude [PROFILE] [--dry-run] [-- args...]` | Run `claude` with Anthropic and LiteLLM credentials |
-| `aix <tool> [PROFILE] [--dry-run] [-- args...]` | Run `<tool>` with OpenAI and LiteLLM credentials |
+| `aix <tool> [PROFILE] [--dry-run] [-- args...]` | Run a configured tool or use the legacy `claude`/OpenAI fallback |
 | `aix config path` | Print the resolved config file path |
 | `aix config validate` | Validate the config file and exit |
 | `aix spend [PROFILE] [--json] [--no-cache]` | Show LiteLLM spend and budget information |
+| `aix status [PROFILE] [--json] [--refresh]` | Probe gateway connectivity and report profile and spend status |
+| `aix models [PROFILE] [--filter TEXT] [--json]` | Discover sorted model IDs from `/v1/models` |
 | `aix usage [PROFILE] [--since Nd | --start DATE --end DATE] [--model MODEL] [--json]` | Show historical LiteLLM spend, token, request, and model usage |
-| `aix cache clear` | Delete all cached spend-response files |
+| `aix ask [--model MODEL] [--system TEXT] [--file PATH]... [PROMPT]` | Send one instruction and explicit context to the gateway |
+| `aix run [OPTIONS] -- CMD...` | Run a child with a run ID and durable, metadata-only local history |
+| `aix runs [--limit N] [--json]` | List newest run records without contacting the gateway |
+| `aix runs show RUN_ID [--json]` | Show one complete non-secret run record |
+| `aix cache clear` | Delete all cached gateway-response files |
 
 ---
 
@@ -28,14 +37,18 @@ The old Nix shell-script implementation has been superseded; see `docs/aix/migra
 
 Profiles are defined in the TOML config file (see `docs/aix/example-config.toml`).
 
-**Selection order:**
+For commands with a positional profile, **selection order** is:
 
 1. Positional profile argument on the subcommand
-2. `--profile NAME` global flag (or `AIX_PROFILE` env var)
+2. Global `--profile NAME` (defaults from the `AIX_PROFILE` environment variable)
 3. `default_profile` key in the config file
 4. Interactive picker via `inquire::Select` — only when both stdin and stdout are a TTY
 
-If none applies and stdin/stdout are not both TTYs, the CLI exits with an error.
+If none applies and stdin/stdout are not both TTYs, profile-resolving commands exit
+with an error. `aix ask` uses the global selection only (no positional profile).
+`aix current` never prompts: it reports a valid `AIX_PROFILE`, then a valid
+`default_profile`, otherwise `none`. `aix use` validates profile existence without
+selecting a profile or resolving credentials.
 
 ---
 
@@ -53,14 +66,20 @@ If none applies and stdin/stdout are not both TTYs, the CLI exits with an error.
 | `LITELLM_API_KEY` | Resolved API key |
 | `LITELLM_BASE_URL` | Gateway base URL with `/v1` appended |
 
-Named-tool dispatch always includes `AIX_PROFILE`, `LITELLM_API_KEY`, and `LITELLM_BASE_URL`, plus a provider-specific subset:
+Named-tool dispatch always includes `AIX_PROFILE`, `LITELLM_API_KEY`, and
+`LITELLM_BASE_URL`. A configured `[tools.<name>]` entry selects `api_format` and
+may add tool env; otherwise the historical `claude`/OpenAI fallback remains.
 
 | Command | Format | Variables emitted |
 |---|---|---|
-| `aix claude` | Anthropic | `AIX_PROFILE`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `LITELLM_API_KEY`, `LITELLM_BASE_URL` |
-| `aix <other>` | OpenAI | `AIX_PROFILE`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LITELLM_API_KEY`, `LITELLM_BASE_URL` |
+| Configured `aix <tool>` | `tools.<name>.api_format` | `AIX_PROFILE`, selected credential variables, then profile env and tool env |
+| Unconfigured `aix claude` | Anthropic | `AIX_PROFILE`, `ANTHROPIC_*`, `LITELLM_*` |
+| Other unconfigured `aix <tool>` | OpenAI | `AIX_PROFILE`, `OPENAI_*`, `LITELLM_*` |
+| Unconfigured `aix run -- CMD` | Both | All seven generated credential variables, then profile env |
 
-`AIX_API_KEY` and `AIX_BASE_URL` are **never** emitted.
+For configured tools, the precedence is generated credentials → profile env →
+tool env. `aix run` also uses a configured tool's `command` executable. `AIX_API_KEY` and
+`AIX_BASE_URL` are not generated by aix; custom env entries may set them explicitly.
 
 ---
 
@@ -79,7 +98,7 @@ Named-tool dispatch always includes `AIX_PROFILE`, `LITELLM_API_KEY`, and `LITEL
 
 ## Secret sources
 
-All secret-backed fields (`api_key`, `base_url`, and profile `env` values) accept any of. Profile `label` supports the same dynamic forms:
+All secret-backed fields (`api_key`, `base_url`, profile `env`, and tool `env` values) accept one of these forms. Profile `label` supports the same dynamic forms:
 
 | TOML form | Resolved from |
 |---|---|
@@ -88,7 +107,7 @@ All secret-backed fields (`api_key`, `base_url`, and profile `env` values) accep
 | `{ file = "/run/secrets/..." }` | File contents (trailing newline stripped) |
 | `{ command = "op read ..." }` | stdout of a shell command (trailing newline stripped) |
 
-A profile can set `base_url` to override the shared endpoint and an `[profiles.<name>.env]` table to append custom variables. Variable names must be valid shell environment identifiers. Custom variables are added last, so they can explicitly override generated names.
+A profile can set `base_url` to override the shared endpoint and an `[profiles.<name>.env]` table to append custom variables. `[tools.<name>]` entries may set `command`, `api_format` (`anthropic`, `openai`, or `both`), and `env`. Variable names must be valid shell environment identifiers. Launch precedence is generated credentials, profile env, then configured tool env.
 
 ---
 
@@ -108,3 +127,33 @@ Shell detected in order:
 1. `$SHELL` env var (if non-empty)
 2. `nu` if `$NU_VERSION` is set and `nu` is on `$PATH` (Unix only)
 3. `sh` fallback (Unix) / `pwsh` or `cmd` (Windows)
+
+`aix init <SHELL>` generates wrappers for `sh`, `bash`, `zsh`, `fish`, `nu`, and
+PowerShell. After initialization, only the selected profile name is stored in
+the parent shell's `AIX_PROFILE`; credentials remain process-local. `aix current`
+is non-interactive and does not resolve secrets.
+
+---
+
+## Managed run records
+
+`aix run` generates a UUID run ID and passes it to the child as `AIX_RUN_ID`.
+Optional name, workflow, task ID, and tags are passed as `AIX_RUN_NAME`,
+`AIX_WORKFLOW`, `AIX_TASK_ID`, and JSON-array `AIX_RUN_TAGS`. `aix runs` lists
+records newest-first without network access; `aix runs show RUN_ID` displays one
+record. `AIX_STATE_DIR` overrides the platform state directory.
+
+Records contain the profile, logical tool and executable names, timing, exit
+status, and caller-supplied metadata. They never contain command arguments,
+prompts, stdin/stdout/stderr, API keys, base URLs, or secret env values. Writes
+are atomic. `aix exec` remains unrecorded.
+
+---
+
+## JSON output
+
+Commands with JSON support return the versioned aix-owned envelope
+`{ "schema_version": 1, "command": "...", "data": ... }`. The global
+`--json` flag is supported by `current`, `profiles`, `spend`, `status`, `models`,
+`usage`, `ask`, and `runs`. `runs show` reports its canonical command name as
+`runs show`. Failed JSON commands leave stdout empty; diagnostics go to stderr.
