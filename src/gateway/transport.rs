@@ -92,7 +92,7 @@ impl GatewayTransport {
             let body = response.text().await.unwrap_or_default();
             return Err(TransportError::Gateway {
                 status: status.as_u16(),
-                safe_body: sanitize_error_body(&body, &self.api_key),
+                safe_body: sanitize_error_body(&body, &self.api_key, &self.base_url),
                 body,
             });
         }
@@ -100,38 +100,50 @@ impl GatewayTransport {
     }
 }
 
-fn sanitize_error_body(body: &str, api_key: &str) -> String {
+fn sanitize_error_body(body: &str, api_key: &str, base_url: &str) -> String {
     if let Ok(mut value) = serde_json::from_str::<Value>(body) {
-        redact_error_value(&mut value, api_key);
+        redact_error_value(&mut value, api_key, base_url);
         return serde_json::to_string(&value)
             .unwrap_or_else(|_| "[gateway response omitted]".to_string());
     }
 
-    if api_key.is_empty() {
-        body.to_string()
-    } else {
-        body.replace(api_key, "[redacted]")
-    }
+    redact_sensitive_text(body, api_key, base_url)
 }
 
-fn redact_error_value(value: &mut Value, api_key: &str) {
+fn redact_error_value(value: &mut Value, api_key: &str, base_url: &str) {
     match value {
         Value::Object(object) => object.retain(|field, value| {
-            if is_sensitive_error_field(field) || (!api_key.is_empty() && field.contains(api_key)) {
+            if is_sensitive_error_field(field)
+                || (!api_key.is_empty() && field.contains(api_key))
+                || (!base_url.is_empty() && field.contains(base_url))
+            {
                 return false;
             }
-            redact_error_value(value, api_key);
+            redact_error_value(value, api_key, base_url);
             true
         }),
         Value::Array(values) => {
             for value in values {
-                redact_error_value(value, api_key);
+                redact_error_value(value, api_key, base_url);
             }
         }
-        Value::String(value) if !api_key.is_empty() => {
-            *value = value.replace(api_key, "[redacted]");
+        Value::String(value) => {
+            *value = redact_sensitive_text(value, api_key, base_url);
         }
         _ => {}
+    }
+}
+
+fn redact_sensitive_text(value: &str, api_key: &str, base_url: &str) -> String {
+    let value = if base_url.is_empty() {
+        value.to_string()
+    } else {
+        value.replace(base_url, "[redacted]")
+    };
+    if api_key.is_empty() {
+        value
+    } else {
+        value.replace(api_key, "[redacted]")
     }
 }
 

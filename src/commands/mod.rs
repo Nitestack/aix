@@ -6,3 +6,4 @@ pub mod launch;
 pub mod profiles;
 pub mod shell;
 pub mod spend;
+pub mod status;

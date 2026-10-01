@@ -96,6 +96,22 @@ fn find_matching_key<'a>(
     })
 }
 
+pub(crate) fn has_spend_data(data: &serde_json::Value, api_key: &str) -> bool {
+    let keys: &[serde_json::Value] = data
+        .get("keys")
+        .and_then(|value| value.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let source = find_matching_key(keys, api_key).unwrap_or(data);
+
+    ["spend", "max_budget"].iter().any(|field| {
+        source
+            .get(field)
+            .and_then(serde_json::Value::as_f64)
+            .is_some()
+    })
+}
+
 fn format_age(age_secs: u64) -> String {
     match age_secs {
         0..=59 => format!("{age_secs}s ago"),
@@ -122,13 +138,13 @@ fn budget_error(data: &serde_json::Value) -> Option<AixError> {
 }
 
 #[derive(Serialize)]
-struct SpendSummary {
-    spend: f64,
+pub(crate) struct SpendSummary {
+    pub(crate) spend: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    max_budget: Option<f64>,
+    pub(crate) max_budget: Option<f64>,
 }
 
-fn spend_summary(data: &serde_json::Value, api_key: &str) -> SpendSummary {
+pub(crate) fn spend_summary(data: &serde_json::Value, api_key: &str) -> SpendSummary {
     let keys: &[serde_json::Value] = data
         .get("keys")
         .and_then(|v| v.as_array())

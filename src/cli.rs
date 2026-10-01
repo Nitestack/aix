@@ -67,6 +67,14 @@ pub enum Command {
         #[arg(long)]
         no_cache: bool,
     },
+    /// Show profile, gateway connectivity, and budget status
+    Status {
+        /// Profile name (positional; overrides the global --profile flag)
+        profile: Option<String>,
+        /// Refresh spend data instead of using a cached response
+        #[arg(long)]
+        refresh: bool,
+    },
     /// Manage the local response cache
     Cache {
         #[command(subcommand)]
@@ -81,7 +89,10 @@ pub enum Command {
 
 impl Command {
     pub fn supports_json(&self) -> bool {
-        matches!(self, Self::Profiles | Self::Spend { .. })
+        matches!(
+            self,
+            Self::Profiles | Self::Spend { .. } | Self::Status { .. }
+        )
     }
 }
 

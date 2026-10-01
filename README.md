@@ -20,6 +20,7 @@ Profile-aware credential injector for AI tools backed by a LiteLLM-compatible AI
 - [Shell integration](#shell-integration)
 - [Running tools directly](#running-tools-directly)
 - [Spend and budget](#spend-and-budget)
+- [Gateway status](#gateway-status)
 - [JSON output and exit codes](#json-output-and-exit-codes)
 - [Cache](#cache)
 - [Security notes](#security-notes)
@@ -533,9 +534,38 @@ Responses are cached locally for 1 hour by default (configurable via `[cache]`).
 
 ---
 
+## Gateway status
+
+`aix status` gives a one-screen overview of the selected profile, a live authenticated gateway probe, and available LiteLLM spend data:
+
+```bash
+# Use the default profile or select one explicitly
+aix status
+aix status work
+
+# Refresh spend data instead of using the spend cache
+aix status work --refresh
+
+# Emit the shared JSON envelope
+aix --json status work
+```
+
+The OpenAI-compatible `GET /v1/models` probe is always live, including when spend data comes from cache. `--refresh` bypasses only the spend cache; a successful probe reports its latency and authenticated state. The output shows configured gateway/provider metadata and only the API key's final four characters (short keys are fully redacted). The resolved gateway URL and full key are never printed.
+
+```text
+Profile     work · Work
+Gateway     litellm · provider=litellm · reachable · authenticated · 84ms
+Key         sk-...7fa2
+Spend       $41.53 / $500.00 · $458.47 remaining · 8% used · cached 5m ago
+```
+
+For a non-LiteLLM gateway, or when the LiteLLM management endpoint is unsupported, status still succeeds after a healthy gateway probe and reports spend as unsupported. Other spend lookup failures are reported as unavailable; they do not hide a successful connectivity/authentication result.
+
+---
+
 ## JSON output and exit codes
 
-The global `--json` flag is currently supported by `profiles` and `spend`. It can appear before or after the command. Existing forms such as `aix profiles --json` and `aix spend work --json` remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
+The global `--json` flag is currently supported by `profiles`, `spend`, and `status`. It can appear before or after the command. Existing forms such as `aix profiles --json`, `aix spend work --json`, and `aix status work --json` remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
 
 JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty. The envelope is owned by `aix`:
 
@@ -549,7 +579,33 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. It does not expose the raw LiteLLM response, credentials, cache annotations, or unrelated upstream fields.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`.
+
+```json
+{
+  "schema_version": 1,
+  "command": "status",
+  "data": {
+    "profile": { "name": "work", "label": "Work" },
+    "gateway": {
+      "gateway": "litellm",
+      "provider": "litellm",
+      "status": "reachable",
+      "authentication_status": "authenticated",
+      "latency_ms": 84
+    },
+    "key_suffix": "7fa2",
+    "spend": {
+      "status": "available",
+      "spend": 41.53,
+      "max_budget": 500.0,
+      "remaining_budget": 458.47,
+      "percent_used": 8.306,
+      "cache": { "source": "cache", "age_seconds": 300 }
+    }
+  }
+}
+```
 
 When LiteLLM reports a budget-exceeded response, `aix spend` returns exit code `6`. Human mode still shows the spend summary; JSON mode treats it as an error and leaves stdout empty.
 
@@ -569,7 +625,7 @@ Process exit codes are stable:
 
 ## Cache
 
-`aix spend` caches API responses in the platform cache directory to avoid redundant network calls:
+`aix spend` and `aix status` cache LiteLLM spend responses in the platform cache directory to avoid redundant management requests. `aix status` still performs its gateway probe on every invocation:
 
 | Platform | Default cache directory |
 |----------|------------------------|
