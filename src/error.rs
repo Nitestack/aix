@@ -134,7 +134,7 @@ pub enum AixError {
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix usage`, and `aix ask`"
+        "JSON output is only supported by `aix current`, `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix usage`, and `aix ask`"
     )]
     JsonUnsupportedCommand,
 

@@ -219,8 +219,8 @@ api_key = "sk-fake-0000000000000000000000000000000000000000000000"
 ```toml
 # ~/.config/aix/aix.toml
 
-# Profile used when no --profile flag and stdin/stdout are not both TTYs.
-# Remove to always use the interactive picker when both are TTYs.
+# Profile used after --profile and AIX_PROFILE, before the interactive picker.
+# Remove it to let interactive invocations open the picker when no profile is selected.
 default_profile = "work"
 
 # Optional: .env files to source before resolving secrets.
@@ -372,9 +372,78 @@ pair based on the tool name, but `AIX_PROFILE`, `LITELLM_API_KEY`, and
 
 ## Shell integration
 
-Use `aix env` to emit export statements and eval them in the current shell.
+### Profile switching
 
-### POSIX sh / bash / zsh
+Install the lightweight shell wrapper once. It intercepts `aix use` to set only
+`AIX_PROFILE` in the current shell; every other invocation is passed to the aix
+binary unchanged. Switching profiles checks profile names only and does not
+resolve API keys, base URLs, or custom profile variables.
+
+#### POSIX sh / bash / zsh
+
+```sh
+# Pick the shell matching your current session.
+eval "$(command aix init zsh)"
+
+aix use work
+aix current                 # prints: work
+aix current --format short  # same one-line output, suitable for prompts
+aix use --clear             # unsets AIX_PROFILE
+```
+
+Use `command aix init sh` or `command aix init bash` for those shells.
+
+#### Fish
+
+```fish
+command aix init fish | source
+aix use work
+aix current
+```
+
+#### Nushell
+
+Nushell's `source` command needs a file path, so save the generated wrapper once:
+
+```nu
+mkdir ~/.config/aix
+^aix init nu | save --force ~/.config/aix/init.nu
+source ~/.config/aix/init.nu
+
+aix use work
+aix current
+```
+
+#### PowerShell
+
+```powershell
+aix init powershell | Invoke-Expression
+aix use work
+aix current
+```
+
+`aix current --json` uses the standard JSON envelope and returns `name`, `label`,
+and `source` (`env`, `default`, or `none`) in `data`. If no valid profile is
+selected, human output is `none` and the JSON `name` and `label` are `null`.
+
+Without shell initialization, `aix use work` prints a POSIX `sh` assignment;
+source or eval that output in the current shell if desired. The shell wrapper
+selects the correct output format explicitly. Direct calls can choose one with
+`--shell sh|bash|zsh|fish|nu|powershell`; `--format json` prints an object with
+`AIX_PROFILE` set to the selected name or `null` when cleared. For example:
+
+```sh
+aix use work --shell fish
+aix use --clear --shell fish
+```
+
+### Explicit credential export with `aix env`
+
+`aix env` remains available for workflows that intentionally need credential
+variables in the current shell. Unlike `aix use`, it resolves and prints those
+credentials.
+
+#### POSIX sh / bash / zsh
 
 ```sh
 # Emit and eval (current shell)
@@ -387,7 +456,7 @@ eval "$(aix env work --format sh)"
 eval "$(aix env)"
 ```
 
-### Nushell
+#### Nushell
 
 ```nu
 # JSON is the simplest approach — no temp file needed
@@ -399,7 +468,7 @@ aix env work --format nu | save --force /tmp/aix-env.nu
 source /tmp/aix-env.nu
 ```
 
-### Fish
+#### Fish
 
 ```fish
 # Fish format uses set -x KEY 'value' syntax
@@ -408,14 +477,14 @@ aix env work --format fish | source
 
 > **Note:** `eval (aix env work --format fish)` does **not** work. Fish command substitution splits output on newlines into separate list elements, and `eval` then joins them with spaces — collapsing all the `set -x` lines into a single malformed `set` call. Use `| source` instead.
 
-### PowerShell
+#### PowerShell
 
 ```powershell
 # PowerShell format uses $env:KEY = 'value' syntax
 aix env work --format powershell | Invoke-Expression
 ```
 
-### Windows Command Prompt (cmd.exe)
+#### Windows Command Prompt (cmd.exe)
 
 ```cmd
 REM Save to a temp file and call it in the current session
@@ -427,7 +496,7 @@ aix env --format cmd > "%TEMP%\aix-env.cmd" && call "%TEMP%\aix-env.cmd"
 
 > **Note:** Values containing `%` are safe — the output doubles them to `%%` so `SET` interprets them correctly. Values containing `"` use a `""` encoding that works on modern Windows 10/11 cmd.exe but is not guaranteed on all NT versions. If your API key or base URL contains a literal double-quote (rare in practice), use `--format powershell` instead.
 
-### Inspect without loading (JSON)
+#### Inspect without loading (JSON)
 
 ```bash
 # Useful for scripting or debugging — outputs a JSON object
@@ -640,7 +709,7 @@ Human output contains only the assistant's text and a trailing newline. Use `--j
 
 ## JSON output and exit codes
 
-The global `--json` flag is currently supported by `profiles`, `spend`, `models`, `status`, `usage`, and `ask`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
+The global `--json` flag is currently supported by `current`, `profiles`, `spend`, `models`, `status`, `usage`, and `ask`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
 
 JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty. The envelope is owned by `aix`:
 
@@ -654,7 +723,7 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
 
 ```json
 {

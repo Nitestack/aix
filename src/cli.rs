@@ -26,6 +26,32 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Print shell code that installs the aix shell wrapper
+    Init {
+        /// Shell to generate integration code for
+        shell: Shell,
+    },
+    /// Select or clear the active shell profile
+    Use {
+        /// Profile name to select
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        profile: Option<String>,
+        /// Unset AIX_PROFILE in the current shell
+        #[arg(long)]
+        clear: bool,
+        /// Shell syntax for the assignment (defaults to sh)
+        #[arg(long, value_enum, conflicts_with = "format")]
+        shell: Option<Shell>,
+        /// Output encoding instead of shell assignment syntax
+        #[arg(long, value_enum, conflicts_with = "shell")]
+        format: Option<UseFormat>,
+    },
+    /// Show the effective profile without opening the interactive picker
+    Current {
+        /// Output format; `short` is the same one-line output as the default
+        #[arg(long, value_enum)]
+        format: Option<CurrentFormat>,
+    },
     /// List available profiles
     Profiles,
     /// Print environment variables for the selected profile
@@ -140,7 +166,8 @@ impl Command {
     pub fn supports_json(&self) -> bool {
         matches!(
             self,
-            Self::Profiles
+            Self::Current { .. }
+                | Self::Profiles
                 | Self::Spend { .. }
                 | Self::Status { .. }
                 | Self::Models { .. }
@@ -148,6 +175,26 @@ impl Command {
                 | Self::Ask { .. }
         )
     }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum Shell {
+    Sh,
+    Bash,
+    Zsh,
+    Fish,
+    Nu,
+    Powershell,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum UseFormat {
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CurrentFormat {
+    Short,
 }
 
 #[derive(Subcommand)]

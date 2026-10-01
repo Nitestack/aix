@@ -1,8 +1,10 @@
 pub mod ask;
 pub mod cache;
 pub mod config;
+pub mod current;
 pub mod env;
 pub mod exec;
+pub mod init;
 pub mod launch;
 pub mod models;
 pub mod profiles;
@@ -10,3 +12,4 @@ pub mod shell;
 pub mod spend;
 pub mod status;
 pub mod usage;
+pub mod use_profile;

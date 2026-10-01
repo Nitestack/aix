@@ -39,6 +39,14 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
     let global_profile = cli.profile;
     let config_path = cli.config;
     match cli.command {
+        Command::Init { shell } => crate::commands::init::run(shell),
+        Command::Use {
+            profile,
+            clear,
+            shell,
+            format,
+        } => crate::commands::use_profile::run(profile, clear, shell, format, config_path),
+        Command::Current { format } => crate::commands::current::run(config_path, json, format),
         Command::Profiles => crate::commands::profiles::run(config_path, json),
         Command::Env { profile, format } => {
             let effective_profile = profile.or(global_profile);
