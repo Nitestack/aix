@@ -4,7 +4,7 @@ use crate::error::AixError;
 use crate::gateway::openai::OpenAiClient;
 use crate::output;
 use color_eyre::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ struct AskOutput {
     usage: Usage,
 }
 
-#[derive(Serialize)]
+#[derive(Default, Deserialize, Serialize)]
 struct Usage {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
@@ -25,18 +25,11 @@ struct Usage {
 
 impl Usage {
     fn from_response(response: &Value) -> Self {
-        let usage = response.get("usage");
-        Self {
-            prompt_tokens: usage
-                .and_then(|usage| usage.get("prompt_tokens"))
-                .and_then(Value::as_u64),
-            completion_tokens: usage
-                .and_then(|usage| usage.get("completion_tokens"))
-                .and_then(Value::as_u64),
-            total_tokens: usage
-                .and_then(|usage| usage.get("total_tokens"))
-                .and_then(Value::as_u64),
-        }
+        response
+            .get("usage")
+            .cloned()
+            .and_then(|usage| serde_json::from_value(usage).ok())
+            .unwrap_or_default()
     }
 }
 
