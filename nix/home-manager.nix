@@ -119,6 +119,46 @@ let
     };
   };
 
+  runPolicyType = lib.types.submodule {
+    options = {
+      profile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "work";
+        description = "Optional fixed aix profile for runs using this policy.";
+      };
+
+      maxBudget = lib.mkOption {
+        type = lib.types.number;
+        example = 3.0;
+        description = "Maximum lease spend in USD; must be greater than zero.";
+      };
+
+      maxDuration = lib.mkOption {
+        type = lib.types.str;
+        example = "2h";
+        description = "Maximum LiteLLM-compatible lease duration.";
+      };
+
+      allowedModels = lib.mkOption {
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+        default = null;
+        example = [
+          "smart"
+          "fast"
+        ];
+        description = "Optional non-empty list of model aliases or raw model IDs.";
+      };
+
+      tags = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "phase:implement" ];
+        description = "Non-secret tags always attached to runs using this policy.";
+      };
+    };
+  };
+
   hasModelConfig = models: models.default != null || models.aliases != { };
 
   mkModelConfig =
@@ -149,6 +189,75 @@ let
     // lib.optionalAttrs (prompt.model != null) {
       model = prompt.model;
     };
+
+  mkRunPolicy =
+    _name: policy:
+    {
+      max_budget = policy.maxBudget;
+      max_duration = policy.maxDuration;
+    }
+    // lib.optionalAttrs (policy.profile != null) {
+      profile = policy.profile;
+    }
+    // lib.optionalAttrs (policy.allowedModels != null) {
+      allowed_models = policy.allowedModels;
+    }
+    // lib.optionalAttrs (policy.tags != [ ]) {
+      tags = policy.tags;
+    };
+
+  isPositiveDuration =
+    value:
+    let
+      parts = builtins.match "([1-9][0-9]*)(s|m|h|d|w|mo)" value;
+    in
+    parts != null && builtins.fromJSON (builtins.elemAt parts 0) > 0;
+
+  runPolicyAssertions =
+    let
+      names = builtins.attrNames cfg.runPolicies;
+      policies = builtins.attrValues cfg.runPolicies;
+    in
+    [
+      {
+        assertion = builtins.all (name: name != "") names;
+        message = "programs.aix.runPolicies policy names must not be empty.";
+      }
+      {
+        assertion = builtins.all (policy: policy.maxBudget > 0) policies;
+        message = "programs.aix.runPolicies maxBudget values must be greater than zero.";
+      }
+      {
+        assertion = builtins.all (policy: isPositiveDuration policy.maxDuration) policies;
+        message = "programs.aix.runPolicies maxDuration values must be positive LiteLLM durations.";
+      }
+      {
+        assertion = builtins.all (
+          policy: policy.allowedModels == null || policy.allowedModels != [ ]
+        ) policies;
+        message = "programs.aix.runPolicies allowedModels must not be empty when configured.";
+      }
+      {
+        assertion = builtins.all (
+          policy:
+          policy.allowedModels == null
+          || builtins.all (model: lib.strings.trim model != "") policy.allowedModels
+        ) policies;
+        message = "programs.aix.runPolicies allowedModels must not contain empty strings.";
+      }
+      {
+        assertion = builtins.all (
+          policy: builtins.all (tag: lib.strings.trim tag != "") policy.tags
+        ) policies;
+        message = "programs.aix.runPolicies tags must not contain empty strings.";
+      }
+      {
+        assertion = builtins.all (
+          policy: policy.profile == null || builtins.hasAttr policy.profile cfg.profiles
+        ) policies;
+        message = "programs.aix.runPolicies fixed profiles must exist in programs.aix.profiles.";
+      }
+    ];
 
   validateSecretSource =
     source:
@@ -216,6 +325,9 @@ let
     }
     // lib.optionalAttrs (cfg.prompts != { }) {
       prompts = lib.mapAttrs mkPrompt cfg.prompts;
+    }
+    // lib.optionalAttrs (cfg.runPolicies != { }) {
+      run_policies = lib.mapAttrs mkRunPolicy cfg.runPolicies;
     }
     // lib.optionalAttrs (cfg.cache.ttlSecs != 3600 || cfg.cache.disabled) {
       cache = {
@@ -320,6 +432,12 @@ in
       type = lib.types.attrsOf promptConfigType;
     };
 
+    runPolicies = lib.mkOption {
+      description = "Declarative constraints for leased aix runs, independent of any workflow engine.";
+      default = { };
+      type = lib.types.attrsOf runPolicyType;
+    };
+
     profiles = lib.mkOption {
       description = "Named API profiles. At least one must be defined when enable = true.";
       default = { };
@@ -389,7 +507,8 @@ in
         assertion = cfg.profiles != { };
         message = "programs.aix.profiles must define at least one profile when programs.aix.enable = true.";
       }
-    ];
+    ]
+    ++ runPolicyAssertions;
 
     home.packages = [ cfg.package ];
 

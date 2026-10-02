@@ -27,6 +27,8 @@ pub struct Config {
     pub prompts: HashMap<String, PromptPreset>,
     #[serde(default)]
     pub tools: HashMap<String, Tool>,
+    #[serde(default)]
+    pub run_policies: HashMap<String, RunPolicy>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -112,6 +114,17 @@ pub struct PromptPreset {
     pub prompt: String,
     pub system: Option<String>,
     pub model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunPolicy {
+    pub profile: Option<String>,
+    pub max_budget: f64,
+    pub max_duration: String,
+    pub allowed_models: Option<Vec<String>>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,6 +303,40 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
         }
     }
 
+    let mut policy_names: Vec<_> = config.run_policies.keys().collect();
+    policy_names.sort_unstable();
+    for name in policy_names {
+        let policy = &config.run_policies[name];
+        if name.trim().is_empty() {
+            return Err(AixError::EmptyRunPolicyName);
+        }
+        if !policy.max_budget.is_finite() || policy.max_budget <= 0.0 {
+            return Err(AixError::InvalidRunPolicyBudget { name: name.clone() });
+        }
+        if crate::duration::parse_litellm_duration(&policy.max_duration).is_none() {
+            return Err(AixError::InvalidRunPolicyDuration { name: name.clone() });
+        }
+        if let Some(models) = &policy.allowed_models {
+            if models.is_empty() {
+                return Err(AixError::EmptyRunPolicyModels { name: name.clone() });
+            }
+            if models.iter().any(|model| model.trim().is_empty()) {
+                return Err(AixError::EmptyRunPolicyModel { name: name.clone() });
+            }
+        }
+        if policy.tags.iter().any(|tag| tag.trim().is_empty()) {
+            return Err(AixError::EmptyRunPolicyTag { name: name.clone() });
+        }
+        if let Some(profile) = &policy.profile {
+            if !config.profiles.contains_key(profile) {
+                return Err(AixError::UnknownRunPolicyProfile {
+                    name: name.clone(),
+                    profile: profile.clone(),
+                });
+            }
+        }
+    }
+
     // Build the effective display label for every profile: explicit label or name as fallback.
     // The interactive selector uses this same set of labels; duplicates make selection ambiguous.
     let mut sorted_names: Vec<&str> = config.profiles.keys().map(String::as_str).collect();
@@ -431,6 +478,12 @@ pub fn sorted_profiles(cfg: &Config) -> Result<Vec<(&str, String)>, AixError> {
 
 pub fn sorted_prompt_names(cfg: &Config) -> Vec<&str> {
     let mut names: Vec<_> = cfg.prompts.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    names
+}
+
+pub fn sorted_run_policy_names(cfg: &Config) -> Vec<&str> {
+    let mut names: Vec<_> = cfg.run_policies.keys().map(String::as_str).collect();
     names.sort_unstable();
     names
 }
@@ -1076,6 +1129,7 @@ api_key = "sk-test"
             models: Default::default(),
             prompts: Default::default(),
             tools: Default::default(),
+            run_policies: Default::default(),
         };
         load_env_files(&cfg).unwrap();
         assert_eq!(
@@ -1102,6 +1156,7 @@ api_key = "sk-test"
             models: Default::default(),
             prompts: Default::default(),
             tools: Default::default(),
+            run_policies: Default::default(),
         };
         load_env_files(&cfg).unwrap();
         // Process env must win over file value.
@@ -1137,6 +1192,7 @@ api_key = "sk-test"
             models: Default::default(),
             prompts: Default::default(),
             tools: Default::default(),
+            run_policies: Default::default(),
         };
         let err = load_env_files(&cfg).unwrap_err();
         assert!(matches!(err, AixError::EnvFileLoad { .. }));

@@ -4,7 +4,8 @@ use crate::commands::ProfileSelection;
 use crate::error::AixError;
 use crate::gateway::LiteLlmAdminClient;
 use crate::run_history::{
-    LeaseCleanupStatus, RunLeaseRecord, RunRecord, RunStatus, RunStore, RUN_SCHEMA_VERSION,
+    LeaseCleanupStatus, RunLeaseRecord, RunPolicyRecord, RunRecord, RunStatus, RunStore,
+    LEGACY_RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION,
 };
 use color_eyre::Result;
 use std::path::Path;
@@ -27,6 +28,7 @@ pub(crate) struct RunOptions {
     pub timeout: std::time::Duration,
     pub config_path: Option<std::path::PathBuf>,
     pub metadata: RunMetadata,
+    pub policy: Option<String>,
     pub lease: bool,
     pub budget: Option<f64>,
     pub duration: Option<String>,
@@ -40,7 +42,8 @@ pub async fn run(options: RunOptions) -> Result<()> {
         selection,
         timeout,
         config_path,
-        metadata,
+        mut metadata,
+        policy,
         lease,
         budget,
         duration,
@@ -48,17 +51,72 @@ pub async fn run(options: RunOptions) -> Result<()> {
         dry_run,
         args,
     } = options;
-    let (budget, duration) =
-        run_lease::validate_options(lease, budget, duration, &requested_models, dry_run)?;
+    let unscoped_lease_options = if policy.is_none() {
+        Some(run_lease::validate_options(
+            lease,
+            budget,
+            duration.clone(),
+            &requested_models,
+            dry_run,
+        )?)
+    } else {
+        if requested_models.iter().any(|model| model.trim().is_empty()) {
+            return Err(AixError::EmptyLeaseModel.into());
+        }
+        None
+    };
     let (requested_program, command_args) = args.split_first().ok_or(AixError::RunNoCommand)?;
     let mut resolved = launch::resolve_run_launch(
         selection,
         config_path,
         requested_program,
         &requested_models,
-        lease,
+        policy.as_deref(),
+        lease || policy.is_some(),
         dry_run,
     )?;
+    if let Some(run_policy) = &resolved.policy {
+        metadata.tags = merge_tags(&run_policy.tags, &metadata.tags);
+    }
+    let lease = lease || resolved.policy.is_some();
+    let default_budget = resolved.policy.as_ref().map(|policy| policy.max_budget);
+    let default_duration = resolved
+        .policy
+        .as_ref()
+        .map(|policy| policy.max_duration.clone());
+    let (budget, duration) = if resolved.policy.is_some() {
+        run_lease::validate_options(
+            true,
+            budget.or(default_budget),
+            duration.or(default_duration),
+            &requested_models,
+            dry_run,
+        )?
+    } else {
+        unscoped_lease_options.expect("non-policy lease options were validated")
+    };
+    if let Some(run_policy) = &resolved.policy {
+        let effective_budget = budget.expect("a policy run always uses a lease");
+        let effective_duration = duration
+            .as_deref()
+            .expect("a policy run always has a duration");
+        if effective_budget > run_policy.max_budget {
+            return Err(AixError::RunPolicyBudgetExceeded {
+                policy: run_policy.name.clone(),
+                budget: effective_budget,
+                max_budget: run_policy.max_budget,
+            }
+            .into());
+        }
+        if !crate::duration::is_no_longer_than(effective_duration, &run_policy.max_duration) {
+            return Err(AixError::RunPolicyDurationExceeded {
+                policy: run_policy.name.clone(),
+                duration: effective_duration.to_string(),
+                max_duration: run_policy.max_duration.clone(),
+            }
+            .into());
+        }
+    }
     if lease
         && run_lease::inputs_contain_parent_key(
             &resolved,
@@ -81,9 +139,30 @@ pub async fn run(options: RunOptions) -> Result<()> {
         return Ok(());
     }
     let run_id = Uuid::new_v4();
+    let effective_tags = resolved
+        .policy
+        .as_ref()
+        .map(|_| append_run_id_tag(&metadata.tags, run_id));
+    let policy_record = resolved.policy.as_ref().map(|policy| RunPolicyRecord {
+        name: policy.name.clone(),
+        effective_budget: budget.expect("a policy run always has a budget"),
+        effective_duration: duration
+            .as_deref()
+            .expect("a policy run always has a duration")
+            .to_string(),
+        effective_allowed_models: resolved.allowed_models.clone(),
+        effective_tags: effective_tags
+            .as_ref()
+            .expect("policy effective tags were built")
+            .clone(),
+    });
     let started_at_unix_ms = RunRecord::now_unix_ms();
     let mut record = RunRecord {
-        schema_version: RUN_SCHEMA_VERSION,
+        schema_version: if policy_record.is_some() {
+            RUN_SCHEMA_VERSION
+        } else {
+            LEGACY_RUN_SCHEMA_VERSION
+        },
         run_id,
         name: metadata.name.clone(),
         workflow: metadata.workflow.clone(),
@@ -97,6 +176,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         duration_ms: None,
         process_exit_code: None,
         status: RunStatus::Running,
+        policy: policy_record.clone(),
         lease: None,
     };
 
@@ -126,9 +206,12 @@ pub async fn run(options: RunOptions) -> Result<()> {
             resolved.parent_api_key.expose_secret(),
             timeout,
         );
-        let mut metadata_tags = Vec::with_capacity(metadata.tags.len() + 1);
-        metadata_tags.push(format!("aix:run:{run_id}"));
-        metadata_tags.extend(metadata.tags.iter().cloned());
+        let metadata_tags = effective_tags.clone().unwrap_or_else(|| {
+            let mut tags = Vec::with_capacity(metadata.tags.len() + 1);
+            tags.push(format!("aix:run:{run_id}"));
+            tags.extend(metadata.tags.iter().cloned());
+            tags
+        });
 
         let generated = client
             .generate_virtual_key(
@@ -200,7 +283,13 @@ pub async fn run(options: RunOptions) -> Result<()> {
         None
     };
 
-    append_run_metadata(&mut resolved.env, run_id, metadata);
+    append_run_metadata(
+        &mut resolved.env,
+        run_id,
+        metadata,
+        resolved.policy.as_ref(),
+        policy_record.as_ref(),
+    );
 
     let started = Instant::now();
     let child_result = launch::run_command_status_interruptible(
@@ -293,9 +382,21 @@ pub async fn run(options: RunOptions) -> Result<()> {
     Ok(())
 }
 
-fn append_run_metadata(env: &mut launch::LaunchEnv, run_id: Uuid, metadata: RunMetadata) {
+fn append_run_metadata(
+    env: &mut launch::LaunchEnv,
+    run_id: Uuid,
+    metadata: RunMetadata,
+    policy: Option<&launch::ResolvedRunPolicy>,
+    policy_record: Option<&RunPolicyRecord>,
+) {
     env.vars
         .push(("AIX_RUN_ID".to_string(), run_id.to_string()));
+    if let Some(policy) = policy {
+        env.vars
+            .push(("AIX_RUN_POLICY".to_string(), policy.name.clone()));
+    } else {
+        env.remove_vars.push("AIX_RUN_POLICY".to_string());
+    }
     if let Some(value) = metadata.name {
         env.vars.push(("AIX_RUN_NAME".to_string(), value));
     } else {
@@ -311,14 +412,36 @@ fn append_run_metadata(env: &mut launch::LaunchEnv, run_id: Uuid, metadata: RunM
     } else {
         env.remove_vars.push("AIX_TASK_ID".to_string());
     }
-    if !metadata.tags.is_empty() {
+    let tags = policy_record
+        .map(|record| record.effective_tags.as_slice())
+        .unwrap_or(&metadata.tags);
+    if !tags.is_empty() {
         env.vars.push((
             "AIX_RUN_TAGS".to_string(),
-            serde_json::to_string(&metadata.tags).expect("run tags are JSON strings"),
+            serde_json::to_string(tags).expect("run tags are JSON strings"),
         ));
     } else {
         env.remove_vars.push("AIX_RUN_TAGS".to_string());
     }
+}
+
+fn merge_tags(first: &[String], second: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    first
+        .iter()
+        .chain(second)
+        .filter(|tag| seen.insert(tag.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn append_run_id_tag(tags: &[String], run_id: Uuid) -> Vec<String> {
+    let run_id_tag = format!("aix:run:{run_id}");
+    let mut effective_tags = merge_tags(tags, std::slice::from_ref(&run_id_tag));
+    if !effective_tags.contains(&run_id_tag) {
+        effective_tags.push(run_id_tag);
+    }
+    effective_tags
 }
 
 fn finish_prelaunch_failure(record: &mut RunRecord) {

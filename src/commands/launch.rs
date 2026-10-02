@@ -38,6 +38,15 @@ pub struct ResolvedRunLaunch {
     pub base_url: SecretString,
     pub parent_api_key: SecretString,
     pub allowed_models: Vec<String>,
+    pub policy: Option<ResolvedRunPolicy>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedRunPolicy {
+    pub name: String,
+    pub max_budget: f64,
+    pub max_duration: String,
+    pub tags: Vec<String>,
 }
 
 struct LaunchResolution {
@@ -47,6 +56,18 @@ struct LaunchResolution {
     base_url: SecretString,
     parent_api_key: SecretString,
     allowed_models: Vec<String>,
+    policy: Option<ResolvedRunPolicy>,
+}
+
+struct LaunchRequest<'a> {
+    selection: ProfileSelection,
+    config_path: Option<PathBuf>,
+    format_override: Option<config::ApiFormat>,
+    configured_tool_name: Option<&'a str>,
+    tool_env_mode: ToolEnvMode,
+    allowed_models: &'a [String],
+    policy_name: Option<&'a str>,
+    require_litellm: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -60,15 +81,16 @@ pub fn resolve_launch_env(
     config_path: Option<PathBuf>,
     format_override: Option<config::ApiFormat>,
 ) -> Result<LaunchEnv> {
-    let resolution = resolve_launch_env_inner(
+    let resolution = resolve_launch_env_inner(LaunchRequest {
         selection,
         config_path,
         format_override,
-        None,
-        ToolEnvMode::Resolve,
-        &[],
-        false,
-    )?;
+        configured_tool_name: None,
+        tool_env_mode: ToolEnvMode::Resolve,
+        allowed_models: &[],
+        policy_name: None,
+        require_litellm: false,
+    })?;
     Ok(resolution.env)
 }
 
@@ -77,42 +99,28 @@ pub fn resolve_run_launch(
     config_path: Option<PathBuf>,
     program: &str,
     allowed_models: &[String],
+    policy_name: Option<&str>,
     require_litellm: bool,
     dry_run: bool,
 ) -> Result<ResolvedRunLaunch> {
-    resolve_tool_launch(
+    resolve_tool_launch(LaunchRequest {
         selection,
         config_path,
-        program,
-        None,
-        if dry_run {
+        format_override: None,
+        configured_tool_name: Some(program),
+        tool_env_mode: if dry_run {
             ToolEnvMode::NamesOnly
         } else {
             ToolEnvMode::Resolve
         },
         allowed_models,
+        policy_name,
         require_litellm,
-    )
+    })
 }
 
-fn resolve_tool_launch(
-    selection: ProfileSelection,
-    config_path: Option<PathBuf>,
-    tool_name: &str,
-    fallback_format: Option<config::ApiFormat>,
-    tool_env_mode: ToolEnvMode,
-    allowed_models: &[String],
-    require_litellm: bool,
-) -> Result<ResolvedRunLaunch> {
-    let resolution = resolve_launch_env_inner(
-        selection,
-        config_path,
-        fallback_format,
-        Some(tool_name),
-        tool_env_mode,
-        allowed_models,
-        require_litellm,
-    )?;
+fn resolve_tool_launch(request: LaunchRequest<'_>) -> Result<ResolvedRunLaunch> {
+    let resolution = resolve_launch_env_inner(request)?;
     Ok(ResolvedRunLaunch {
         env: resolution.env,
         program: resolution.program,
@@ -120,22 +128,49 @@ fn resolve_tool_launch(
         base_url: resolution.base_url,
         parent_api_key: resolution.parent_api_key,
         allowed_models: resolution.allowed_models,
+        policy: resolution.policy,
     })
 }
 
-fn resolve_launch_env_inner(
-    selection: ProfileSelection,
-    config_path: Option<PathBuf>,
-    format_override: Option<config::ApiFormat>,
-    configured_tool_name: Option<&str>,
-    tool_env_mode: ToolEnvMode,
-    allowed_models: &[String],
-    require_litellm: bool,
-) -> Result<LaunchResolution> {
+fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResolution> {
+    let LaunchRequest {
+        selection,
+        config_path,
+        format_override,
+        configured_tool_name,
+        tool_env_mode,
+        allowed_models,
+        policy_name,
+        require_litellm,
+    } = request;
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
     config::validate(&cfg)?;
     config::load_env_files(&cfg)?;
+
+    let policy = policy_name
+        .map(|name| {
+            cfg.run_policies
+                .get(name)
+                .ok_or_else(|| AixError::RunPolicyNotFound {
+                    name: name.to_string(),
+                    available_hint: config::sorted_run_policy_names(&cfg)
+                        .into_iter()
+                        .map(|name| format!("  {name}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                })
+        })
+        .transpose()?;
+    if let Some(policy_profile) = policy.and_then(|policy| policy.profile.as_deref()) {
+        if selection
+            .profile
+            .as_deref()
+            .is_some_and(|selected| selected != policy_profile)
+        {
+            return Err(AixError::RunPolicyProfileConflict.into());
+        }
+    }
 
     let explicit_non_litellm_gateway = matches!(
         cfg.endpoint.gateway.as_ref(),
@@ -145,7 +180,15 @@ fn resolve_launch_env_inner(
         return Err(AixError::LeaseNotLiteLlm.into());
     }
 
-    let profile_name = resolve_profile(selection, &cfg)?;
+    let profile_name = resolve_profile(
+        ProfileSelection {
+            profile: policy
+                .and_then(|policy| policy.profile.clone())
+                .or(selection.profile),
+            non_interactive: selection.non_interactive,
+        },
+        &cfg,
+    )?;
     let profile_entry =
         cfg.profiles
             .get(&profile_name)
@@ -154,10 +197,16 @@ fn resolve_launch_env_inner(
                 available_hint: config::format_available_profiles(&cfg),
             })?;
 
-    let resolved_allowed_models = allowed_models
+    let resolved_requested_models = allowed_models
         .iter()
         .map(|model| config::resolve_model(Some(model), &cfg, profile_entry))
         .collect::<Result<Vec<_>, _>>()?;
+    let resolved_allowed_models = resolve_allowed_models(
+        policy.and_then(|policy| policy.allowed_models.as_ref()),
+        resolved_requested_models,
+        &cfg,
+        profile_entry,
+    )?;
     let api_key = profile_entry.api_key.resolve()?;
     let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
     let configured_tool = configured_tool_name.and_then(|name| cfg.tools.get(name));
@@ -221,7 +270,49 @@ fn resolve_launch_env_inner(
         base_url,
         parent_api_key: api_key,
         allowed_models: resolved_allowed_models,
+        policy: policy.map(|policy| ResolvedRunPolicy {
+            name: policy_name.unwrap_or_default().to_string(),
+            max_budget: policy.max_budget,
+            max_duration: policy.max_duration.clone(),
+            tags: policy.tags.clone(),
+        }),
     })
+}
+
+fn resolve_allowed_models(
+    policy_models: Option<&Vec<String>>,
+    requested_models: Vec<String>,
+    cfg: &config::Config,
+    profile: &config::Profile,
+) -> Result<Vec<String>, AixError> {
+    let Some(policy_models) = policy_models else {
+        return Ok(requested_models);
+    };
+    let resolved_policy_models = policy_models
+        .iter()
+        .map(|model| config::resolve_model(Some(model), cfg, profile))
+        .collect::<Result<Vec<_>, _>>()?;
+    let policy_model_set: std::collections::BTreeSet<_> =
+        resolved_policy_models.iter().map(String::as_str).collect();
+    for model in &requested_models {
+        if !policy_model_set.contains(model.as_str()) {
+            return Err(AixError::RunPolicyModelNotAllowed);
+        }
+    }
+
+    if requested_models.is_empty() {
+        Ok(deduplicate_models(resolved_policy_models))
+    } else {
+        Ok(deduplicate_models(requested_models))
+    }
+}
+
+fn deduplicate_models(models: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    models
+        .into_iter()
+        .filter(|model| seen.insert(model.clone()))
+        .collect()
 }
 
 pub fn apply_lease_credentials(
@@ -284,15 +375,16 @@ pub fn run_named_tool(
     } else {
         ToolEnvMode::Resolve
     };
-    let resolved = resolve_tool_launch(
+    let resolved = resolve_tool_launch(LaunchRequest {
         selection,
         config_path,
-        name,
-        Some(fallback_format),
+        format_override: Some(fallback_format),
+        configured_tool_name: Some(name),
         tool_env_mode,
-        &[],
-        false,
-    )?;
+        allowed_models: &[],
+        policy_name: None,
+        require_litellm: false,
+    })?;
     run_command(&resolved.program, &args, &resolved.env, dry_run)
 }
 

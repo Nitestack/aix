@@ -1,6 +1,6 @@
 use crate::cli::RunsAction;
 use crate::output;
-use crate::run_history::{RunRecord, RunStore};
+use crate::run_history::{RunPolicyRecord, RunRecord, RunStore};
 use color_eyre::Result;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -105,6 +105,9 @@ fn print_record(record: &RunRecord) {
             .unwrap_or_else(|| "(unavailable)".to_string())
     );
     println!("Status: {}", status_name(record.status));
+    if let Some(policy) = &record.policy {
+        print_policy(policy);
+    }
     if let Some(lease) = &record.lease {
         println!("Lease key alias: {:?}", lease.key_alias);
         println!("Lease budget: ${:.2}", lease.budget);
@@ -126,6 +129,17 @@ fn print_record(record: &RunRecord) {
         );
         println!("Lease cleanup: {:?}", lease.cleanup_status);
     }
+}
+
+fn print_policy(policy: &RunPolicyRecord) {
+    println!("Policy: {:?}", policy.name);
+    println!("Effective budget: ${:.2}", policy.effective_budget);
+    println!("Effective duration: {:?}", policy.effective_duration);
+    println!(
+        "Effective allowed models: {:?}",
+        policy.effective_allowed_models
+    );
+    println!("Effective tags: {:?}", policy.effective_tags);
 }
 
 fn format_option(value: Option<&String>) -> String {

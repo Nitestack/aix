@@ -10,6 +10,7 @@ pub mod exec;
 pub mod init;
 pub mod launch;
 pub mod models;
+pub mod policies;
 pub mod profiles;
 pub mod prompt;
 pub mod run;

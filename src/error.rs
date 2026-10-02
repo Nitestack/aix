@@ -138,6 +138,53 @@ pub enum AixError {
     #[error("configured command for tool {name:?} must not be empty")]
     EmptyToolCommand { name: String },
 
+    #[error("run policy names must not be empty")]
+    EmptyRunPolicyName,
+
+    #[error("run policy {name:?} must set a finite max_budget greater than zero")]
+    InvalidRunPolicyBudget { name: String },
+
+    #[error("run policy {name:?} must set a valid positive max_duration such as 30m or 2h")]
+    InvalidRunPolicyDuration { name: String },
+
+    #[error("run policy {name:?} allowed_models must be a non-empty list when configured")]
+    EmptyRunPolicyModels { name: String },
+
+    #[error("run policy {name:?} allowed_models must not contain empty strings")]
+    EmptyRunPolicyModel { name: String },
+
+    #[error("run policy {name:?} tags must not contain empty strings")]
+    EmptyRunPolicyTag { name: String },
+
+    #[error("run policy {name:?} references undefined profile {profile:?}")]
+    UnknownRunPolicyProfile { name: String, profile: String },
+
+    #[error("run policy {name:?} is not defined\n\nAvailable run policies:\n{available_hint}")]
+    RunPolicyNotFound {
+        name: String,
+        available_hint: String,
+    },
+
+    #[error("run policy has a fixed profile that conflicts with the global --profile")]
+    RunPolicyProfileConflict,
+
+    #[error("--budget ${budget:.2} exceeds run policy {policy:?} maximum ${max_budget:.2}")]
+    RunPolicyBudgetExceeded {
+        policy: String,
+        budget: f64,
+        max_budget: f64,
+    },
+
+    #[error("--duration {duration:?} exceeds run policy {policy:?} maximum {max_duration:?}")]
+    RunPolicyDurationExceeded {
+        policy: String,
+        duration: String,
+        max_duration: String,
+    },
+
+    #[error("a requested model is not allowed by the selected run policy")]
+    RunPolicyModelNotAllowed,
+
     #[error("invalid environment variable name {name:?} in tool {tool:?}")]
     InvalidToolEnvironmentVariableName { tool: String, name: String },
 
@@ -216,7 +263,7 @@ pub enum AixError {
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix current`, `aix profiles`, `aix spend`, `aix models`, `aix status`, `aix doctor`, `aix usage`, `aix ask`, `aix prompt`, and `aix runs`"
+        "JSON output is only supported by `aix current`, `aix profiles`, `aix policies`, `aix policy show`, `aix spend`, `aix models`, `aix status`, `aix doctor`, `aix usage`, `aix ask`, `aix prompt`, and `aix runs`"
     )]
     JsonUnsupportedCommand,
 
@@ -318,6 +365,18 @@ impl AixError {
             | Self::InvalidEnvironmentVariableName { .. }
             | Self::EmptyToolName
             | Self::EmptyToolCommand { .. }
+            | Self::EmptyRunPolicyName
+            | Self::InvalidRunPolicyBudget { .. }
+            | Self::InvalidRunPolicyDuration { .. }
+            | Self::EmptyRunPolicyModels { .. }
+            | Self::EmptyRunPolicyModel { .. }
+            | Self::EmptyRunPolicyTag { .. }
+            | Self::UnknownRunPolicyProfile { .. }
+            | Self::RunPolicyNotFound { .. }
+            | Self::RunPolicyProfileConflict
+            | Self::RunPolicyBudgetExceeded { .. }
+            | Self::RunPolicyDurationExceeded { .. }
+            | Self::RunPolicyModelNotAllowed
             | Self::InvalidToolEnvironmentVariableName { .. }
             | Self::SelectionCancelled
             | Self::NoInteractiveTerminal

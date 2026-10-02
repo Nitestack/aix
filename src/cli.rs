@@ -91,6 +91,13 @@ pub enum Command {
     },
     /// List available profiles
     Profiles,
+    /// List configured run policies
+    Policies,
+    /// Inspect a configured run policy
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
     /// Print environment variables for the selected profile
     Env {
         /// Profile name (positional; overrides the global --profile flag)
@@ -200,6 +207,9 @@ pub enum Command {
     },
     /// Run a command with profile credentials and durable run history
     Run {
+        /// Apply a declarative run policy (always uses a scoped lease)
+        #[arg(long)]
+        policy: Option<String>,
         /// Optional human-readable run name
         #[arg(long)]
         name: Option<String>,
@@ -216,16 +226,16 @@ pub enum Command {
         #[arg(long)]
         lease: bool,
         /// Maximum spend in USD (required with --lease)
-        #[arg(long, requires = "lease")]
+        #[arg(long)]
         budget: Option<f64>,
         /// Lease duration, such as 30m or 2h (default: 2h)
-        #[arg(long, requires = "lease")]
+        #[arg(long)]
         duration: Option<String>,
         /// Restrict the lease to a model ID or configured alias (repeatable)
-        #[arg(long = "allow-model", requires = "lease")]
+        #[arg(long = "allow-model")]
         allow_models: Vec<String>,
         /// Validate and describe a lease without creating it or running the child
-        #[arg(long, requires = "lease")]
+        #[arg(long)]
         dry_run: bool,
         /// Command and arguments to run (after --)
         #[arg(last = true)]
@@ -269,6 +279,8 @@ impl Command {
             self,
             Self::Current { .. }
                 | Self::Profiles
+                | Self::Policies
+                | Self::Policy { .. }
                 | Self::Spend { .. }
                 | Self::Status { .. }
                 | Self::Doctor { .. }
@@ -305,6 +317,12 @@ pub enum CurrentFormat {
 pub enum RunsAction {
     /// Show one complete run record
     Show { run_id: String },
+}
+
+#[derive(Subcommand)]
+pub enum PolicyAction {
+    /// Show the complete configuration for one policy
+    Show { name: String },
 }
 
 #[derive(Subcommand)]

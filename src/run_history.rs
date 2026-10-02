@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-pub const RUN_SCHEMA_VERSION: u8 = 1;
+pub const RUN_SCHEMA_VERSION: u8 = 2;
+pub const LEGACY_RUN_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -38,6 +39,15 @@ pub struct RunLeaseRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunPolicyRecord {
+    pub name: String,
+    pub effective_budget: f64,
+    pub effective_duration: String,
+    pub effective_allowed_models: Vec<String>,
+    pub effective_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub schema_version: u8,
     pub run_id: Uuid,
@@ -53,6 +63,8 @@ pub struct RunRecord {
     pub duration_ms: Option<u64>,
     pub process_exit_code: Option<i32>,
     pub status: RunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<RunPolicyRecord>,
     #[serde(default)]
     pub lease: Option<RunLeaseRecord>,
 }
@@ -333,6 +345,7 @@ mod tests {
             duration_ms: None,
             process_exit_code: None,
             status: RunStatus::Running,
+            policy: None,
             lease: None,
         }
     }

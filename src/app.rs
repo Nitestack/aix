@@ -64,6 +64,12 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
         } => crate::commands::use_profile::run(profile, clear, shell, format, config_path),
         Command::Current { format } => crate::commands::current::run(config_path, json, format),
         Command::Profiles => crate::commands::profiles::run(config_path, json),
+        Command::Policies => crate::commands::policies::list(config_path, json),
+        Command::Policy { action } => match action {
+            crate::cli::PolicyAction::Show { name } => {
+                crate::commands::policies::show(config_path, json, &name)
+            }
+        },
         Command::Env { profile, format } => {
             crate::commands::env::run(selection_for(profile, non_interactive), config_path, format)
         }
@@ -156,6 +162,7 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             .await
         }
         Command::Run {
+            policy,
             name,
             workflow,
             task_id,
@@ -177,6 +184,7 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
                     task_id,
                     tags,
                 },
+                policy,
                 lease,
                 budget,
                 duration,

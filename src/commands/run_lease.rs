@@ -45,38 +45,7 @@ pub(crate) fn validate_options(
 }
 
 fn is_positive_litellm_duration(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.is_empty() || bytes.len() > 128 {
-        return false;
-    }
-
-    let digit_end = bytes
-        .iter()
-        .take_while(|byte| byte.is_ascii_digit())
-        .count();
-    if digit_end == 0 || digit_end == bytes.len() {
-        return false;
-    }
-    let Ok(amount) = value[..digit_end].parse::<u64>() else {
-        return false;
-    };
-    if amount == 0 {
-        return false;
-    }
-
-    let unit = &value[digit_end..];
-    let maximum_seconds = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 60 * 60,
-        "d" => 24 * 60 * 60,
-        "w" => 7 * 24 * 60 * 60,
-        // LiteLLM computes calendar months when it turns this into an expiry.
-        // A 31-day upper bound keeps that amount finite for validation.
-        "mo" => 31 * 24 * 60 * 60,
-        _ => return false,
-    };
-    amount.checked_mul(maximum_seconds).is_some()
+    crate::duration::parse_litellm_duration(value).is_some()
 }
 
 pub(crate) fn inputs_contain_parent_key(
@@ -107,6 +76,11 @@ pub(crate) fn inputs_contain_parent_key(
             .allowed_models
             .iter()
             .any(|model| contains_key(model))
+        || resolved.policy.as_ref().is_some_and(|policy| {
+            contains_key(&policy.name)
+                || contains_key(&policy.max_duration)
+                || policy.tags.iter().any(|tag| contains_key(tag))
+        })
 }
 
 pub(crate) fn print_dry_run(
@@ -117,6 +91,10 @@ pub(crate) fn print_dry_run(
 ) {
     let run_id = Uuid::new_v4();
     eprintln!("Would create LiteLLM virtual-key lease:");
+    if let Some(policy) = &resolved.policy {
+        eprintln!("  policy: {}", policy.name);
+    }
+    eprintln!("  profile: {}", resolved.env.profile_name);
     eprintln!("  key alias: aix-run-{run_id}");
     eprintln!("  budget: ${budget:.2}");
     eprintln!("  duration: {duration}");
@@ -125,13 +103,24 @@ pub(crate) fn print_dry_run(
     } else {
         eprintln!("  allowed models: {}", resolved.allowed_models.join(", "));
     }
-    eprintln!("  user tags: configured ({} total)", metadata.tags.len());
+    eprintln!("  run tag values: {}", metadata.tags.len());
+    if resolved.policy.is_some() {
+        let run_tag = format!("aix:run:{run_id}");
+        let mut effective_tags = metadata.tags.clone();
+        if !effective_tags.contains(&run_tag) {
+            effective_tags.push(run_tag);
+        }
+        eprintln!("  effective tags: {effective_tags:?}");
+    }
     eprintln!("Would launch the configured child command.");
     eprintln!("Would set variable names:");
     let mut names = BTreeSet::new();
     names.extend(resolved.env.vars.iter().map(|(name, _)| name.as_str()));
     names.extend(resolved.env.display_only_vars.iter().map(String::as_str));
     names.insert("AIX_RUN_ID");
+    if resolved.policy.is_some() {
+        names.insert("AIX_RUN_POLICY");
+    }
     if metadata.name.is_some() {
         names.insert("AIX_RUN_NAME");
     }
@@ -141,7 +130,7 @@ pub(crate) fn print_dry_run(
     if metadata.task_id.is_some() {
         names.insert("AIX_TASK_ID");
     }
-    if !metadata.tags.is_empty() {
+    if !metadata.tags.is_empty() || resolved.policy.is_some() {
         names.insert("AIX_RUN_TAGS");
     }
     for name in names {

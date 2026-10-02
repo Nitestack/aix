@@ -67,6 +67,12 @@
           lib = pkgs.lib;
           aixModule = ./nix/home-manager.nix;
         };
+
+        homeManagerPolicyConfigs = import ./tests/home-manager-policies.nix {
+          inherit pkgs;
+          lib = pkgs.lib;
+          aixModule = ./nix/home-manager.nix;
+        };
       in
       {
         packages = {
@@ -92,7 +98,7 @@
         };
 
         # `nix flake check` builds the package and validates the generated
-        # Home Manager model and tool config.
+        # Home Manager model, tool, prompt, and run-policy config.
         checks = {
           aix-rs = aix-rs;
           aix-home-manager-models = pkgs.runCommand "aix-home-manager-models-check" { } ''
@@ -124,6 +130,18 @@
             grep -Fxq '[prompts.summarize]' ${homeManagerPromptConfigs.configured}
             grep -Fxq 'prompt = "Summarize the supplied material clearly and concisely."' ${homeManagerPromptConfigs.configured}
             ! grep -q 'prompts' ${homeManagerPromptConfigs.legacy}
+            touch $out
+          '';
+          aix-home-manager-policies = pkgs.runCommand "aix-home-manager-policies-check" { } ''
+            grep -Fxq '[run_policies.implement]' ${homeManagerPolicyConfigs.configured}
+            grep -Fxq 'profile = "work"' ${homeManagerPolicyConfigs.configured}
+            grep -q '^max_budget = 3' ${homeManagerPolicyConfigs.configured}
+            grep -Fxq 'max_duration = "2h"' ${homeManagerPolicyConfigs.configured}
+            grep -q 'allowed_models' ${homeManagerPolicyConfigs.configured}
+            grep -q 'phase:implement' ${homeManagerPolicyConfigs.configured}
+            grep -Fxq '[run_policies.research]' ${homeManagerPolicyConfigs.configured}
+            grep -Fxq 'max_duration = "1h"' ${homeManagerPolicyConfigs.configured}
+            ! grep -q 'run_policies' ${homeManagerPolicyConfigs.legacy}
             touch $out
           '';
         };
