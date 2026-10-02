@@ -299,6 +299,10 @@ fn validate_output_path(path: &Path) -> Result<(), AixError> {
     }
 }
 
+/// Publish a complete temporary file atomically when hard links are supported.
+/// On non-Unix filesystems without hard-link support, create-new still refuses
+/// overwrites but the final file can be observed while its contents are written;
+/// its ACL is inherited because Rust has no portable ACL-setting API.
 fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path
         .parent()

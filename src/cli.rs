@@ -346,7 +346,7 @@ pub enum LeaseAction {
         /// Attach a metadata tag (repeatable)
         #[arg(long = "tag")]
         tags: Vec<String>,
-        /// New secret file path (Unix mode 0600; other platforms use inherited ACLs)
+        /// New secret file path (Unix mode 0600; elsewhere inherits ACLs and may use a non-atomic fallback)
         #[arg(long, required = true, value_name = "PATH")]
         output: PathBuf,
     },
