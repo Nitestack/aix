@@ -11,6 +11,7 @@ pub mod models;
 pub mod profiles;
 pub mod prompt;
 pub mod run;
+pub(crate) mod run_lease;
 pub mod runs;
 pub mod shell;
 pub mod spend;

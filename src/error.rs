@@ -173,6 +173,9 @@ pub enum AixError {
     #[error("lease metadata and child arguments must not contain the selected profile credential")]
     LeaseInputContainsCredential,
 
+    #[error("LiteLLM returned a virtual key containing the parent credential; the child was not launched")]
+    LeaseKeyContainsParentCredential,
+
     #[error("`aix run --lease` requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
     LeaseNotLiteLlm,
 
@@ -361,6 +364,7 @@ impl AixError {
             | Self::RunHistoryIo { .. }
             | Self::RunRecordSerialization(_)
             | Self::LeaseCleanupFailed
+            | Self::LeaseKeyContainsParentCredential
             | Self::RunInterruptHandler(_) => 1,
         }
     }

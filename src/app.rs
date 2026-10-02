@@ -147,10 +147,12 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             crate::commands::run::run(crate::commands::run::RunOptions {
                 profile: effective_profile,
                 config_path,
-                name,
-                workflow,
-                task_id,
-                tags,
+                metadata: crate::commands::run::RunMetadata {
+                    name,
+                    workflow,
+                    task_id,
+                    tags,
+                },
                 lease,
                 budget,
                 duration,

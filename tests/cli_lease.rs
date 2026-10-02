@@ -387,6 +387,53 @@ async fn generation_authorization_failure_prevents_launch_and_keeps_error_secret
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(unix)]
+async fn generated_key_containing_parent_credential_is_never_given_to_child() {
+    let server = MockServer::start().await;
+    mount_generate(&server, PARENT_KEY, 200).await;
+    let config = write_config(&server.uri(), None, "");
+    let state = assert_fs::TempDir::new().unwrap();
+
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .env("AIX_STATE_DIR", state.path())
+        .env("AIX_PARENT_KEY", PARENT_KEY)
+        .args([
+            "run",
+            "--lease",
+            "--budget",
+            "1",
+            "--",
+            "sh",
+            "-c",
+            "printf CHILD_LAUNCHED",
+        ])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("parent credential"));
+    assert!(!stderr.contains("CHILD_LAUNCHED"));
+    assert!(!stderr.contains(PARENT_KEY));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+
+    let runs = cmd()
+        .env("AIX_STATE_DIR", state.path())
+        .args(["runs", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let runs: Value = serde_json::from_slice(&runs).unwrap();
+    assert_eq!(runs["data"][0]["status"], "failed");
+    assert_eq!(runs["data"][0]["lease"]["cleanup_status"], "revoke_failed");
+    assert!(!runs.to_string().contains(PARENT_KEY));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(unix)]
 async fn dry_run_resolves_policy_without_network_child_or_run_record() {
     let server = MockServer::start().await;
     let config = write_config(
