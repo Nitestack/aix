@@ -333,16 +333,16 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
-#[cfg(not(unix))]
+#[cfg(any(not(unix), test))]
 fn write_secret_file_create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let result = (|| {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        file.write_all(bytes)?;
-        file.flush()?;
-        file.sync_all()
-    })();
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let result = file
+        .write_all(bytes)
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all());
     if result.is_err() {
-        let _ = fs::remove_file(path);
+        // Truncate only the handle we created; the path may have been replaced.
+        let _ = file.set_len(0);
     }
     result
 }
@@ -510,6 +510,16 @@ mod tests {
             validate_output_path(directory.path()),
             Err(AixError::LeaseOutputExists)
         ));
+    }
+
+    #[test]
+    fn create_new_fallback_never_removes_an_existing_output() {
+        let directory = assert_fs::TempDir::new().unwrap();
+        let path = directory.path().join("existing-secret.json");
+        fs::write(&path, b"preserve existing file").unwrap();
+
+        assert!(write_secret_file_create_new(&path, b"replacement").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"preserve existing file");
     }
 
     #[test]
