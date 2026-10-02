@@ -465,6 +465,10 @@ fn find_executable(program: &str) -> Result<PathBuf, AixError> {
     })
 }
 
+pub(crate) fn validate_executable(program: &str) -> Result<(), AixError> {
+    find_executable(program).map(|_| ())
+}
+
 #[cfg(unix)]
 fn detect_shell_impl() -> String {
     if let Ok(shell) = std::env::var("SHELL") {

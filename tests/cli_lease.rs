@@ -487,6 +487,38 @@ DEFERRED_SECRET = { env = "AIX_MISSING_TOOL_SECRET" }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dry_run_rejects_missing_child_executable_without_network_or_run_record() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri(), None, "");
+    let state = assert_fs::TempDir::new().unwrap();
+
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .env("AIX_STATE_DIR", state.path())
+        .env("AIX_PARENT_KEY", PARENT_KEY)
+        .args([
+            "run",
+            "--lease",
+            "--budget",
+            "2",
+            "--dry-run",
+            "--",
+            "aix-lease-dry-run-missing-child-executable",
+        ])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("executable not found: aix-lease-dry-run-missing-child-executable"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(PARENT_KEY));
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert_eq!(std::fs::read_dir(state.path()).unwrap().count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(unix)]
 async fn unset_gateway_metadata_uses_default_duration_and_omits_model_restriction() {
     let server = MockServer::start().await;

@@ -68,6 +68,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     }
 
     if dry_run {
+        launch::validate_executable(&resolved.program)?;
         run_lease::print_dry_run(
             &resolved,
             budget.expect("validated lease budget"),
