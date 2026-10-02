@@ -60,7 +60,7 @@ fn summary<'a>(
     let resolved_models = policy
         .allowed_models
         .as_ref()
-        .and_then(|models| selected_profile.map(|profile_name| (models, profile_name)))
+        .zip(selected_profile)
         .map(|(models, profile_name)| {
             let profile = cfg
                 .profiles
