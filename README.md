@@ -380,6 +380,8 @@ An optional `[tools.<name>]` entry controls how a named tool is launched by
 `command` optionally selects a different executable, `api_format` selects
 `anthropic`, `openai`, or `both`, and `env` adds tool-specific variables. Tool
 environment values override profile values, which override generated credentials.
+For `aix <tool> ... --dry-run`, aix lists configured tool env variable names
+without resolving their secret sources.
 
 ```toml
 [tools.review]

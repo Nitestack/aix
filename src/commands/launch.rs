@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 pub struct LaunchEnv {
     pub vars: Vec<(String, String)>,
+    display_only_vars: Vec<String>,
     pub clear_vars: Vec<String>,
     pub remove_vars: Vec<String>,
     pub profile_name: String,
@@ -34,12 +35,24 @@ pub struct ResolvedRunLaunch {
     pub logical_tool_name: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum ToolEnvMode {
+    Resolve,
+    NamesOnly,
+}
+
 pub fn resolve_launch_env(
     profile: Option<String>,
     config_path: Option<PathBuf>,
     format_override: Option<config::ApiFormat>,
 ) -> Result<LaunchEnv> {
-    let (env, _, _) = resolve_launch_env_inner(profile, config_path, format_override, None)?;
+    let (env, _, _) = resolve_launch_env_inner(
+        profile,
+        config_path,
+        format_override,
+        None,
+        ToolEnvMode::Resolve,
+    )?;
     Ok(env)
 }
 
@@ -48,7 +61,7 @@ pub fn resolve_run_launch(
     config_path: Option<PathBuf>,
     program: &str,
 ) -> Result<ResolvedRunLaunch> {
-    resolve_tool_launch(profile, config_path, program, None)
+    resolve_tool_launch(profile, config_path, program, None, ToolEnvMode::Resolve)
 }
 
 fn resolve_tool_launch(
@@ -56,9 +69,15 @@ fn resolve_tool_launch(
     config_path: Option<PathBuf>,
     tool_name: &str,
     fallback_format: Option<config::ApiFormat>,
+    tool_env_mode: ToolEnvMode,
 ) -> Result<ResolvedRunLaunch> {
-    let (env, program, logical_tool_name) =
-        resolve_launch_env_inner(profile, config_path, fallback_format, Some(tool_name))?;
+    let (env, program, logical_tool_name) = resolve_launch_env_inner(
+        profile,
+        config_path,
+        fallback_format,
+        Some(tool_name),
+        tool_env_mode,
+    )?;
     Ok(ResolvedRunLaunch {
         env,
         program,
@@ -71,6 +90,7 @@ fn resolve_launch_env_inner(
     config_path: Option<PathBuf>,
     format_override: Option<config::ApiFormat>,
     configured_tool_name: Option<&str>,
+    tool_env_mode: ToolEnvMode,
 ) -> Result<(LaunchEnv, String, Option<String>)> {
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
@@ -115,11 +135,17 @@ fn resolve_launch_env_inner(
         &api_format,
         profile_entry,
     )?;
+    let mut display_only_vars = Vec::new();
     if let Some(tool) = configured_tool {
         let mut tool_vars: Vec<_> = tool.env.iter().collect();
         tool_vars.sort_unstable_by_key(|(key, _)| key.as_str());
         for (key, value) in tool_vars {
-            vars.push((key.clone(), value.resolve()?.expose_secret().to_string()));
+            match tool_env_mode {
+                ToolEnvMode::Resolve => {
+                    vars.push((key.clone(), value.resolve()?.expose_secret().to_string()));
+                }
+                ToolEnvMode::NamesOnly => display_only_vars.push(key.clone()),
+            }
         }
     }
 
@@ -133,6 +159,7 @@ fn resolve_launch_env_inner(
     Ok((
         LaunchEnv {
             vars,
+            display_only_vars,
             clear_vars,
             remove_vars: Vec::new(),
             profile_name,
@@ -154,7 +181,18 @@ pub fn run_named_tool(
     } else {
         config::ApiFormat::OpenAi
     };
-    let resolved = resolve_tool_launch(profile, config_path, name, Some(fallback_format))?;
+    let tool_env_mode = if dry_run {
+        ToolEnvMode::NamesOnly
+    } else {
+        ToolEnvMode::Resolve
+    };
+    let resolved = resolve_tool_launch(
+        profile,
+        config_path,
+        name,
+        Some(fallback_format),
+        tool_env_mode,
+    )?;
     run_command(&resolved.program, &args, &resolved.env, dry_run)
 }
 
@@ -169,8 +207,13 @@ pub fn run_command(program: &str, args: &[String], env: &LaunchEnv, dry_run: boo
             .collect();
         eprintln!("Would run: {}", display_args.join(" "));
         eprintln!("Would set:");
-        for (k, _) in &env.vars {
-            eprintln!("  {k}");
+        for key in env
+            .vars
+            .iter()
+            .map(|(key, _)| key)
+            .chain(env.display_only_vars.iter())
+        {
+            eprintln!("  {key}");
         }
         return Ok(());
     }

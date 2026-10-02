@@ -504,6 +504,42 @@ TOOL_TOKEN = "tool-secret-sentinel"
 }
 
 #[test]
+fn configured_tool_secret_sources_are_not_resolved_during_dry_run() {
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://ai.example.com"
+
+[profiles.work]
+api_key = "sk-profile-key"
+
+[tools.review]
+api_format = "both"
+
+[tools.review.env]
+TOOL_TOKEN = { env = "AIX_TOOL_ENV_DRY_RUN_MISSING" }
+"#,
+        )
+        .unwrap();
+
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .env_remove("AIX_TOOL_ENV_DRY_RUN_MISSING")
+        .args(["review", "work", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+
+    let stderr = String::from_utf8(output).unwrap();
+    assert!(stderr.contains("TOOL_TOKEN"), "got: {stderr}");
+    assert!(!stderr.contains("AIX_TOOL_ENV_DRY_RUN_MISSING"));
+}
+
+#[test]
 fn configured_tool_validation_rejects_invalid_entries() {
     for invalid_config in [
         r#"
