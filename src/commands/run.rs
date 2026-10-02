@@ -26,6 +26,7 @@ pub(crate) struct RunMetadata {
 pub(crate) struct RunOptions {
     pub selection: ProfileSelection,
     pub timeout: std::time::Duration,
+    pub explicit_profile: Option<String>,
     pub config_path: Option<std::path::PathBuf>,
     pub metadata: RunMetadata,
     pub policy: Option<String>,
@@ -41,6 +42,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     let RunOptions {
         selection,
         timeout,
+        explicit_profile,
         config_path,
         mut metadata,
         policy,
@@ -66,15 +68,16 @@ pub async fn run(options: RunOptions) -> Result<()> {
         None
     };
     let (requested_program, command_args) = args.split_first().ok_or(AixError::RunNoCommand)?;
-    let mut resolved = launch::resolve_run_launch(
+    let mut resolved = launch::resolve_run_launch(launch::RunLaunchRequest {
         selection,
+        explicit_profile,
         config_path,
-        requested_program,
-        &requested_models,
-        policy.as_deref(),
-        lease || policy.is_some(),
+        program: requested_program,
+        allowed_models: &requested_models,
+        policy_name: policy.as_deref(),
+        require_litellm: lease || policy.is_some(),
         dry_run,
-    )?;
+    })?;
     if let Some(run_policy) = &resolved.policy {
         metadata.tags = merge_tags(&run_policy.tags, &metadata.tags);
     }

@@ -379,10 +379,21 @@ max_duration = "1h"
 
     let fixed = cmd()
         .env("AIX_CONFIG", config.path())
+        .env("AIX_PROFILE", "personal")
+        .args(["run", "--policy", "fixed", "--dry-run", "--", "true"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    assert!(String::from_utf8_lossy(&fixed.stderr).contains("profile: work"));
+
+    let env_conflict = cmd()
+        .env("AIX_CONFIG", config.path())
+        .env("AIX_PROFILE", "personal")
         .args([
             "run",
             "--profile",
-            "work",
+            "personal",
             "--policy",
             "fixed",
             "--dry-run",
@@ -390,23 +401,16 @@ max_duration = "1h"
             "true",
         ])
         .assert()
-        .success()
+        .code(2)
         .get_output()
         .clone();
-    assert!(String::from_utf8_lossy(&fixed.stderr).contains("profile: work"));
+    assert!(String::from_utf8_lossy(&env_conflict.stderr)
+        .contains("conflicts with the global --profile"));
 
     let flexible = cmd()
         .env("AIX_CONFIG", config.path())
-        .args([
-            "run",
-            "--profile",
-            "personal",
-            "--policy",
-            "flexible",
-            "--dry-run",
-            "--",
-            "true",
-        ])
+        .env("AIX_PROFILE", "personal")
+        .args(["run", "--policy", "flexible", "--dry-run", "--", "true"])
         .assert()
         .success()
         .get_output()

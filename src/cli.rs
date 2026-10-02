@@ -10,7 +10,7 @@ use std::time::Duration;
 )]
 pub struct Cli {
     /// Profile to use (overrides AIX_PROFILE env var)
-    #[arg(long, short, global = true, env = "AIX_PROFILE")]
+    #[arg(long, short, global = true)]
     pub profile: Option<String>,
 
     /// Do not open an interactive profile picker

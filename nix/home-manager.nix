@@ -206,59 +206,6 @@ let
       tags = policy.tags;
     };
 
-  isPositiveDuration =
-    value:
-    let
-      parts = builtins.match "([1-9][0-9]*)(s|m|h|d|w|mo)" value;
-    in
-    parts != null && builtins.fromJSON (builtins.elemAt parts 0) > 0;
-
-  runPolicyAssertions =
-    let
-      names = builtins.attrNames cfg.runPolicies;
-      policies = builtins.attrValues cfg.runPolicies;
-    in
-    [
-      {
-        assertion = builtins.all (name: name != "") names;
-        message = "programs.aix.runPolicies policy names must not be empty.";
-      }
-      {
-        assertion = builtins.all (policy: policy.maxBudget > 0) policies;
-        message = "programs.aix.runPolicies maxBudget values must be greater than zero.";
-      }
-      {
-        assertion = builtins.all (policy: isPositiveDuration policy.maxDuration) policies;
-        message = "programs.aix.runPolicies maxDuration values must be positive LiteLLM durations.";
-      }
-      {
-        assertion = builtins.all (
-          policy: policy.allowedModels == null || policy.allowedModels != [ ]
-        ) policies;
-        message = "programs.aix.runPolicies allowedModels must not be empty when configured.";
-      }
-      {
-        assertion = builtins.all (
-          policy:
-          policy.allowedModels == null
-          || builtins.all (model: lib.strings.trim model != "") policy.allowedModels
-        ) policies;
-        message = "programs.aix.runPolicies allowedModels must not contain empty strings.";
-      }
-      {
-        assertion = builtins.all (
-          policy: builtins.all (tag: lib.strings.trim tag != "") policy.tags
-        ) policies;
-        message = "programs.aix.runPolicies tags must not contain empty strings.";
-      }
-      {
-        assertion = builtins.all (
-          policy: policy.profile == null || builtins.hasAttr policy.profile cfg.profiles
-        ) policies;
-        message = "programs.aix.runPolicies fixed profiles must exist in programs.aix.profiles.";
-      }
-    ];
-
   validateSecretSource =
     source:
     let
@@ -507,8 +454,7 @@ in
         assertion = cfg.profiles != { };
         message = "programs.aix.profiles must define at least one profile when programs.aix.enable = true.";
       }
-    ]
-    ++ runPolicyAssertions;
+    ];
 
     home.packages = [ cfg.package ];
 

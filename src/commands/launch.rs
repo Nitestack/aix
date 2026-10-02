@@ -61,6 +61,7 @@ struct LaunchResolution {
 
 struct LaunchRequest<'a> {
     selection: ProfileSelection,
+    explicit_profile: Option<String>,
     config_path: Option<PathBuf>,
     format_override: Option<config::ApiFormat>,
     configured_tool_name: Option<&'a str>,
@@ -83,6 +84,7 @@ pub fn resolve_launch_env(
 ) -> Result<LaunchEnv> {
     let resolution = resolve_launch_env_inner(LaunchRequest {
         selection,
+        explicit_profile: None,
         config_path,
         format_override,
         configured_tool_name: None,
@@ -94,17 +96,31 @@ pub fn resolve_launch_env(
     Ok(resolution.env)
 }
 
-pub fn resolve_run_launch(
-    selection: ProfileSelection,
-    config_path: Option<PathBuf>,
-    program: &str,
-    allowed_models: &[String],
-    policy_name: Option<&str>,
-    require_litellm: bool,
-    dry_run: bool,
-) -> Result<ResolvedRunLaunch> {
+pub(crate) struct RunLaunchRequest<'a> {
+    pub selection: ProfileSelection,
+    pub explicit_profile: Option<String>,
+    pub config_path: Option<PathBuf>,
+    pub program: &'a str,
+    pub allowed_models: &'a [String],
+    pub policy_name: Option<&'a str>,
+    pub require_litellm: bool,
+    pub dry_run: bool,
+}
+
+pub(crate) fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<ResolvedRunLaunch> {
+    let RunLaunchRequest {
+        selection,
+        explicit_profile,
+        config_path,
+        program,
+        allowed_models,
+        policy_name,
+        require_litellm,
+        dry_run,
+    } = request;
     resolve_tool_launch(LaunchRequest {
         selection,
+        explicit_profile,
         config_path,
         format_override: None,
         configured_tool_name: Some(program),
@@ -135,6 +151,7 @@ fn resolve_tool_launch(request: LaunchRequest<'_>) -> Result<ResolvedRunLaunch> 
 fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResolution> {
     let LaunchRequest {
         selection,
+        explicit_profile,
         config_path,
         format_override,
         configured_tool_name,
@@ -163,8 +180,7 @@ fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResoluti
         })
         .transpose()?;
     if let Some(policy_profile) = policy.and_then(|policy| policy.profile.as_deref()) {
-        if selection
-            .profile
+        if explicit_profile
             .as_deref()
             .is_some_and(|selected| selected != policy_profile)
         {
@@ -377,6 +393,7 @@ pub fn run_named_tool(
     };
     let resolved = resolve_tool_launch(LaunchRequest {
         selection,
+        explicit_profile: None,
         config_path,
         format_override: Some(fallback_format),
         configured_tool_name: Some(name),

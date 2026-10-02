@@ -42,7 +42,10 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
     }
 
     let json = cli.json;
-    let global_profile = cli.profile;
+    let explicit_global_profile = cli.profile;
+    let global_profile = explicit_global_profile
+        .clone()
+        .or_else(|| std::env::var("AIX_PROFILE").ok());
     let non_interactive = cli.non_interactive;
     let timeout = cli.timeout;
     let config_path = cli.config;
@@ -177,6 +180,7 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             crate::commands::run::run(crate::commands::run::RunOptions {
                 selection: selection_for(None, non_interactive),
                 timeout,
+                explicit_profile: explicit_global_profile.clone(),
                 config_path,
                 metadata: crate::commands::run::RunMetadata {
                     name,
