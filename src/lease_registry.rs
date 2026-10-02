@@ -35,16 +35,13 @@ pub struct LeaseRecord {
 
 impl LeaseRecord {
     pub fn display_status(&self, now_unix_ms: u64) -> LeaseStatus {
-        if self.status == LeaseStatus::Active
-            && self
-                .expires_at
-                .as_deref()
-                .and_then(expiry_unix_ms)
-                .is_some_and(|expires_at| expires_at <= now_unix_ms)
-        {
-            LeaseStatus::ExpiredOrUnknown
-        } else {
-            self.status
+        if self.status != LeaseStatus::Active {
+            return self.status;
+        }
+
+        match self.expires_at.as_deref().and_then(expiry_unix_ms) {
+            Some(expires_at) if expires_at > now_unix_ms => LeaseStatus::Active,
+            Some(_) | None => LeaseStatus::ExpiredOrUnknown,
         }
     }
 
@@ -328,5 +325,18 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].created_at, "2026-10-02T12:00:00.001Z");
         assert_eq!(listed[1].created_at, "2026-10-02T12:00:00Z");
+    }
+
+    #[test]
+    fn active_lease_without_a_parseable_expiry_is_displayed_as_unknown() {
+        let mut lease = record("2026-10-02T12:00:00Z");
+        lease.expires_at = Some("2030-01-02T03:04:05Z".to_string());
+        assert_eq!(lease.display_status(0), LeaseStatus::Active);
+
+        lease.expires_at = None;
+        assert_eq!(lease.display_status(0), LeaseStatus::ExpiredOrUnknown);
+
+        lease.expires_at = Some("not-a-timestamp".to_string());
+        assert_eq!(lease.display_status(0), LeaseStatus::ExpiredOrUnknown);
     }
 }
