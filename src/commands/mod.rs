@@ -9,6 +9,7 @@ pub mod env;
 pub mod exec;
 pub mod init;
 pub mod launch;
+pub mod leases;
 pub mod models;
 pub mod policies;
 pub mod profiles;

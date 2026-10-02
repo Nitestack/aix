@@ -145,6 +145,17 @@ impl LiteLlmAdminClient {
             .map_err(map_admin_error)
     }
 
+    pub(crate) async fn delete_virtual_key_alias(&self, key_alias: &str) -> Result<(), AixError> {
+        self.transport
+            .post_json(
+                KEY_DELETE_PATH,
+                &serde_json::json!({ "key_aliases": [key_alias] }),
+            )
+            .await
+            .map(|_| ())
+            .map_err(map_admin_error)
+    }
+
     async fn list_keys(&self, user_id: &str) -> Result<Vec<Value>, AixError> {
         let mut page = 1_u64;
         let mut keys = Vec::new();

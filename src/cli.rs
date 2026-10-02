@@ -241,6 +241,13 @@ pub enum Command {
         #[arg(last = true)]
         args: Vec<String>,
     },
+    /// Create, inspect, or revoke an exported LiteLLM credential lease
+    Lease {
+        #[command(subcommand)]
+        action: LeaseAction,
+    },
+    /// List locally recorded exported credential leases
+    Leases,
     /// Inspect durable run history
     Runs {
         /// Show only the newest N records
@@ -288,6 +295,10 @@ impl Command {
                 | Self::Usage { .. }
                 | Self::Ask { .. }
                 | Self::Prompt { .. }
+                | Self::Leases
+                | Self::Lease {
+                    action: LeaseAction::Show { .. }
+                }
                 | Self::Runs { .. }
         )
     }
@@ -317,6 +328,32 @@ pub enum CurrentFormat {
 pub enum RunsAction {
     /// Show one complete run record
     Show { run_id: String },
+}
+
+#[derive(Subcommand)]
+pub enum LeaseAction {
+    /// Create a temporary gateway credential and write it to a secret file
+    Create {
+        /// Maximum spend in USD
+        #[arg(long, required = true)]
+        budget: f64,
+        /// Lease duration, such as 30m or 2h (default: 2h)
+        #[arg(long)]
+        duration: Option<String>,
+        /// Restrict the lease to a model ID or configured alias (repeatable)
+        #[arg(long = "allow-model")]
+        allow_models: Vec<String>,
+        /// Attach a metadata tag (repeatable)
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// New secret file path (Unix mode 0600; other platforms use inherited ACLs)
+        #[arg(long, required = true, value_name = "PATH")]
+        output: PathBuf,
+    },
+    /// Show one locally recorded lease without contacting the gateway
+    Show { lease_id: String },
+    /// Revoke a locally recorded lease by its non-secret ID
+    Revoke { lease_id: String },
 }
 
 #[derive(Subcommand)]

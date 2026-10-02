@@ -198,6 +198,34 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             })
             .await
         }
+        Command::Lease { action } => match action {
+            crate::cli::LeaseAction::Create {
+                budget,
+                duration,
+                allow_models,
+                tags,
+                output,
+            } => {
+                crate::commands::leases::create(crate::commands::leases::CreateOptions {
+                    selection: selection_for(None, non_interactive),
+                    timeout,
+                    config_path,
+                    budget,
+                    duration,
+                    requested_models: allow_models,
+                    tags,
+                    output,
+                })
+                .await
+            }
+            crate::cli::LeaseAction::Show { lease_id } => {
+                crate::commands::leases::show(&lease_id, json)
+            }
+            crate::cli::LeaseAction::Revoke { lease_id } => {
+                crate::commands::leases::revoke(&lease_id, config_path, timeout).await
+            }
+        },
+        Command::Leases => crate::commands::leases::list(json),
         Command::Runs { limit, action } => crate::commands::runs::run(action, limit, json),
         Command::Cache { action } => crate::commands::cache::run(action, config_path),
         Command::Tool(raw) => {

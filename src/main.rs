@@ -9,6 +9,7 @@ mod duration;
 mod error;
 mod gateway;
 mod inference;
+mod lease_registry;
 mod output;
 mod run_history;
 mod secrets;

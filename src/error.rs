@@ -217,13 +217,19 @@ pub enum AixError {
     #[error("allowed model names must not be empty")]
     EmptyLeaseModel,
 
+    #[error("lease tags must not be empty")]
+    EmptyLeaseTag,
+
     #[error("lease metadata and child arguments must not contain the selected profile credential")]
     LeaseInputContainsCredential,
 
     #[error("LiteLLM returned a virtual key containing the parent credential; the child was not launched")]
     LeaseKeyContainsParentCredential,
 
-    #[error("`aix run --lease` requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
+    #[error("lease metadata must not contain the generated leased credential")]
+    LeaseMetadataContainsLeasedCredential,
+
+    #[error("`aix run --lease` and `aix lease create` require a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
     LeaseNotLiteLlm,
 
     #[error("LiteLLM denied virtual-key generation (HTTP {status}); verify the parent key has permission to generate keys")]
@@ -251,6 +257,26 @@ pub enum AixError {
     #[error("run record {run_id} was not found")]
     RunNotFound { run_id: String },
 
+    #[error("lease was not found in the local registry")]
+    LeaseNotFound,
+
+    #[error(
+        "the selected parent profile for this lease was not found in the current configuration"
+    )]
+    LeaseParentProfileNotFound,
+
+    #[error("lease output file already exists")]
+    LeaseOutputExists,
+
+    #[error("local lease registry I/O failed: {0}")]
+    LeaseRegistryIo(#[source] std::io::Error),
+
+    #[error("failed to encode lease registry record: {0}")]
+    LeaseRegistrySerialization(#[source] serde_json::Error),
+
+    #[error("failed to write lease credential file: {0}")]
+    LeaseOutputIo(#[source] std::io::Error),
+
     #[error("failed to encode run record: {0}")]
     RunRecordSerialization(#[from] serde_json::Error),
 
@@ -263,7 +289,7 @@ pub enum AixError {
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix current`, `aix profiles`, `aix policies`, `aix policy show`, `aix spend`, `aix models`, `aix status`, `aix doctor`, `aix usage`, `aix ask`, `aix prompt`, and `aix runs`"
+        "JSON output is only supported by `aix current`, `aix profiles`, `aix policies`, `aix policy show`, `aix spend`, `aix models`, `aix status`, `aix doctor`, `aix usage`, `aix ask`, `aix prompt`, `aix runs`, `aix leases`, and `aix lease show`"
     )]
     JsonUnsupportedCommand,
 
@@ -387,7 +413,11 @@ impl AixError {
             | Self::InvalidLeaseBudget
             | Self::InvalidLeaseDuration
             | Self::EmptyLeaseModel
+            | Self::EmptyLeaseTag
             | Self::LeaseInputContainsCredential
+            | Self::LeaseNotFound
+            | Self::LeaseParentProfileNotFound
+            | Self::LeaseOutputExists
             | Self::RunNotFound { .. }
             | Self::ShellExtraArgs
             | Self::JsonUnsupportedCommand
@@ -422,8 +452,12 @@ impl AixError {
             | Self::ProcessWait { .. }
             | Self::RunHistoryIo { .. }
             | Self::RunRecordSerialization(_)
+            | Self::LeaseRegistryIo(_)
+            | Self::LeaseRegistrySerialization(_)
+            | Self::LeaseOutputIo(_)
             | Self::LeaseCleanupFailed
             | Self::LeaseKeyContainsParentCredential
+            | Self::LeaseMetadataContainsLeasedCredential
             | Self::RunInterruptHandler(_) => 1,
         }
     }
