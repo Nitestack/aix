@@ -105,6 +105,27 @@ fn print_record(record: &RunRecord) {
             .unwrap_or_else(|| "(unavailable)".to_string())
     );
     println!("Status: {}", status_name(record.status));
+    if let Some(lease) = &record.lease {
+        println!("Lease key alias: {:?}", lease.key_alias);
+        println!("Lease budget: ${:.2}", lease.budget);
+        println!("Lease duration: {:?}", lease.duration);
+        println!(
+            "Lease expiry: {}",
+            lease.expires_at.as_deref().map_or_else(
+                || "(not returned)".to_string(),
+                |expiry| format!("{expiry:?}")
+            )
+        );
+        println!("Lease allowed models: {:?}", lease.allowed_models);
+        println!(
+            "Lease final spend: {}",
+            lease.spend.map_or_else(
+                || "(unavailable)".to_string(),
+                |spend| format!("${spend:.2}")
+            )
+        );
+        println!("Lease cleanup: {:?}", lease.cleanup_status);
+    }
 }
 
 fn format_option(value: Option<&String>) -> String {

@@ -175,6 +175,21 @@ pub enum Command {
         /// Repeatable run tag
         #[arg(long = "tag")]
         tags: Vec<String>,
+        /// Create and use a temporary LiteLLM virtual key for this run
+        #[arg(long)]
+        lease: bool,
+        /// Maximum spend in USD (required with --lease)
+        #[arg(long, requires = "lease")]
+        budget: Option<f64>,
+        /// Lease duration, such as 30m or 2h (default: 2h)
+        #[arg(long, requires = "lease")]
+        duration: Option<String>,
+        /// Restrict the lease to a model ID or configured alias (repeatable)
+        #[arg(long = "allow-model", requires = "lease")]
+        allow_models: Vec<String>,
+        /// Validate and describe a lease without creating it or running the child
+        #[arg(long, requires = "lease")]
+        dry_run: bool,
         /// Command and arguments to run (after --)
         #[arg(last = true)]
         args: Vec<String>,

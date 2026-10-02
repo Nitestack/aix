@@ -1,6 +1,7 @@
 use crate::commands::env::{collect_profile_vars, resolve_profile};
 use crate::config;
 use crate::error::AixError;
+use crate::secrets::SecretString;
 use color_eyre::Result;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,7 +9,7 @@ use std::time::{Duration, Instant};
 
 pub struct LaunchEnv {
     pub vars: Vec<(String, String)>,
-    display_only_vars: Vec<String>,
+    pub(crate) display_only_vars: Vec<String>,
     pub clear_vars: Vec<String>,
     pub remove_vars: Vec<String>,
     pub profile_name: String,
@@ -33,6 +34,18 @@ pub struct ResolvedRunLaunch {
     pub env: LaunchEnv,
     pub program: String,
     pub logical_tool_name: Option<String>,
+    pub base_url: SecretString,
+    pub parent_api_key: SecretString,
+    pub allowed_models: Vec<String>,
+}
+
+struct LaunchResolution {
+    env: LaunchEnv,
+    program: String,
+    logical_tool_name: Option<String>,
+    base_url: SecretString,
+    parent_api_key: SecretString,
+    allowed_models: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,22 +59,39 @@ pub fn resolve_launch_env(
     config_path: Option<PathBuf>,
     format_override: Option<config::ApiFormat>,
 ) -> Result<LaunchEnv> {
-    let (env, _, _) = resolve_launch_env_inner(
+    let resolution = resolve_launch_env_inner(
         profile,
         config_path,
         format_override,
         None,
         ToolEnvMode::Resolve,
+        &[],
+        false,
     )?;
-    Ok(env)
+    Ok(resolution.env)
 }
 
 pub fn resolve_run_launch(
     profile: Option<String>,
     config_path: Option<PathBuf>,
     program: &str,
+    allowed_models: &[String],
+    require_litellm: bool,
+    dry_run: bool,
 ) -> Result<ResolvedRunLaunch> {
-    resolve_tool_launch(profile, config_path, program, None, ToolEnvMode::Resolve)
+    resolve_tool_launch(
+        profile,
+        config_path,
+        program,
+        None,
+        if dry_run {
+            ToolEnvMode::NamesOnly
+        } else {
+            ToolEnvMode::Resolve
+        },
+        allowed_models,
+        require_litellm,
+    )
 }
 
 fn resolve_tool_launch(
@@ -70,18 +100,25 @@ fn resolve_tool_launch(
     tool_name: &str,
     fallback_format: Option<config::ApiFormat>,
     tool_env_mode: ToolEnvMode,
+    allowed_models: &[String],
+    require_litellm: bool,
 ) -> Result<ResolvedRunLaunch> {
-    let (env, program, logical_tool_name) = resolve_launch_env_inner(
+    let resolution = resolve_launch_env_inner(
         profile,
         config_path,
         fallback_format,
         Some(tool_name),
         tool_env_mode,
+        allowed_models,
+        require_litellm,
     )?;
     Ok(ResolvedRunLaunch {
-        env,
-        program,
-        logical_tool_name,
+        env: resolution.env,
+        program: resolution.program,
+        logical_tool_name: resolution.logical_tool_name,
+        base_url: resolution.base_url,
+        parent_api_key: resolution.parent_api_key,
+        allowed_models: resolution.allowed_models,
     })
 }
 
@@ -91,11 +128,21 @@ fn resolve_launch_env_inner(
     format_override: Option<config::ApiFormat>,
     configured_tool_name: Option<&str>,
     tool_env_mode: ToolEnvMode,
-) -> Result<(LaunchEnv, String, Option<String>)> {
+    allowed_models: &[String],
+    require_litellm: bool,
+) -> Result<LaunchResolution> {
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
     config::validate(&cfg)?;
     config::load_env_files(&cfg)?;
+
+    let explicit_non_litellm_gateway = matches!(
+        cfg.endpoint.gateway.as_ref(),
+        Some(config::Gateway::Custom(_))
+    );
+    if require_litellm && explicit_non_litellm_gateway {
+        return Err(AixError::LeaseNotLiteLlm.into());
+    }
 
     let profile_name = resolve_profile(profile, &cfg)?;
     let profile_entry =
@@ -106,6 +153,10 @@ fn resolve_launch_env_inner(
                 available_hint: config::format_available_profiles(&cfg),
             })?;
 
+    let resolved_allowed_models = allowed_models
+        .iter()
+        .map(|model| config::resolve_model(Some(model), &cfg, profile_entry))
+        .collect::<Result<Vec<_>, _>>()?;
     let api_key = profile_entry.api_key.resolve()?;
     let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
     let configured_tool = configured_tool_name.and_then(|name| cfg.tools.get(name));
@@ -156,17 +207,63 @@ fn resolve_launch_env_inner(
         .unwrap_or_default()
         .to_string();
 
-    Ok((
-        LaunchEnv {
+    Ok(LaunchResolution {
+        env: LaunchEnv {
             vars,
             display_only_vars,
             clear_vars,
             remove_vars: Vec::new(),
             profile_name,
         },
-        effective_program,
+        program: effective_program,
         logical_tool_name,
-    ))
+        base_url,
+        parent_api_key: api_key,
+        allowed_models: resolved_allowed_models,
+    })
+}
+
+pub fn apply_lease_credentials(
+    env: &mut LaunchEnv,
+    parent_key: &str,
+    leased_key: &str,
+    base_url: &str,
+) {
+    const API_KEY_VARS: [&str; 3] = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "LITELLM_API_KEY"];
+    const BASE_URL_VARS: [&str; 3] = ["ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "LITELLM_BASE_URL"];
+
+    env.vars.retain_mut(|(name, value)| {
+        if API_KEY_VARS.contains(&name.as_str()) {
+            *value = leased_key.to_string();
+            true
+        } else if BASE_URL_VARS.contains(&name.as_str()) {
+            *value = if name == "ANTHROPIC_BASE_URL" {
+                base_url.to_string()
+            } else {
+                crate::commands::env::append_v1(base_url)
+            };
+            true
+        } else {
+            parent_key.is_empty() || !value.contains(parent_key)
+        }
+    });
+
+    if !parent_key.is_empty() {
+        for (name, value) in std::env::vars_os() {
+            if value.to_string_lossy().contains(parent_key) {
+                let name = name.to_string_lossy().into_owned();
+                if !env
+                    .vars
+                    .iter()
+                    .any(|(configured_name, _)| configured_name == &name)
+                {
+                    env.remove_vars.push(name);
+                }
+            }
+        }
+        env.remove_vars.sort_unstable();
+        env.remove_vars.dedup();
+    }
 }
 
 pub fn run_named_tool(
@@ -192,6 +289,8 @@ pub fn run_named_tool(
         name,
         Some(fallback_format),
         tool_env_mode,
+        &[],
+        false,
     )?;
     run_command(&resolved.program, &args, &resolved.env, dry_run)
 }

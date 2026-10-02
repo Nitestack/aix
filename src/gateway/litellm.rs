@@ -1,10 +1,18 @@
 use super::transport::{GatewayTransport, TransportError};
 use crate::error::AixError;
+use crate::secrets::SecretString;
 use serde_json::Value;
 
 const KEY_INFO_PATH: &str = "/key/info";
+const KEY_GENERATE_PATH: &str = "/key/generate";
+const KEY_DELETE_PATH: &str = "/key/delete";
 const KEY_LIST_PATH: &str = "/key/list";
 const USER_DAILY_ACTIVITY_PATH: &str = "/user/daily/activity";
+
+pub(crate) struct GeneratedVirtualKey {
+    pub(crate) key: SecretString,
+    pub(crate) expires_at: Option<String>,
+}
 
 pub(crate) struct LiteLlmAdminClient {
     transport: GatewayTransport,
@@ -76,6 +84,62 @@ impl LiteLlmAdminClient {
         }
     }
 
+    pub(crate) async fn generate_virtual_key(
+        &self,
+        budget: f64,
+        duration: &str,
+        key_alias: &str,
+        models: &[String],
+        tags: &[String],
+    ) -> Result<GeneratedVirtualKey, AixError> {
+        let mut body = serde_json::json!({
+            "duration": duration,
+            "max_budget": budget,
+            "key_alias": key_alias,
+            "metadata": { "tags": tags }
+        });
+        if !models.is_empty() {
+            body["models"] = serde_json::json!(models);
+        }
+
+        let response = self
+            .transport
+            .post_json(KEY_GENERATE_PATH, &body)
+            .await
+            .map_err(map_generation_error)?;
+        let key = response
+            .get("key")
+            .and_then(Value::as_str)
+            .filter(|key| !key.is_empty())
+            .ok_or(AixError::LeaseKeyResponseMalformed)?;
+
+        Ok(GeneratedVirtualKey {
+            key: SecretString::new(key.to_string()),
+            expires_at: response
+                .get("expires")
+                .and_then(safe_expiry_value)
+                .filter(|expiry| !expiry.contains(key)),
+        })
+    }
+
+    pub(crate) async fn virtual_key_spend(&self, key: &str) -> Result<Option<f64>, AixError> {
+        let response = self
+            .transport
+            .get_json(KEY_INFO_PATH, &[("key", key.to_string())])
+            .await
+            .map_err(map_admin_error)?;
+        let info = response.get("info").unwrap_or(&response);
+        Ok(info.get("spend").and_then(Value::as_f64))
+    }
+
+    pub(crate) async fn delete_virtual_key(&self, key: &str) -> Result<(), AixError> {
+        self.transport
+            .post_json(KEY_DELETE_PATH, &serde_json::json!({ "keys": [key] }))
+            .await
+            .map(|_| ())
+            .map_err(map_admin_error)
+    }
+
     async fn list_keys(&self, user_id: &str) -> Result<Vec<Value>, AixError> {
         let mut page = 1_u64;
         let mut keys = Vec::new();
@@ -114,6 +178,33 @@ impl LiteLlmAdminClient {
         }
 
         Ok(keys)
+    }
+}
+
+fn map_generation_error(error: TransportError) -> AixError {
+    match error {
+        TransportError::Gateway {
+            status: status @ (401 | 403),
+            ..
+        } => AixError::LeaseGenerationDenied { status },
+        TransportError::Gateway { status, .. } => AixError::LeaseGenerationFailed { status },
+        TransportError::Http(_) | TransportError::Protocol => AixError::LeaseGenerationUnavailable,
+    }
+}
+
+fn safe_expiry_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(number) => Some(number.to_string()),
+        Value::String(expiry)
+            if !expiry.is_empty()
+                && expiry.len() <= 64
+                && expiry.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'+' | b':' | b'.' | b'_')
+                }) =>
+        {
+            Some(expiry.clone())
+        }
+        _ => None,
     }
 }
 

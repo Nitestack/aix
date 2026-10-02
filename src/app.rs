@@ -136,18 +136,29 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             workflow,
             task_id,
             tags,
+            lease,
+            budget,
+            duration,
+            allow_models,
+            dry_run,
             args,
         } => {
             let effective_profile = global_profile;
-            crate::commands::run::run(
-                effective_profile,
+            crate::commands::run::run(crate::commands::run::RunOptions {
+                profile: effective_profile,
                 config_path,
                 name,
                 workflow,
                 task_id,
                 tags,
+                lease,
+                budget,
+                duration,
+                requested_models: allow_models,
+                dry_run,
                 args,
-            )
+            })
+            .await
         }
         Command::Runs { limit, action } => crate::commands::runs::run(action, limit, json),
         Command::Cache { action } => crate::commands::cache::run(action, config_path),

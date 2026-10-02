@@ -155,6 +155,42 @@ pub enum AixError {
     #[error("run requires a command after --")]
     RunNoCommand,
 
+    #[error("`aix run --lease` requires --budget <USD>")]
+    LeaseBudgetRequired,
+
+    #[error("--budget, --duration, --allow-model, and --dry-run require --lease")]
+    LeaseOptionsRequireLease,
+
+    #[error("lease budget must be a finite amount greater than zero")]
+    InvalidLeaseBudget,
+
+    #[error("invalid lease duration; use a positive finite duration such as 30m or 2h")]
+    InvalidLeaseDuration,
+
+    #[error("allowed model names must not be empty")]
+    EmptyLeaseModel,
+
+    #[error("lease metadata and child arguments must not contain the selected profile credential")]
+    LeaseInputContainsCredential,
+
+    #[error("`aix run --lease` requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
+    LeaseNotLiteLlm,
+
+    #[error("LiteLLM denied virtual-key generation (HTTP {status}); verify the parent key has permission to generate keys")]
+    LeaseGenerationDenied { status: u16 },
+
+    #[error("LiteLLM virtual-key generation failed (HTTP {status}); verify the /key/generate capability is available")]
+    LeaseGenerationFailed { status: u16 },
+
+    #[error("LiteLLM virtual-key generation could not be completed; verify gateway connectivity and /key/generate support")]
+    LeaseGenerationUnavailable,
+
+    #[error("LiteLLM /key/generate returned no usable virtual key")]
+    LeaseKeyResponseMalformed,
+
+    #[error("LiteLLM lease cleanup could not be confirmed; the key remains bounded by its configured expiry")]
+    LeaseCleanupFailed,
+
     #[error("run history I/O failed at {path}: {source}")]
     RunHistoryIo {
         path: std::path::PathBuf,
@@ -284,12 +320,19 @@ impl AixError {
             | Self::NoInteractiveTerminal
             | Self::ExecNoCommand
             | Self::RunNoCommand
+            | Self::LeaseBudgetRequired
+            | Self::LeaseOptionsRequireLease
+            | Self::InvalidLeaseBudget
+            | Self::InvalidLeaseDuration
+            | Self::EmptyLeaseModel
+            | Self::LeaseInputContainsCredential
             | Self::RunNotFound { .. }
             | Self::ShellExtraArgs
             | Self::JsonUnsupportedCommand
             | Self::InvalidUsageRange { .. }
             | Self::ExecutableNotFound { .. }
             | Self::NotLiteLlm
+            | Self::LeaseNotLiteLlm
             | Self::UsageNotLiteLlm => 2,
             Self::SecretMissingEnvVar { .. }
             | Self::SecretFileRead { .. }
@@ -300,8 +343,12 @@ impl AixError {
             Self::GatewayError {
                 status: 401 | 403, ..
             }
+            | Self::LeaseGenerationDenied { .. }
             | Self::GatewayRequestFailed { status: 401 | 403 } => 4,
             Self::GatewayError { .. }
+            | Self::LeaseGenerationFailed { .. }
+            | Self::LeaseGenerationUnavailable
+            | Self::LeaseKeyResponseMalformed
             | Self::GatewayRequestFailed { .. }
             | Self::GatewayProtocolError(_)
             | Self::HttpError(_)
@@ -313,6 +360,7 @@ impl AixError {
             | Self::ProcessWait { .. }
             | Self::RunHistoryIo { .. }
             | Self::RunRecordSerialization(_)
+            | Self::LeaseCleanupFailed
             | Self::RunInterruptHandler(_) => 1,
         }
     }

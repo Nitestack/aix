@@ -40,7 +40,7 @@ pub fn run(
     Ok(())
 }
 
-fn append_v1(base_url: &str) -> String {
+pub(crate) fn append_v1(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     match trimmed.find('?') {
         Some(pos) => format!("{}/v1{}", &trimmed[..pos], &trimmed[pos..]),

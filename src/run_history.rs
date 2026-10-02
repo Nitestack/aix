@@ -18,6 +18,25 @@ pub enum RunStatus {
     Interrupted,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseCleanupStatus {
+    Revoked,
+    ExpiredOrUnverified,
+    RevokeFailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunLeaseRecord {
+    pub key_alias: String,
+    pub budget: f64,
+    pub duration: String,
+    pub expires_at: Option<String>,
+    pub allowed_models: Vec<String>,
+    pub spend: Option<f64>,
+    pub cleanup_status: LeaseCleanupStatus,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub schema_version: u8,
@@ -34,6 +53,8 @@ pub struct RunRecord {
     pub duration_ms: Option<u64>,
     pub process_exit_code: Option<i32>,
     pub status: RunStatus,
+    #[serde(default)]
+    pub lease: Option<RunLeaseRecord>,
 }
 
 impl RunRecord {
@@ -312,6 +333,7 @@ mod tests {
             duration_ms: None,
             process_exit_code: None,
             status: RunStatus::Running,
+            lease: None,
         }
     }
 
