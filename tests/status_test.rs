@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use assert_fs::prelude::*;
 use assert_fs::TempDir;
 use serde_json::json;
+use std::time::Duration;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -431,6 +432,55 @@ api_key = "{api_key}"
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains(api_key), "API key leaked: {stderr}");
     assert!(!stderr.contains(url_marker), "URL leaked: {stderr}");
+}
+
+#[tokio::test]
+async fn status_secondary_timeout_uses_the_network_exit_code() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header("Authorization", format!("Bearer {API_KEY}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": "example-model" }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/key/info"))
+        .and(header("Authorization", format!("Bearer {API_KEY}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(2))
+                .set_body_json(json!({ "info": { "spend": 1.0 } })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri());
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_CACHE_DIR", cache_dir.path())
+        .args([
+            "--timeout",
+            "100ms",
+            "--config",
+            config.to_str().unwrap(),
+            "status",
+            "work",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(5));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    assert!(
+        stderr.contains("timeout") || stderr.contains("timed out"),
+        "{stderr}"
+    );
 }
 
 #[tokio::test]

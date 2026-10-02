@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use assert_fs::prelude::*;
 use assert_fs::TempDir;
 use serde_json::{json, Value};
+use std::time::{Duration, Instant};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -64,6 +65,50 @@ async fn models_uses_openai_path_bearer_auth_and_sorts_ids() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         "a-model\nz-model\n"
+    );
+}
+
+#[tokio::test]
+async fn global_timeout_bounds_slow_gateway_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(2))
+                .set_body_json(json!({ "data": [{ "id": "slow-model" }] })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), "test-timeout-key");
+    let started = Instant::now();
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "--timeout",
+            "100ms",
+            "models",
+            "test",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(5));
+    assert!(output.stdout.is_empty());
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "request exceeded the configured bound: {elapsed:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    assert!(
+        stderr.contains("timeout") || stderr.contains("timed out"),
+        "{stderr}"
     );
 }
 

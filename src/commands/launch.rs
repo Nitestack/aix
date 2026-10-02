@@ -1,4 +1,5 @@
 use crate::commands::env::{collect_profile_vars, resolve_profile};
+use crate::commands::ProfileSelection;
 use crate::config;
 use crate::error::AixError;
 use crate::secrets::SecretString;
@@ -55,12 +56,12 @@ enum ToolEnvMode {
 }
 
 pub fn resolve_launch_env(
-    profile: Option<String>,
+    selection: ProfileSelection,
     config_path: Option<PathBuf>,
     format_override: Option<config::ApiFormat>,
 ) -> Result<LaunchEnv> {
     let resolution = resolve_launch_env_inner(
-        profile,
+        selection,
         config_path,
         format_override,
         None,
@@ -72,7 +73,7 @@ pub fn resolve_launch_env(
 }
 
 pub fn resolve_run_launch(
-    profile: Option<String>,
+    selection: ProfileSelection,
     config_path: Option<PathBuf>,
     program: &str,
     allowed_models: &[String],
@@ -80,7 +81,7 @@ pub fn resolve_run_launch(
     dry_run: bool,
 ) -> Result<ResolvedRunLaunch> {
     resolve_tool_launch(
-        profile,
+        selection,
         config_path,
         program,
         None,
@@ -95,7 +96,7 @@ pub fn resolve_run_launch(
 }
 
 fn resolve_tool_launch(
-    profile: Option<String>,
+    selection: ProfileSelection,
     config_path: Option<PathBuf>,
     tool_name: &str,
     fallback_format: Option<config::ApiFormat>,
@@ -104,7 +105,7 @@ fn resolve_tool_launch(
     require_litellm: bool,
 ) -> Result<ResolvedRunLaunch> {
     let resolution = resolve_launch_env_inner(
-        profile,
+        selection,
         config_path,
         fallback_format,
         Some(tool_name),
@@ -123,7 +124,7 @@ fn resolve_tool_launch(
 }
 
 fn resolve_launch_env_inner(
-    profile: Option<String>,
+    selection: ProfileSelection,
     config_path: Option<PathBuf>,
     format_override: Option<config::ApiFormat>,
     configured_tool_name: Option<&str>,
@@ -144,7 +145,7 @@ fn resolve_launch_env_inner(
         return Err(AixError::LeaseNotLiteLlm.into());
     }
 
-    let profile_name = resolve_profile(profile, &cfg)?;
+    let profile_name = resolve_profile(selection, &cfg)?;
     let profile_entry =
         cfg.profiles
             .get(&profile_name)
@@ -268,7 +269,7 @@ pub fn apply_lease_credentials(
 
 pub fn run_named_tool(
     name: &str,
-    profile: Option<String>,
+    selection: ProfileSelection,
     config_path: Option<PathBuf>,
     dry_run: bool,
     args: Vec<String>,
@@ -284,7 +285,7 @@ pub fn run_named_tool(
         ToolEnvMode::Resolve
     };
     let resolved = resolve_tool_launch(
-        profile,
+        selection,
         config_path,
         name,
         Some(fallback_format),

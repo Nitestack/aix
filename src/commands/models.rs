@@ -1,4 +1,5 @@
 use crate::commands::env::resolve_profile;
+use crate::commands::GatewayRequestOptions;
 use crate::config;
 use crate::error::AixError;
 use crate::gateway::OpenAiClient;
@@ -9,17 +10,18 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 pub async fn run(
-    positional_profile: Option<String>,
+    options: GatewayRequestOptions,
     config_path: Option<PathBuf>,
     json: bool,
     filter: Option<String>,
 ) -> Result<()> {
+    let GatewayRequestOptions { selection, timeout } = options;
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
     config::validate(&cfg)?;
     config::load_env_files(&cfg)?;
 
-    let profile_name = resolve_profile(positional_profile, &cfg)?;
+    let profile_name = resolve_profile(selection, &cfg)?;
     let profile = cfg
         .profiles
         .get(&profile_name)
@@ -30,7 +32,8 @@ pub async fn run(
 
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
     let api_key = profile.api_key.resolve()?;
-    let client = OpenAiClient::new(base_url.expose_secret(), api_key.expose_secret());
+    let client =
+        OpenAiClient::with_timeout(base_url.expose_secret(), api_key.expose_secret(), timeout);
     let response = client.models().await?;
     let mut models = extract_models(response)?;
 

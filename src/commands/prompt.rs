@@ -1,3 +1,4 @@
+use crate::commands::GatewayRequestOptions;
 use crate::config;
 use crate::error::AixError;
 use crate::inference;
@@ -7,7 +8,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 pub async fn run(
-    selected_profile: Option<String>,
+    options: GatewayRequestOptions,
     config_path: Option<PathBuf>,
     json_output: bool,
     name: Option<String>,
@@ -30,10 +31,11 @@ pub async fn run(
             name: name.clone(),
             available_hint: available_prompts(&cfg),
         })?;
+    let options = inference::prepare_request_options(&cfg, options)?;
     let messages =
         inference::collect_messages(preset.system.clone(), Some(preset.prompt.clone()), &files)?;
     let model = requested_model.as_deref().or(preset.model.as_deref());
-    let result = inference::execute(&cfg, selected_profile, model, messages).await?;
+    let result = inference::execute(&cfg, options, model, messages).await?;
     inference::print_result("prompt", json_output, result)
 }
 

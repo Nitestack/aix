@@ -1,10 +1,11 @@
 use crate::commands::launch;
+use crate::commands::ProfileSelection;
 use crate::error::AixError;
 use color_eyre::Result;
 use std::path::PathBuf;
 
 pub fn run(
-    profile: Option<String>,
+    selection: ProfileSelection,
     config_path: Option<PathBuf>,
     dry_run: bool,
     args: Vec<String>,
@@ -14,6 +15,6 @@ pub fn run(
         .map(|(p, rest)| (p.clone(), rest.to_vec()))
         .ok_or(AixError::ExecNoCommand)?;
 
-    let env = launch::resolve_launch_env(profile, config_path, None)?;
+    let env = launch::resolve_launch_env(selection, config_path, None)?;
     launch::run_command(&program, &cmd_args, &env, dry_run)
 }

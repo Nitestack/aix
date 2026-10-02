@@ -1,5 +1,6 @@
 use crate::cache::Cache;
 use crate::commands::env::resolve_profile;
+use crate::commands::GatewayRequestOptions;
 use crate::config;
 use crate::error::AixError;
 use crate::gateway::LiteLlmAdminClient;
@@ -10,11 +11,12 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 pub async fn run(
-    positional_profile: Option<String>,
+    options: GatewayRequestOptions,
     config_path: Option<PathBuf>,
     json: bool,
     no_cache: bool,
 ) -> Result<()> {
+    let GatewayRequestOptions { selection, timeout } = options;
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
     config::validate(&cfg)?;
@@ -29,7 +31,7 @@ pub async fn run(
         }
     }
 
-    let profile_name = resolve_profile(positional_profile, &cfg)?;
+    let profile_name = resolve_profile(selection, &cfg)?;
     let profile = cfg
         .profiles
         .get(&profile_name)
@@ -51,7 +53,11 @@ pub async fn run(
     let (data, cached_at) = match hit {
         Some((data, fetched_at)) => (data, Some(fetched_at)),
         None => {
-            let client = LiteLlmAdminClient::new(base_url.expose_secret(), api_key.expose_secret());
+            let client = LiteLlmAdminClient::with_timeout(
+                base_url.expose_secret(),
+                api_key.expose_secret(),
+                timeout,
+            );
             match client.user_info().await {
                 Ok(fresh) => {
                     cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);
@@ -71,16 +77,14 @@ pub async fn run(
         }
     };
 
+    if let Some(error) = budget_error(&data) {
+        return Err(error.into());
+    }
+
     if json {
-        if let Some(error) = budget_error(&data) {
-            return Err(error.into());
-        }
         output::print_json("spend", spend_summary(&data, api_key.expose_secret()))?;
     } else {
         print_human(&data, api_key.expose_secret(), cached_at);
-        if let Some(error) = budget_error(&data) {
-            return Err(error.into());
-        }
     }
     Ok(())
 }

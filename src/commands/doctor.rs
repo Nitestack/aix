@@ -4,6 +4,7 @@ mod report;
 use self::failure::{admin_failure, gateway_failure, safe_load_failure, safe_validation_failure};
 use self::report::{print_human, DoctorOutput, DoctorReport};
 use crate::cache::Cache;
+use crate::commands::GatewayRequestOptions;
 use crate::config::{self, CacheConfig, Config, Gateway, KnownGateway};
 use crate::error::{AixError, DoctorFailureCategory};
 use crate::gateway::{LiteLlmAdminClient, OpenAiClient};
@@ -12,17 +13,32 @@ use color_eyre::Result;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-pub async fn run(profile: Option<String>, config_path: Option<PathBuf>, json: bool) -> Result<()> {
-    let report = diagnose(profile, config_path).await;
+pub async fn run(
+    options: GatewayRequestOptions,
+    config_path: Option<PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let GatewayRequestOptions { selection, timeout } = options;
+    let report = diagnose(selection.profile, config_path, timeout).await;
+    let failed = report.failure_category.is_some();
     if json {
-        output::print_json(
-            "doctor",
-            DoctorOutput {
-                checks: &report.checks,
-            },
-        )?;
+        let data = DoctorOutput {
+            checks: &report.checks,
+        };
+        if failed {
+            let mut stderr = std::io::stderr().lock();
+            output::print_json_to("doctor", data, &mut stderr)?;
+        } else {
+            output::print_json("doctor", data)?;
+        }
     } else {
-        print_human(&report.checks);
+        if failed {
+            let mut stderr = std::io::stderr().lock();
+            print_human(&report.checks, &mut stderr)?;
+        } else {
+            let mut stdout = std::io::stdout().lock();
+            print_human(&report.checks, &mut stdout)?;
+        }
     }
 
     match report.failure_category {
@@ -31,7 +47,11 @@ pub async fn run(profile: Option<String>, config_path: Option<PathBuf>, json: bo
     }
 }
 
-async fn diagnose(profile_arg: Option<String>, config_path: Option<PathBuf>) -> DoctorReport {
+async fn diagnose(
+    profile_arg: Option<String>,
+    config_path: Option<PathBuf>,
+    timeout: Duration,
+) -> DoctorReport {
     let mut report = DoctorReport::new();
 
     let path = match config::find_config_path(config_path.as_deref()) {
@@ -225,7 +245,11 @@ async fn diagnose(profile_arg: Option<String>, config_path: Option<PathBuf>) -> 
 
     match (&api_key, &base_url) {
         (Some(api_key), Some(base_url)) => {
-            let client = OpenAiClient::new(base_url.expose_secret(), api_key.expose_secret());
+            let client = OpenAiClient::with_timeout(
+                base_url.expose_secret(),
+                api_key.expose_secret(),
+                timeout,
+            );
             let started = Instant::now();
             let response = client.models().await;
             let duration_ms = elapsed_ms(started.elapsed());
@@ -291,10 +315,13 @@ async fn diagnose(profile_arg: Option<String>, config_path: Option<PathBuf>) -> 
         (Some(cfg), Some(api_key), Some(base_url)) if config_is_valid && env_files_loaded => {
             if is_litellm_or_unset(cfg) {
                 let started = Instant::now();
-                let result =
-                    LiteLlmAdminClient::new(base_url.expose_secret(), api_key.expose_secret())
-                        .user_info()
-                        .await;
+                let result = LiteLlmAdminClient::with_timeout(
+                    base_url.expose_secret(),
+                    api_key.expose_secret(),
+                    timeout,
+                )
+                .user_info()
+                .await;
                 let duration_ms = elapsed_ms(started.elapsed());
                 match result {
                     Ok(_) => report.pass(

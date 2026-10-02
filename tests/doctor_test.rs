@@ -67,7 +67,12 @@ fn check<'a>(report: &'a Value, name: &str) -> &'a Value {
 }
 
 fn json_report(output: &Output) -> Value {
-    serde_json::from_slice(&output.stdout).unwrap()
+    let report = if output.stdout.is_empty() {
+        &output.stderr
+    } else {
+        &output.stdout
+    };
+    serde_json::from_slice(report).unwrap()
 }
 
 async fn mount_healthy_gateway(server: &MockServer, include_admin: bool) {
@@ -150,6 +155,7 @@ fn doctor_reports_missing_config_and_skips_config_dependent_checks() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
     let report = json_report(&output);
     assert_eq!(check(&report, "config_discovery")["status"], "fail");
     assert_eq!(check(&report, "config_validation")["status"], "skipped");
@@ -351,8 +357,9 @@ api_key = {{ file = {api_key_path} }}
             let report = json_report(&output);
             assert_eq!(check(&report, "gateway_auth")["status"], "fail");
         } else {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(stdout.contains("FAIL gateway_auth"), "{stdout}");
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("FAIL gateway_auth"), "{stderr}");
         }
         let streams = format!(
             "{}{}",

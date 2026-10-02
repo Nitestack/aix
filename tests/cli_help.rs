@@ -17,6 +17,16 @@ fn help_exits_zero() {
 }
 
 #[test]
+fn global_help_documents_non_interactive_and_timeout_options() {
+    cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--non-interactive"))
+        .stdout(contains("--timeout <DURATION>"));
+}
+
+#[test]
 fn version_exits_zero() {
     cmd()
         .arg("--version")

@@ -2,8 +2,6 @@ use crate::error::AixError;
 use serde_json::Value;
 use std::time::Duration;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
 pub(crate) struct GatewayTransport {
     base_url: String,
     api_key: String,
@@ -44,12 +42,16 @@ impl From<reqwest::Error> for TransportError {
 }
 
 impl GatewayTransport {
-    pub(crate) fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+    pub(crate) fn with_timeout(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
             inner: reqwest::Client::builder()
-                .timeout(REQUEST_TIMEOUT)
+                .timeout(timeout)
                 .build()
                 .expect("reqwest client configuration is valid"),
         }
@@ -92,7 +94,7 @@ impl GatewayTransport {
         let response = request.send().await?;
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = response.text().await?;
             return Err(TransportError::Gateway {
                 status: status.as_u16(),
                 safe_body: sanitize_error_body(&body, &self.api_key, &self.base_url),
@@ -163,4 +165,45 @@ fn is_sensitive_error_field(field: &str) -> bool {
     ]
     .iter()
     .any(|sensitive| field.contains(sensitive))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[tokio::test]
+    async fn timeout_while_reading_error_body_remains_a_network_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 7\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            let _ = stream.write_all(b"delayed");
+        });
+
+        let transport = GatewayTransport::with_timeout(
+            format!("http://{address}"),
+            "test-key",
+            Duration::from_millis(50),
+        );
+        let error = transport.get_json("/error", &[]).await.unwrap_err();
+        match error {
+            TransportError::Http(error) => {
+                assert!(error.is_timeout());
+                assert_eq!(AixError::HttpError(error).exit_code(), 5);
+            }
+            _ => panic!("expected an HTTP timeout while reading the error body"),
+        }
+        responder.join().unwrap();
+    }
 }

@@ -1,5 +1,6 @@
 use crate::commands::launch;
 use crate::commands::run_lease;
+use crate::commands::ProfileSelection;
 use crate::error::AixError;
 use crate::gateway::LiteLlmAdminClient;
 use crate::run_history::{
@@ -22,7 +23,8 @@ pub(crate) struct RunMetadata {
 }
 
 pub(crate) struct RunOptions {
-    pub profile: Option<String>,
+    pub selection: ProfileSelection,
+    pub timeout: std::time::Duration,
     pub config_path: Option<std::path::PathBuf>,
     pub metadata: RunMetadata,
     pub lease: bool,
@@ -35,7 +37,8 @@ pub(crate) struct RunOptions {
 
 pub async fn run(options: RunOptions) -> Result<()> {
     let RunOptions {
-        profile,
+        selection,
+        timeout,
         config_path,
         metadata,
         lease,
@@ -49,7 +52,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         run_lease::validate_options(lease, budget, duration, &requested_models, dry_run)?;
     let (requested_program, command_args) = args.split_first().ok_or(AixError::RunNoCommand)?;
     let mut resolved = launch::resolve_run_launch(
-        profile,
+        selection,
         config_path,
         requested_program,
         &requested_models,
@@ -77,7 +80,6 @@ pub async fn run(options: RunOptions) -> Result<()> {
         );
         return Ok(());
     }
-
     let run_id = Uuid::new_v4();
     let started_at_unix_ms = RunRecord::now_unix_ms();
     let mut record = RunRecord {
@@ -119,9 +121,10 @@ pub async fn run(options: RunOptions) -> Result<()> {
         let budget = budget.expect("validated lease budget");
         let duration = duration.as_deref().expect("validated lease duration");
         let key_alias = format!("aix-run-{run_id}");
-        let client = LiteLlmAdminClient::new(
+        let client = LiteLlmAdminClient::with_timeout(
             resolved.base_url.expose_secret(),
             resolved.parent_api_key.expose_secret(),
+            timeout,
         );
         let mut metadata_tags = Vec::with_capacity(metadata.tags.len() + 1);
         metadata_tags.push(format!("aix:run:{run_id}"));

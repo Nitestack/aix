@@ -1,6 +1,7 @@
 use super::transport::{GatewayTransport, TransportError};
 use crate::error::AixError;
 use serde_json::Value;
+use std::time::Duration;
 
 const MODELS_PATH: &str = "/v1/models";
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
@@ -10,9 +11,13 @@ pub(crate) struct OpenAiClient {
 }
 
 impl OpenAiClient {
-    pub(crate) fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+    pub(crate) fn with_timeout(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
         Self {
-            transport: GatewayTransport::new(base_url, api_key),
+            transport: GatewayTransport::with_timeout(base_url, api_key, timeout),
         }
     }
 
@@ -56,7 +61,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = OpenAiClient::new(server.uri(), "test-key");
+        let client = OpenAiClient::with_timeout(server.uri(), "test-key", Duration::from_secs(30));
         assert_eq!(
             client.models().await.unwrap()["data"][0]["id"],
             "example-model"
@@ -81,7 +86,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = OpenAiClient::new(server.uri(), "test-key");
+        let client = OpenAiClient::with_timeout(server.uri(), "test-key", Duration::from_secs(30));
         assert_eq!(
             client.chat_completions(&request).await.unwrap()["choices"][0]["message"]["content"],
             "hi"
@@ -98,7 +103,11 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = OpenAiClient::new(format!("{}/", server.uri()), "test-key");
+        let client = OpenAiClient::with_timeout(
+            format!("{}/", server.uri()),
+            "test-key",
+            Duration::from_secs(30),
+        );
         client.models().await.unwrap();
     }
 }

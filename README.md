@@ -27,6 +27,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses Li
 - [One-shot inference](#one-shot-inference)
   - [Reusable prompt presets](#reusable-prompt-presets)
 - [Managed runs](#managed-runs)
+- [Global options](#global-options)
 - [JSON output and exit codes](#json-output-and-exit-codes)
 - [Cache](#cache)
 - [Security notes](#security-notes)
@@ -795,7 +796,7 @@ Each row has one of four statuses: `PASS` means the check succeeded; `FAIL` incl
 | `litellm_admin` | When `endpoint.gateway` is unset or `litellm`, the same safe `/key/info` management capability used by spend is reachable. An explicitly non-LiteLLM gateway is `N/A`. |
 | `cache_directory` | The configured/default cache directory can be created and a temporary write probe succeeds; existing data is not deleted. |
 
-Checks that do not require the network have `duration_ms: null`; network checks report elapsed milliseconds. `doctor --json` uses the shared JSON envelope with an ordered `data.checks` array. It includes failed checks in that report even when the process exits non-zero, so scripts can inspect each failure. The process exits `0` only when every applicable check passes; otherwise it uses the exit category for the first failing layer (config `2`, secret `3`, authentication `4`, gateway/network `5`, cache/internal `1`, or budget/policy `6`). Skipped and not-applicable checks do not fail the command by themselves.
+Checks that do not require the network have `duration_ms: null`; network checks report elapsed milliseconds. `doctor --json` uses the shared JSON envelope with an ordered `data.checks` array. Successful reports go to stdout; if any check fails, the report goes to stderr so failed commands leave stdout empty. Scripts can inspect failed checks from stderr. The process exits `0` only when every applicable check passes; otherwise it uses the exit category for the first failing layer (config `2`, secret `3`, authentication `4`, gateway/network `5`, cache/internal `1`, or budget/policy `6`). Skipped and not-applicable checks do not fail the command by themselves.
 
 Neither mode prints API keys, resolved secret-backed URLs, secret-file contents, secret-command stdout, or raw upstream error bodies.
 
@@ -889,11 +890,23 @@ does not manage worktrees, tasks, retries, or orchestration.
 
 ---
 
+## Global options
+
+`--profile` selects a profile and can be used before or after a command. Profile resolution is positional profile, then `--profile`/`AIX_PROFILE`, then `default_profile`; without `--non-interactive`, a TTY-only picker remains the final fallback.
+
+`--non-interactive` disables the profile picker. If a command needs a profile and none resolves from its positional profile, `--profile`/`AIX_PROFILE`, or `default_profile`, it fails immediately with a selection error instead of prompting or waiting for stdin. This is useful for scripts and CI. Without this flag, existing TTY detection still controls whether the picker is available.
+
+`--timeout DURATION` sets the maximum duration for each HTTP request made by `aix`. It accepts milliseconds, seconds, or minutes (for example, `750ms`, `5s`, or `2m`) and defaults to `30s`. It does not limit subprocesses started by `aix exec`, `aix run`, or a named tool.
+
+Both flags are global and can appear before or after regular subcommands.
+
+---
+
 ## JSON output and exit codes
 
 The global `--json` flag is currently supported by `current`, `profiles`, `spend`, `models`, `status`, `doctor`, `usage`, `ask`, `prompt`, and `runs`. It can appear before or after the command. Existing JSON forms remain supported. Other commands with their own output options, such as `aix env --format json`, keep those existing formats; using the global `--json` flag with an unsupported command is a validation error.
 
-JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty except `doctor`, which keeps its diagnostic report on stdout so callers can inspect failed checks. The envelope is owned by `aix`:
+JSON mode writes exactly one JSON document to stdout on success. Errors and diagnostics go to stderr, and a failed JSON command leaves stdout empty; `doctor` sends its failed-check report to stderr so callers can inspect the findings there. The envelope is owned by `aix`:
 
 ```json
 {
@@ -905,7 +918,7 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; unlike ordinary command errors, a doctor report remains on stdout when checks fail so automation can inspect the findings. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; failed doctor reports go to stderr so automation can inspect the findings there. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
 
 ```json
 {
@@ -932,7 +945,7 @@ JSON mode writes exactly one JSON document to stdout. Errors and diagnostics go 
   }
 }
 ```
-When LiteLLM reports a budget-exceeded response, `aix spend` returns exit code `6`. Human mode still shows the spend summary; JSON mode treats it as an error and leaves stdout empty.
+When LiteLLM reports a budget-exceeded response, `aix spend` returns exit code `6`. Both human and JSON modes leave stdout empty and report the error on stderr.
 
 Process exit codes are stable:
 
@@ -963,6 +976,8 @@ Override the directory for all invocations:
 ```bash
 export AIX_CACHE_DIR=/tmp/aix-cache
 ```
+
+Cache entries are replaced atomically so an interrupted write does not corrupt the previous entry. On Unix, aix restricts cache directories to owner access and cache files to owner read/write access; other platforms use their available filesystem defaults.
 
 ### Cache configuration
 

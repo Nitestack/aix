@@ -4,6 +4,7 @@ use assert_fs::TempDir;
 use serde_json::json;
 use std::io::Write;
 use std::process::Stdio;
+use std::time::{Duration, Instant};
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -28,6 +29,57 @@ api_key = "test-secret-key"
     ))
     .unwrap();
     file.path().to_path_buf()
+}
+
+#[test]
+fn ask_non_interactive_without_a_profile_does_not_wait_for_piped_stdin() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.child("aix.toml");
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://gateway.example"
+
+[profiles.work]
+api_key = "test-secret-key"
+"#,
+        )
+        .unwrap();
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_aix"))
+        .env_remove("AIX_PROFILE")
+        .args([
+            "--non-interactive",
+            "--config",
+            config.path().to_str().unwrap(),
+            "ask",
+            "question",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            let _ = child.wait();
+            panic!("ask waited for stdin instead of failing on missing profile");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("profile"), "{stderr}");
 }
 
 #[tokio::test]
@@ -433,20 +485,28 @@ async fn ask_json_returns_the_stable_envelope_with_usage_and_no_input_fields() {
 
 #[test]
 fn ask_without_a_prompt_or_piped_input_fails_with_usage_guidance() {
-    let output = cmd().args(["ask"]).output().unwrap();
+    let dir = TempDir::new().unwrap();
+    let config = write_config(&dir, "http://127.0.0.1:1", "");
+    let output = cmd()
+        .args(["--config", config.to_str().unwrap(), "ask"])
+        .output()
+        .unwrap();
 
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("non-empty piped stdin"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("non-empty piped stdin"), "{stderr}");
 }
 
 #[cfg(unix)]
 #[test]
 fn ask_with_terminal_stdin_and_no_prompt_fails_before_interaction() {
+    let dir = TempDir::new().unwrap();
+    let config = write_config(&dir, "http://127.0.0.1:1", "");
     let terminal = nix::pty::openpty(None, None).expect("can create a pseudoterminal");
     drop(terminal.master);
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_aix"))
-        .args(["ask"])
+        .args(["--config", config.to_str().unwrap(), "ask"])
         .stdin(std::fs::File::from(terminal.slave))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -455,7 +515,8 @@ fn ask_with_terminal_stdin_and_no_prompt_fails_before_interaction() {
 
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("non-empty piped stdin"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("non-empty piped stdin"), "{stderr}");
 }
 
 #[test]
@@ -490,9 +551,12 @@ fn ask_requires_an_instruction_when_only_files_are_supplied() {
 #[test]
 fn ask_reports_unreadable_explicit_files_as_local_input_errors() {
     let dir = TempDir::new().unwrap();
+    let config = write_config(&dir, "http://127.0.0.1:1", "");
     let file = dir.path().join("missing.txt");
     let output = cmd()
         .args([
+            "--config",
+            config.to_str().unwrap(),
             "ask",
             "--file",
             file.to_str().unwrap(),

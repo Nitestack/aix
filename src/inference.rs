@@ -1,4 +1,5 @@
 use crate::commands::env::resolve_profile;
+use crate::commands::GatewayRequestOptions;
 use crate::config;
 use crate::error::AixError;
 use crate::gateway::openai::OpenAiClient;
@@ -40,14 +41,31 @@ pub(crate) fn load_config(config_path: Option<&Path>) -> Result<config::Config> 
     Ok(cfg)
 }
 
+pub(crate) fn prepare_request_options(
+    cfg: &config::Config,
+    mut options: GatewayRequestOptions,
+) -> Result<GatewayRequestOptions> {
+    let profile_name = resolve_profile(options.selection.clone(), cfg)?;
+    if !cfg.profiles.contains_key(&profile_name) {
+        return Err(AixError::ProfileNotFound {
+            name: profile_name.clone(),
+            available_hint: config::format_available_profiles(cfg),
+        }
+        .into());
+    }
+    options.selection.profile = Some(profile_name);
+    Ok(options)
+}
+
 pub(crate) async fn execute(
     cfg: &config::Config,
-    selected_profile: Option<String>,
+    options: GatewayRequestOptions,
     requested_model: Option<&str>,
     messages: Vec<Value>,
 ) -> Result<InferenceOutput> {
     config::load_env_files(cfg)?;
-    let profile_name = resolve_profile(selected_profile, cfg)?;
+    let GatewayRequestOptions { selection, timeout } = options;
+    let profile_name = resolve_profile(selection, cfg)?;
     let profile = cfg
         .profiles
         .get(&profile_name)
@@ -60,7 +78,8 @@ pub(crate) async fn execute(
     let api_key = profile.api_key.resolve()?;
 
     let request = json!({ "model": resolved_model.clone(), "messages": messages });
-    let client = OpenAiClient::new(base_url.expose_secret(), api_key.expose_secret());
+    let client =
+        OpenAiClient::with_timeout(base_url.expose_secret(), api_key.expose_secret(), timeout);
     let response = client
         .chat_completions(&request)
         .await
@@ -147,7 +166,7 @@ pub(crate) fn collect_messages(
     Ok(messages)
 }
 
-fn validate_input_shape(
+pub(crate) fn validate_input_shape(
     has_prompt: bool,
     has_files: bool,
     stdin_is_terminal: bool,

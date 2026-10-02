@@ -10,13 +10,21 @@ struct JsonEnvelope<'a, T> {
 }
 
 pub fn print_json<T: Serialize>(command: &str, data: T) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    print_json_to(command, data, &mut stdout)
+}
+
+pub(crate) fn print_json_to<T: Serialize, W: Write>(
+    command: &str,
+    data: T,
+    output: &mut W,
+) -> Result<()> {
     let envelope = JsonEnvelope {
         schema_version: 1,
         command,
         data,
     };
-    let mut stdout = std::io::stdout().lock();
-    serde_json::to_writer_pretty(&mut stdout, &envelope)?;
-    stdout.write_all(b"\n")?;
+    serde_json::to_writer_pretty(&mut *output, &envelope)?;
+    output.write_all(b"\n")?;
     Ok(())
 }

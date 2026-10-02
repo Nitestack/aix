@@ -146,7 +146,7 @@ pub enum AixError {
     SelectionCancelled,
 
     #[allow(dead_code)]
-    #[error("no profile specified; pass a profile name or run in an interactive terminal")]
+    #[error("no profile selected; pass PROFILE or --profile, set AIX_PROFILE, or configure default_profile (interactive selection requires a TTY and is disabled by --non-interactive)")]
     NoInteractiveTerminal,
 
     #[error("exec requires a command after --")]

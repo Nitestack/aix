@@ -1,6 +1,7 @@
 use super::failure::CheckFailure;
 use crate::error::DoctorFailureCategory;
 use serde::Serialize;
+use std::io::{self, Write};
 
 pub(super) struct DoctorReport {
     pub(super) checks: Vec<DoctorCheck>,
@@ -118,7 +119,7 @@ enum CheckStatus {
     NotApplicable,
 }
 
-pub(super) fn print_human(checks: &[DoctorCheck]) {
+pub(super) fn print_human(checks: &[DoctorCheck], output: &mut impl Write) -> io::Result<()> {
     for check in checks {
         let status = match check.status {
             CheckStatus::Pass => "PASS",
@@ -126,6 +127,7 @@ pub(super) fn print_human(checks: &[DoctorCheck]) {
             CheckStatus::Skipped => "SKIP",
             CheckStatus::NotApplicable => "N/A",
         };
-        println!("{status:4} {} — {}", check.name, check.message);
+        writeln!(output, "{status:4} {} — {}", check.name, check.message)?;
     }
+    Ok(())
 }

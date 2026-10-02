@@ -1,5 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
@@ -12,6 +13,14 @@ pub struct Cli {
     #[arg(long, short, global = true, env = "AIX_PROFILE")]
     pub profile: Option<String>,
 
+    /// Do not open an interactive profile picker
+    #[arg(long, global = true)]
+    pub non_interactive: bool,
+
+    /// Maximum duration for each aix-owned HTTP request (for example, 750ms or 5s)
+    #[arg(long, global = true, value_name = "DURATION", default_value = "30s", value_parser = parse_duration)]
+    pub timeout: Duration,
+
     /// Path to config file (overrides AIX_CONFIG env var)
     #[arg(long, global = true, env = "AIX_CONFIG")]
     pub config: Option<PathBuf>,
@@ -22,6 +31,34 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+fn parse_duration(value: &str) -> Result<Duration, String> {
+    let (number, unit) = if let Some(number) = value.strip_suffix("ms") {
+        (number, "ms")
+    } else if let Some(number) = value.strip_suffix('s') {
+        (number, "s")
+    } else if let Some(number) = value.strip_suffix('m') {
+        (number, "m")
+    } else {
+        return Err("expected a duration such as 750ms, 5s, or 2m".to_string());
+    };
+    let amount = number
+        .parse::<u64>()
+        .map_err(|_| "duration must be a positive whole number with ms, s, or m".to_string())?;
+    if amount == 0 {
+        return Err("duration must be greater than zero".to_string());
+    }
+
+    match unit {
+        "ms" => Ok(Duration::from_millis(amount)),
+        "s" => Ok(Duration::from_secs(amount)),
+        "m" => amount
+            .checked_mul(60)
+            .map(Duration::from_secs)
+            .ok_or_else(|| "duration is too large".to_string()),
+        _ => unreachable!("unit is selected above"),
+    }
 }
 
 #[derive(Subcommand)]
@@ -292,4 +329,49 @@ pub enum EnvFormat {
     Fish,
     Powershell,
     Cmd,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parses_global_timeout_units() {
+        let cli = Cli::try_parse_from(["aix", "--timeout", "750ms", "profiles"]).unwrap();
+        assert_eq!(cli.timeout, std::time::Duration::from_millis(750));
+
+        let cli = Cli::try_parse_from(["aix", "profiles", "--timeout", "5s"]).unwrap();
+        assert_eq!(cli.timeout, std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn global_timeout_defaults_to_thirty_seconds() {
+        let cli = Cli::try_parse_from(["aix", "profiles"]).unwrap();
+        assert_eq!(cli.timeout, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn timeout_must_be_a_positive_supported_duration() {
+        for timeout in ["", "0s", "-1s", "750", "1msx"] {
+            assert!(
+                Cli::try_parse_from(["aix", "--timeout", timeout, "profiles"]).is_err(),
+                "accepted invalid timeout {timeout:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_non_interactive_global_flag_before_or_after_command() {
+        assert!(
+            Cli::try_parse_from(["aix", "--non-interactive", "profiles"])
+                .unwrap()
+                .non_interactive
+        );
+        assert!(
+            Cli::try_parse_from(["aix", "profiles", "--non-interactive"])
+                .unwrap()
+                .non_interactive
+        );
+    }
 }

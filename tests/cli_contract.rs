@@ -65,6 +65,41 @@ api_key = { env = "AIX_CONTRACT_MISSING_SECRET" }
 }
 
 #[test]
+fn non_interactive_profile_failure_is_actionable_and_stays_off_stdout() {
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://gateway.example"
+
+[profiles.work]
+api_key = "test-key"
+"#,
+        )
+        .unwrap();
+
+    let output = cmd()
+        .args([
+            "--non-interactive",
+            "--config",
+            config.path().to_str().unwrap(),
+            "env",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("profile"), "unexpected error: {stderr}");
+    assert!(
+        stderr.contains("default_profile"),
+        "unexpected error: {stderr}"
+    );
+}
+
+#[test]
 fn global_json_on_an_unsupported_command_is_a_validation_error() {
     let output = cmd().args(["--json", "config", "path"]).output().unwrap();
 

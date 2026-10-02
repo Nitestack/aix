@@ -1,4 +1,6 @@
 pub mod ask;
+use std::time::Duration;
+
 pub mod cache;
 pub mod config;
 pub mod current;
@@ -17,4 +19,16 @@ pub mod shell;
 pub mod spend;
 pub mod status;
 pub mod usage;
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProfileSelection {
+    pub(crate) profile: Option<String>,
+    pub(crate) non_interactive: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GatewayRequestOptions {
+    pub(crate) selection: ProfileSelection,
+    pub(crate) timeout: Duration,
+}
 pub mod use_profile;

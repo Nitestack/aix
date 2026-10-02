@@ -1,4 +1,5 @@
 use crate::cli::EnvFormat;
+use crate::commands::ProfileSelection;
 use crate::config;
 use crate::error::AixError;
 use color_eyre::Result;
@@ -6,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub fn run(
-    positional_profile: Option<String>,
+    selection: ProfileSelection,
     config_path: Option<PathBuf>,
     format: EnvFormat,
 ) -> Result<()> {
@@ -15,7 +16,7 @@ pub fn run(
     config::validate(&cfg)?;
     config::load_env_files(&cfg)?;
 
-    let profile_name = resolve_profile(positional_profile, &cfg)?;
+    let profile_name = resolve_profile(selection, &cfg)?;
 
     let profile = cfg
         .profiles
@@ -211,18 +212,35 @@ fn format_json<K: AsRef<str>>(vars: &[(K, String)]) -> String {
 }
 
 pub(crate) fn resolve_profile(
-    positional: Option<String>,
+    selection: ProfileSelection,
     cfg: &config::Config,
 ) -> Result<String, AixError> {
-    if let Some(p) = positional {
-        return Ok(p);
-    }
-    if let Some(p) = cfg.default_profile.clone() {
-        return Ok(p);
-    }
     use std::io::IsTerminal;
-    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        select_profile_interactively(cfg)
+    let terminal_available = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    resolve_profile_with_picker(
+        selection.profile,
+        cfg,
+        selection.non_interactive,
+        terminal_available,
+        select_profile_interactively,
+    )
+}
+
+fn resolve_profile_with_picker(
+    positional: Option<String>,
+    cfg: &config::Config,
+    non_interactive: bool,
+    terminal_available: bool,
+    picker: impl FnOnce(&config::Config) -> Result<String, AixError>,
+) -> Result<String, AixError> {
+    if let Some(profile) = positional {
+        return Ok(profile);
+    }
+    if let Some(profile) = cfg.default_profile.clone() {
+        return Ok(profile);
+    }
+    if terminal_available && !non_interactive {
+        picker(cfg)
     } else {
         Err(AixError::NoInteractiveTerminal)
     }
@@ -251,6 +269,57 @@ fn select_profile_interactively(cfg: &config::Config) -> Result<String, AixError
 mod tests {
     use super::*;
     use crate::config::ApiFormat;
+
+    fn minimal_config() -> config::Config {
+        toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://example.com"
+[profiles.work]
+api_key = "test-key"
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn non_interactive_selection_never_calls_picker() {
+        let cfg = minimal_config();
+        let mut picker_called = false;
+        let result = resolve_profile_with_picker(None, &cfg, true, true, |_| {
+            picker_called = true;
+            Ok("work".to_string())
+        });
+
+        assert!(matches!(result, Err(AixError::NoInteractiveTerminal)));
+        assert!(!picker_called);
+    }
+
+    #[test]
+    fn interactive_selection_remains_available_without_non_interactive_flag() {
+        let cfg = minimal_config();
+        let mut picker_called = false;
+        let selected = resolve_profile_with_picker(None, &cfg, false, true, |_| {
+            picker_called = true;
+            Ok("work".to_string())
+        })
+        .unwrap();
+
+        assert!(picker_called);
+        assert_eq!(selected, "work");
+    }
+
+    #[test]
+    fn explicit_selection_skips_picker_in_non_interactive_mode() {
+        let cfg = minimal_config();
+        let selected =
+            resolve_profile_with_picker(Some("work".to_string()), &cfg, true, true, |_| {
+                panic!("picker must not be called when a profile is explicit")
+            })
+            .unwrap();
+
+        assert_eq!(selected, "work");
+    }
 
     // --- collect_vars with ApiFormat ---
 

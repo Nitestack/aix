@@ -1,4 +1,5 @@
 use crate::cli::{Cli, Command};
+use crate::commands::{GatewayRequestOptions, ProfileSelection};
 use clap::Parser;
 use std::process::ExitCode;
 
@@ -24,7 +25,12 @@ pub async fn run() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let code = crate::error::exit_code(&error);
-            eprintln!("{error:?}");
+            if !matches!(
+                error.downcast_ref::<crate::error::AixError>(),
+                Some(crate::error::AixError::DoctorChecksFailed { .. })
+            ) {
+                eprintln!("{error:?}");
+            }
             ExitCode::from(code as u8)
         }
     }
@@ -37,7 +43,17 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
 
     let json = cli.json;
     let global_profile = cli.profile;
+    let non_interactive = cli.non_interactive;
+    let timeout = cli.timeout;
     let config_path = cli.config;
+    let selection_for = |profile: Option<String>, selection_is_non_interactive| ProfileSelection {
+        profile: profile.or_else(|| global_profile.clone()),
+        non_interactive: selection_is_non_interactive,
+    };
+    let request_options_for = |profile| GatewayRequestOptions {
+        selection: selection_for(profile, non_interactive),
+        timeout,
+    };
     match cli.command {
         Command::Init { shell } => crate::commands::init::run(shell),
         Command::Use {
@@ -49,8 +65,7 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
         Command::Current { format } => crate::commands::current::run(config_path, json, format),
         Command::Profiles => crate::commands::profiles::run(config_path, json),
         Command::Env { profile, format } => {
-            let effective_profile = profile.or(global_profile);
-            crate::commands::env::run(effective_profile, config_path, format)
+            crate::commands::env::run(selection_for(profile, non_interactive), config_path, format)
         }
         Command::Shell {
             profile,
@@ -60,42 +75,51 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             if !extra_args.is_empty() {
                 return Err(crate::error::AixError::ShellExtraArgs.into());
             }
-            let effective_profile = profile.or(global_profile);
-            crate::commands::shell::run(effective_profile, config_path, dry_run)
+            crate::commands::shell::run(
+                selection_for(profile, non_interactive),
+                config_path,
+                dry_run,
+            )
         }
         Command::Exec {
             profile,
             dry_run,
             args,
-        } => {
-            let effective_profile = profile.or(global_profile);
-            crate::commands::exec::run(effective_profile, config_path, dry_run, args)
-        }
+        } => crate::commands::exec::run(
+            selection_for(profile, non_interactive),
+            config_path,
+            dry_run,
+            args,
+        ),
         Command::Config { action } => crate::commands::config::run(action, config_path),
         Command::Spend { profile, no_cache } => {
-            let effective_profile = profile.or(global_profile);
-            crate::commands::spend::run(effective_profile, config_path, json, no_cache).await
+            crate::commands::spend::run(request_options_for(profile), config_path, json, no_cache)
+                .await
         }
         Command::Status { profile, refresh } => {
-            let effective_profile = profile.or(global_profile);
-            crate::commands::status::run(effective_profile, config_path, json, refresh).await
+            crate::commands::status::run(request_options_for(profile), config_path, json, refresh)
+                .await
         }
         Command::Doctor { profile } => {
-            let effective_profile = profile.or(global_profile);
-            crate::commands::doctor::run(effective_profile, config_path, json).await
+            crate::commands::doctor::run(request_options_for(profile), config_path, json).await
         }
         Command::Models { profile, filter } => {
-            let effective_profile = profile.or(global_profile);
-            crate::commands::models::run(effective_profile, config_path, json, filter).await
+            crate::commands::models::run(request_options_for(profile), config_path, json, filter)
+                .await
         }
         Command::Usage {
             profile,
             date_range,
             model,
         } => {
-            let effective_profile = profile.or(global_profile);
-            crate::commands::usage::run(effective_profile, config_path, json, date_range, model)
-                .await
+            crate::commands::usage::run(
+                request_options_for(profile),
+                config_path,
+                json,
+                date_range,
+                model,
+            )
+            .await
         }
         Command::Ask {
             model,
@@ -104,7 +128,7 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             prompt,
         } => {
             crate::commands::ask::run(
-                global_profile,
+                request_options_for(None),
                 config_path,
                 json,
                 model,
@@ -121,7 +145,7 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             files,
         } => {
             crate::commands::prompt::run(
-                global_profile,
+                request_options_for(None),
                 config_path,
                 json,
                 name,
@@ -143,9 +167,9 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             dry_run,
             args,
         } => {
-            let effective_profile = global_profile;
             crate::commands::run::run(crate::commands::run::RunOptions {
-                profile: effective_profile,
+                selection: selection_for(None, non_interactive),
+                timeout,
                 config_path,
                 metadata: crate::commands::run::RunMetadata {
                     name,
@@ -176,14 +200,42 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
 
             let dry_run = pre.iter().any(|arg| arg == "--dry-run");
             let profile = pre.iter().find(|arg| !arg.starts_with('-')).cloned();
+            let tool_non_interactive = tool_non_interactive(non_interactive, pre);
 
             crate::commands::launch::run_named_tool(
                 &tool,
-                profile.or(global_profile),
+                selection_for(profile, tool_non_interactive),
                 config_path,
                 dry_run,
                 tool_args,
             )
         }
+    }
+}
+
+fn tool_non_interactive(global_flag: bool, pre_separator_args: &[String]) -> bool {
+    global_flag
+        || pre_separator_args
+            .iter()
+            .any(|arg| arg == "--non-interactive")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_non_interactive;
+
+    #[test]
+    fn named_tool_selection_honors_non_interactive_before_separator() {
+        let rest = [
+            "--non-interactive".to_string(),
+            "work".to_string(),
+            "--".to_string(),
+            "--non-interactive".to_string(),
+        ];
+        let separator = rest.iter().position(|arg| arg == "--").unwrap();
+
+        assert!(tool_non_interactive(false, &rest[..separator]));
+        assert!(!tool_non_interactive(false, &[]));
+        assert!(tool_non_interactive(true, &[]));
     }
 }

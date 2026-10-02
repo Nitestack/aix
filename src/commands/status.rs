@@ -1,6 +1,7 @@
 use crate::cache::Cache;
 use crate::commands::env::resolve_profile;
 use crate::commands::spend::{format_age, has_spend_data, spend_summary};
+use crate::commands::GatewayRequestOptions;
 use crate::config::{self, Gateway, KnownGateway, KnownProvider, Provider};
 use crate::error::AixError;
 use crate::gateway::{openai::OpenAiClient, LiteLlmAdminClient};
@@ -9,20 +10,21 @@ use color_eyre::Result;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub async fn run(
-    positional_profile: Option<String>,
+    options: GatewayRequestOptions,
     config_path: Option<PathBuf>,
     json_output: bool,
     refresh: bool,
 ) -> Result<()> {
+    let GatewayRequestOptions { selection, timeout } = options;
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
     config::validate(&cfg)?;
     config::load_env_files(&cfg)?;
 
-    let profile_name = resolve_profile(positional_profile, &cfg)?;
+    let profile_name = resolve_profile(selection, &cfg)?;
     let profile = cfg
         .profiles
         .get(&profile_name)
@@ -42,10 +44,12 @@ pub async fn run(
     let api_key = api_key.expose_secret();
 
     let started_at = Instant::now();
-    OpenAiClient::new(base_url, api_key).models().await?;
+    OpenAiClient::with_timeout(base_url, api_key, timeout)
+        .models()
+        .await?;
     let latency_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    let spend = load_spend(&cfg, base_url, api_key, refresh).await;
+    let spend = load_spend(&cfg, base_url, api_key, refresh, timeout).await?;
     let status = StatusData {
         profile: ProfileData {
             name: profile_name,
@@ -85,27 +89,41 @@ async fn load_spend(
     base_url: &str,
     api_key: &str,
     refresh: bool,
-) -> SpendData {
+    timeout: Duration,
+) -> std::result::Result<SpendData, AixError> {
     if matches!(cfg.endpoint.gateway.as_ref(), Some(Gateway::Custom(_))) {
-        return SpendData::unavailable(SpendAvailability::Unsupported);
+        return Ok(SpendData::unavailable(SpendAvailability::Unsupported));
     }
 
     let cache = Cache::from_config(&cfg.cache);
     if !refresh {
         if let Some((data, fetched_at)) = cache.get(base_url, api_key) {
             if has_spend_data(&data, api_key) {
-                return SpendData::available(&data, api_key, SpendSource::Cache, Some(fetched_at));
+                return Ok(SpendData::available(
+                    &data,
+                    api_key,
+                    SpendSource::Cache,
+                    Some(fetched_at),
+                ));
             }
         }
     }
 
-    match LiteLlmAdminClient::new(base_url, api_key).user_info().await {
+    match LiteLlmAdminClient::with_timeout(base_url, api_key, timeout)
+        .user_info()
+        .await
+    {
         Ok(data) => {
             if !has_spend_data(&data, api_key) {
-                return SpendData::unavailable(SpendAvailability::Unavailable);
+                return Ok(SpendData::unavailable(SpendAvailability::Unavailable));
             }
             cache.put(base_url, api_key, &data);
-            SpendData::available(&data, api_key, SpendSource::Live, None)
+            Ok(SpendData::available(
+                &data,
+                api_key,
+                SpendSource::Live,
+                None,
+            ))
         }
         Err(AixError::BudgetExceeded { spend, max_budget }) => {
             let data = json!({
@@ -114,13 +132,19 @@ async fn load_spend(
                 "_aix_budget_exceeded": true
             });
             cache.put(base_url, api_key, &data);
-            SpendData::available(&data, api_key, SpendSource::Live, None)
+            Ok(SpendData::available(
+                &data,
+                api_key,
+                SpendSource::Live,
+                None,
+            ))
         }
         Err(AixError::GatewayError {
             status: 404 | 405 | 501,
             ..
-        }) => SpendData::unavailable(SpendAvailability::Unsupported),
-        Err(_) => SpendData::unavailable(SpendAvailability::Unavailable),
+        }) => Ok(SpendData::unavailable(SpendAvailability::Unsupported)),
+        Err(AixError::HttpError(error)) if error.is_timeout() => Err(AixError::HttpError(error)),
+        Err(_) => Ok(SpendData::unavailable(SpendAvailability::Unavailable)),
     }
 }
 

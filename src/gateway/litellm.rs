@@ -2,6 +2,7 @@ use super::transport::{GatewayTransport, TransportError};
 use crate::error::AixError;
 use crate::secrets::SecretString;
 use serde_json::Value;
+use std::time::Duration;
 
 const KEY_INFO_PATH: &str = "/key/info";
 const KEY_GENERATE_PATH: &str = "/key/generate";
@@ -19,9 +20,13 @@ pub(crate) struct LiteLlmAdminClient {
 }
 
 impl LiteLlmAdminClient {
-    pub(crate) fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+    pub(crate) fn with_timeout(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        timeout: Duration,
+    ) -> Self {
         Self {
-            transport: GatewayTransport::new(base_url, api_key),
+            transport: GatewayTransport::with_timeout(base_url, api_key, timeout),
         }
     }
 
@@ -378,7 +383,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LiteLlmAdminClient::new(server.uri(), "test-key");
+        let client =
+            LiteLlmAdminClient::with_timeout(server.uri(), "test-key", Duration::from_secs(30));
         let result = client.user_info().await.unwrap();
         assert_eq!(result["user_id"], "u123");
         assert_eq!(result["spend"], 1.23);
@@ -478,7 +484,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LiteLlmAdminClient::new(server.uri(), "test-key");
+        let client =
+            LiteLlmAdminClient::with_timeout(server.uri(), "test-key", Duration::from_secs(30));
         let err = client.user_info().await.unwrap_err();
         assert!(matches!(
             err,
@@ -505,7 +512,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LiteLlmAdminClient::new(server.uri(), "test-key");
+        let client =
+            LiteLlmAdminClient::with_timeout(server.uri(), "test-key", Duration::from_secs(30));
         let err = client.user_info().await.unwrap_err();
         let AixError::GatewayError { status: 403, body } = err else {
             panic!("expected GatewayError, got {err:?}");
@@ -534,7 +542,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LiteLlmAdminClient::new(server.uri(), "test-key");
+        let client =
+            LiteLlmAdminClient::with_timeout(server.uri(), "test-key", Duration::from_secs(30));
         let err = client.user_info().await.unwrap_err();
         match err {
             AixError::BudgetExceeded { spend, max_budget } => {
@@ -555,7 +564,11 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LiteLlmAdminClient::new(format!("{}/", server.uri()), "test-key");
+        let client = LiteLlmAdminClient::with_timeout(
+            format!("{}/", server.uri()),
+            "test-key",
+            Duration::from_secs(30),
+        );
         client.user_info().await.unwrap();
     }
 }

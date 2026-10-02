@@ -528,7 +528,7 @@ async fn budget_failure_uses_exit_code_six_and_json_stdout_stays_empty() {
         .output()
         .unwrap();
     assert_eq!(human.status.code(), Some(6));
-    assert!(String::from_utf8_lossy(&human.stdout).contains("50.17"));
+    assert!(human.stdout.is_empty());
     assert!(String::from_utf8_lossy(&human.stderr).contains("budget exceeded"));
 
     let json = Command::cargo_bin("aix")

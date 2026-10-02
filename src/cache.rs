@@ -3,7 +3,8 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -100,7 +101,8 @@ impl Cache {
         }
         let _ = (|| -> std::io::Result<()> {
             let dir = self.endpoint_dir(base_url);
-            std::fs::create_dir_all(&dir)?;
+            create_private_dir_all(&self.base_dir)?;
+            create_private_dir_all(&dir)?;
             let key_scoped = data_is_key_scoped(data);
             let user_id = if key_scoped {
                 format!("key:{}", fnv1a_hex(api_key.as_bytes()))
@@ -155,17 +157,14 @@ impl Cache {
     /// Create and remove a uniquely named probe file to verify the cache directory is writable.
     /// Existing cache data is never opened, changed, or deleted.
     pub fn check_writable(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.base_dir)?;
+        create_private_dir_all(&self.base_dir)?;
 
         let probe_path = self.base_dir.join(format!(
             ".aix-doctor-write-test-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&probe_path)?;
+        let mut file = open_private_file(&probe_path)?;
         let write_result = file.write_all(b"aix doctor writable check\n");
         drop(file);
 
@@ -272,9 +271,57 @@ fn save_index(dir: &Path, index: &HashMap<String, String>) -> std::io::Result<()
 }
 
 fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, path)
+    write_atomic_with(path, content, |file, bytes| file.write_all(bytes))
+}
+
+fn write_atomic_with(
+    path: &Path,
+    content: &str,
+    write_content: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    let temporary = path.with_file_name(format!(".aix-cache-{}.tmp", uuid::Uuid::new_v4()));
+    let mut created_temp = false;
+    let result = (|| {
+        let mut file = open_private_file(&temporary)?;
+        created_temp = true;
+        write_content(&mut file, content.as_bytes())?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if created_temp && result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn open_private_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+fn create_private_dir_all(path: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn now_secs() -> u64 {
@@ -303,6 +350,64 @@ mod tests {
             base_dir: dir.path().to_path_buf(),
             ttl_secs: 3600,
             disabled: false,
+        }
+    }
+
+    #[test]
+    fn failed_atomic_write_preserves_the_previous_cache_entry() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let base_url = "https://api.example.com";
+        let api_key = "sk-preserve-entry";
+        let previous = serde_json::json!({ "spend": 12.5 });
+        cache.put(base_url, api_key, &previous);
+
+        let endpoint_dir = cache.endpoint_dir(base_url);
+        let user_id = load_index(&endpoint_dir)
+            .get(&key_identity(api_key))
+            .unwrap()
+            .clone();
+        let entry_path = endpoint_dir.join(format!("{user_id}.json"));
+        let result = write_atomic_with(&entry_path, "partial replacement", |file, _| {
+            file.write_all(b"partial")?;
+            Err(std::io::Error::other("simulated cache write failure"))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(cache.get(base_url, api_key).unwrap().0["spend"], 12.5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_files_and_directories_have_restrictive_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        cache.put(
+            "https://api.example.com",
+            "sk-private-cache",
+            &serde_json::json!({ "spend": 1.0 }),
+        );
+
+        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&endpoint_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        for entry in std::fs::read_dir(endpoint_dir).unwrap() {
+            assert_eq!(
+                entry.unwrap().metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
     }
 
