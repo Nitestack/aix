@@ -149,6 +149,15 @@ pub enum Command {
         #[arg(long)]
         refresh: bool,
     },
+    /// Check whether a configured run policy can execute right now
+    ///
+    /// Does not create a probe key to test key-generation permission. Actual lease creation may
+    /// still fail if the parent credential lacks that permission.
+    Gate {
+        /// Run policy to preflight
+        #[arg(long, required = true)]
+        policy: String,
+    },
     /// Diagnose config, credentials, gateway capabilities, and cache access
     Doctor {
         /// Profile name (positional; overrides the global --profile flag)
@@ -291,6 +300,7 @@ impl Command {
                 | Self::Spend { .. }
                 | Self::Status { .. }
                 | Self::Doctor { .. }
+                | Self::Gate { .. }
                 | Self::Models { .. }
                 | Self::Usage { .. }
                 | Self::Ask { .. }

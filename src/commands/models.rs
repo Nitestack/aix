@@ -54,8 +54,8 @@ pub async fn run(
 }
 
 #[derive(Serialize)]
-struct ModelEntry {
-    id: String,
+pub(crate) struct ModelEntry {
+    pub(crate) id: String,
 }
 
 #[derive(Serialize)]
@@ -64,7 +64,7 @@ struct ModelsOutput {
     filter: Option<String>,
 }
 
-fn extract_models(response: Value) -> Result<Vec<ModelEntry>, AixError> {
+pub(crate) fn extract_models(response: Value) -> Result<Vec<ModelEntry>, AixError> {
     let data =
         response
             .get("data")

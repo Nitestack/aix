@@ -265,7 +265,7 @@ fn sanitize_key_info(data: Value) -> Value {
             if field == "user_id" {
                 value.is_string()
             } else {
-                value.is_number()
+                value.is_number() || (field == "max_budget" && value.is_null())
             }
         }) {
             info.insert(field.to_string(), value.clone());
@@ -300,7 +300,10 @@ fn sanitize_key_entry(data: Value) -> Option<Value> {
         object.insert("key_name".to_string(), Value::String(key_name));
     }
     for field in ["spend", "max_budget"] {
-        if let Some(value) = source.get(field).filter(|value| value.is_number()) {
+        if let Some(value) = source
+            .get(field)
+            .filter(|value| value.is_number() || (field == "max_budget" && value.is_null()))
+        {
             object.insert(field.to_string(), value.clone());
         }
     }

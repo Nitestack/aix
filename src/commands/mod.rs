@@ -7,6 +7,7 @@ pub mod current;
 pub mod doctor;
 pub mod env;
 pub mod exec;
+pub mod gate;
 pub mod init;
 pub mod launch;
 pub mod leases;

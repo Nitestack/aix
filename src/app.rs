@@ -27,7 +27,10 @@ pub async fn run() -> ExitCode {
             let code = crate::error::exit_code(&error);
             if !matches!(
                 error.downcast_ref::<crate::error::AixError>(),
-                Some(crate::error::AixError::DoctorChecksFailed { .. })
+                Some(
+                    crate::error::AixError::DoctorChecksFailed { .. }
+                        | crate::error::AixError::GateChecksFailed { .. }
+                )
             ) {
                 eprintln!("{error:?}");
             }
@@ -108,6 +111,17 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
         Command::Status { profile, refresh } => {
             crate::commands::status::run(request_options_for(profile), config_path, json, refresh)
                 .await
+        }
+        Command::Gate { policy } => {
+            crate::commands::gate::run(crate::commands::gate::GateOptions {
+                selection: selection_for(None, true),
+                explicit_profile: explicit_global_profile,
+                timeout,
+                config_path,
+                policy,
+                json,
+            })
+            .await
         }
         Command::Doctor { profile } => {
             crate::commands::doctor::run(request_options_for(profile), config_path, json).await

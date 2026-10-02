@@ -100,6 +100,34 @@ fn find_matching_key<'a>(
     })
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ParentBudget {
+    pub(crate) spend: f64,
+    /// `None` means LiteLLM explicitly reported a null/unlimited budget.
+    pub(crate) max_budget: Option<f64>,
+}
+
+/// Read the selected parent key's spend and explicitly configured budget.
+/// A missing `max_budget` field is not treated as unlimited: gate must fail
+/// closed when the gateway did not provide enough information to prove safety.
+pub(crate) fn parent_budget(data: &serde_json::Value, api_key: &str) -> Option<ParentBudget> {
+    let keys: &[serde_json::Value] = data
+        .get("keys")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let source = find_matching_key(keys, api_key).unwrap_or(data);
+    let spend = source.get("spend")?.as_f64()?;
+    let max_budget = match source.get("max_budget")? {
+        serde_json::Value::Null => None,
+        value => Some(value.as_f64()?),
+    };
+    if !spend.is_finite() || spend < 0.0 || max_budget.is_some_and(|value| !value.is_finite()) {
+        return None;
+    }
+    Some(ParentBudget { spend, max_budget })
+}
+
 pub(crate) fn has_spend_data(data: &serde_json::Value, api_key: &str) -> bool {
     let keys: &[serde_json::Value] = data
         .get("keys")

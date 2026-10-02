@@ -339,6 +339,9 @@ pub enum AixError {
 
     #[error("doctor found one or more failed checks")]
     DoctorChecksFailed { category: DoctorFailureCategory },
+
+    #[error("gate found one or more failed checks")]
+    GateChecksFailed { category: GateFailureCategory },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -349,6 +352,27 @@ pub(crate) enum DoctorFailureCategory {
     Authentication,
     Network,
     Budget,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum GateFailureCategory {
+    Config,
+    Secret,
+    Authentication,
+    Network,
+    Budget,
+}
+
+impl GateFailureCategory {
+    fn exit_code(self) -> i32 {
+        match self {
+            Self::Config => 2,
+            Self::Secret => 3,
+            Self::Authentication => 4,
+            Self::Network => 5,
+            Self::Budget => 6,
+        }
+    }
 }
 
 impl DoctorFailureCategory {
@@ -447,6 +471,7 @@ impl AixError {
             | Self::UsageUnavailable => 5,
             Self::BudgetExceeded { .. } => 6,
             Self::DoctorChecksFailed { category } => category.exit_code(),
+            Self::GateChecksFailed { category } => category.exit_code(),
             Self::NotImplemented(_)
             | Self::ProcessSpawn { .. }
             | Self::ProcessWait { .. }
