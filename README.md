@@ -301,10 +301,20 @@ The profile can also be declared in Home Manager as
 `programs.aix.profiles.personal.auth = "chatgpt";`. Existing profiles with
 `api_key` remain API-key profiles and need no migration.
 
-This release provides auth lifecycle management only. It does not use ChatGPT
-OAuth tokens for inference or tool launches, and never prints or exports the ID,
-access, or refresh token. Commands that need gateway API-key credentials fail
-with an explicit unsupported-authentication error for ChatGPT profiles.
+ChatGPT credentials are handed to a child only when the selected profile and
+named tool have an explicit `[tools.<name>.chatgpt]` binding. The binding names
+the one environment variable that receives the current short-lived access
+token. `aix env`, `aix shell`, `aix exec`, `aix ask`, and unconfigured tools do
+not receive OAuth credentials. `aix run -- <configured-tool>` uses the same
+binding, while LiteLLM leases and run policies remain API-key-only.
+
+The refresh token, retained ID token, and issued OAuth client ID stay in aix's
+owner-only auth store; they are never passed to the child or written to run
+history. `--dry-run` prints the executable, effective arguments, and variable
+names, and does not refresh a token. aix refreshes before a child starts, not
+while it is running. A long-lived harness must be restarted to receive a renewed
+token; Codex app-server documents a restart-and-resume flow. These instructions
+cover Codex app-server only, not the Codex TUI or other Codex modes.
 
 ### Model defaults and aliases
 
@@ -411,9 +421,15 @@ An optional `[tools.<name>]` entry controls how a named tool is launched by
 `aix <tool>` and `aix run -- <tool> ...`. The map key is the logical tool name;
 `command` optionally selects a different executable, `api_format` selects
 `anthropic`, `openai`, or `both`, and `env` adds tool-specific variables. Tool
-environment values override profile values, which override generated credentials.
-For `aix <tool> ... --dry-run`, aix lists configured tool env variable names
-without resolving their secret sources.
+environment values override profile values, which override generated
+credentials for API-key profiles. A ChatGPT profile instead requires a
+`chatgpt` binding; it clears inherited standard API-key variables, applies
+`clear_env`, profile env, and tool env, then sets the selected access token in
+`access_token_env` last. Invalid environment names and clearing the access-token
+variable are rejected. Unconfigured tools never receive a ChatGPT token.
+
+For `aix <tool> ... --dry-run`, aix lists environment variable names without
+resolving configured secret sources or refreshing ChatGPT credentials.
 
 ```toml
 [tools.review]
@@ -438,10 +454,77 @@ programs.aix.tools.review = {
 };
 ```
 
-No tool entries or harness adapters are preconfigured. If no matching entry
-exists, `aix <tool>` preserves the legacy fallback (`claude` gets Anthropic
-variables; other names get OpenAI variables), while `aix run` gives an arbitrary
-command both formats.
+#### Codex app-server with ChatGPT plan authentication
+
+OpenAI documents ChatGPT-plan token sharing for Codex app-server using the
+Responses API provider below. Configure an explicit aix handoff:
+
+```toml
+[tools.codex]
+command = "codex"
+api_format = "openai"
+
+[tools.codex.chatgpt]
+access_token_env = "ACCESS_TOKEN"
+prepend_args = [
+  "app-server",
+  "--listen",
+  "stdio://",
+  "-c", 'model_provider="openai_chatgpt_plan"',
+  "-c", 'model_providers.openai_chatgpt_plan.name="ChatGPT plan"',
+  "-c", 'model_providers.openai_chatgpt_plan.base_url="https://api.openai.com/v1"',
+  "-c", 'model_providers.openai_chatgpt_plan.env_key="ACCESS_TOKEN"',
+  "-c", 'model_providers.openai_chatgpt_plan.wire_api="responses"',
+  "-c", "model_providers.openai_chatgpt_plan.requires_openai_auth=false",
+  "-c", "model_providers.openai_chatgpt_plan.supports_websockets=false",
+]
+clear_env = ["OPENAI_API_KEY", "CODEX_API_KEY"]
+```
+
+The equivalent Home Manager settings use camelCase:
+
+```nix
+programs.aix.tools.codex = {
+  command = "codex";
+  apiFormat = "openai";
+  chatgpt = {
+    accessTokenEnv = "ACCESS_TOKEN";
+    prependArgs = [
+      "app-server"
+      "--listen"
+      "stdio://"
+      "-c"
+      ''model_provider="openai_chatgpt_plan"''
+      "-c"
+      ''model_providers.openai_chatgpt_plan.name="ChatGPT plan"''
+      "-c"
+      ''model_providers.openai_chatgpt_plan.base_url="https://api.openai.com/v1"''
+      "-c"
+      ''model_providers.openai_chatgpt_plan.env_key="ACCESS_TOKEN"''
+      "-c"
+      ''model_providers.openai_chatgpt_plan.wire_api="responses"''
+      "-c"
+      "model_providers.openai_chatgpt_plan.requires_openai_auth=false"
+      "-c"
+      "model_providers.openai_chatgpt_plan.supports_websockets=false"
+    ];
+    clearEnv = [ "OPENAI_API_KEY" "CODEX_API_KEY" ];
+  };
+};
+```
+
+Manual smoke test: install a current Codex CLI, run `aix auth login personal`,
+and check `aix codex personal --dry-run` for `codex app-server --listen
+stdio://`, the Responses provider settings, and `ACCESS_TOKEN` (name only). For
+the live check, point a Codex app-server JSON-RPC client at `aix codex personal`,
+send `initialize`, `initialized`, `thread/start`, and `turn/start`, and verify a
+completed response. No `codex login` is needed. See OpenAI's [Codex app-server
+guide](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)
+for the protocol sequence and provider details.
+
+No tool entries or harness adapters are preconfigured. API-key profiles retain
+the legacy fallback (`claude` gets Anthropic variables; other names get OpenAI
+variables), while an unconfigured `aix run` command receives both formats.
 
 ### Cache config
 
@@ -471,7 +554,8 @@ Only one source per field is allowed. Mixing sources in the same field is a conf
 
 ## Environment variables emitted
 
-`aix env` and `aix exec` always inject all seven variables:
+For API-key profiles, `aix env` and `aix exec` always inject all seven variables.
+These commands reject ChatGPT profiles instead of exporting OAuth credentials.
 
 | Variable | Value |
 |---|---|
@@ -486,14 +570,15 @@ Only one source per field is allowed. Mixing sources in the same field is a conf
 `LITELLM_API_KEY`/`LITELLM_BASE_URL` are aliases for the same credential and
 gateway as `OPENAI_API_KEY`/`OPENAI_BASE_URL` — not a third distinct secret
 — for tools that specifically look for a `LITELLM_*`-named variable (e.g.
-LiteLLM-aware config formats). They are included whenever aix launches a
-profile-backed child, regardless of tool name or selected API format.
+LiteLLM-aware config formats). They are included for API-key launches,
+regardless of tool name or selected API format.
 
 Named-tool subcommands use a matching `[tools.<name>]` configuration when
 present. Its `api_format` selects Anthropic, OpenAI, or both; otherwise the
 legacy fallback is Anthropic for `claude` and OpenAI for other names. `aix run`
-uses a matching tool entry too; an unconfigured command receives both formats.
-The LiteLLM pair is included for all these launches:
+uses a matching tool entry too; an unconfigured API-key command receives both
+formats. A ChatGPT profile requires an explicit `chatgpt` binding and receives
+no generated API-key variables:
 
 | Launch | Credential variables |
 |---|---|
@@ -501,6 +586,8 @@ The LiteLLM pair is included for all these launches:
 | Unconfigured `aix claude ...` | Anthropic pair |
 | Other unconfigured `aix <tool> ...` | OpenAI pair |
 | Unconfigured `aix run -- CMD` | Both Anthropic and OpenAI pairs |
+| Configured ChatGPT tool | Only the access token under `access_token_env`, plus configured profile/tool env |
+| Unconfigured ChatGPT tool | Rejected; no token or API-key fallback |
 
 `AIX_API_KEY` and `AIX_BASE_URL` are not generated by aix. Tools that previously
 read those variables should switch to the `ANTHROPIC_*` or `OPENAI_*` equivalents.
@@ -1074,4 +1161,4 @@ If you use the Nix deployment, the generated config uses `file` sources pointing
 
 ### In-memory secrets are zeroized on drop
 
-Resolved secret values use memory types that zero their contents when dropped. API keys are not written to disk by aix, printed in logs, or exposed via `--dry-run` output. ChatGPT tokens are intentionally persisted in the owner-only auth store described above. Dry-run shows variable *names* only.
+Resolved secret values use memory types that zero their contents when dropped. API keys are not written to disk by aix or printed in logs. ChatGPT tokens are intentionally persisted in the owner-only auth store described above; dry-run never prints token values and shows environment variable names, not values.

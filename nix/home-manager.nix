@@ -88,6 +88,32 @@ let
     };
   };
 
+  chatgptToolConfigType = lib.types.submodule {
+    options = {
+      accessTokenEnv = lib.mkOption {
+        type = lib.types.str;
+        example = "ACCESS_TOKEN";
+        description = "Environment variable explicitly trusted to receive the current ChatGPT access token.";
+      };
+
+      prependArgs = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = "Arguments inserted after the executable and before caller-supplied arguments.";
+      };
+
+      clearEnv = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [
+          "OPENAI_API_KEY"
+          "CODEX_API_KEY"
+        ];
+        description = "Inherited environment variables removed before applying profile and tool environment.";
+      };
+    };
+  };
+
   toolConfigType = lib.types.submodule {
     options = {
       command = lib.mkOption {
@@ -115,6 +141,12 @@ let
           secret sources as profile environment variables. Tool values override
           profile and generated credential variables.
         '';
+      };
+
+      chatgpt = lib.mkOption {
+        type = lib.types.nullOr chatgptToolConfigType;
+        default = null;
+        description = "Explicit ChatGPT access-token handoff for this tool.";
       };
     };
   };
@@ -176,6 +208,17 @@ let
     }
     // lib.optionalAttrs (tool.env != { }) {
       env = lib.mapAttrs (_: encodeSecretSource) tool.env;
+    }
+    // lib.optionalAttrs (tool.chatgpt != null) {
+      chatgpt = {
+        access_token_env = tool.chatgpt.accessTokenEnv;
+      }
+      // lib.optionalAttrs (tool.chatgpt.prependArgs != [ ]) {
+        prepend_args = tool.chatgpt.prependArgs;
+      }
+      // lib.optionalAttrs (tool.chatgpt.clearEnv != [ ]) {
+        clear_env = tool.chatgpt.clearEnv;
+      };
     };
 
   mkPrompt =

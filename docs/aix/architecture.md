@@ -38,7 +38,7 @@ Owns the config file data model and all file I/O related to config.
 Config types: `Config`, `Endpoint`, `Profile`, `ProfileAuth`, `Provider`, `Gateway`, `CacheConfig`, `ModelConfig`, `PromptPreset`, and `Tool`. A profile has exactly one auth source: a legacy `api_key` or `auth = { type = "chatgpt" }`. ChatGPT profiles may omit the shared endpoint and cannot set a profile `base_url`.
 A profile can override `endpoint.base_url` with `base_url` and append custom, secret-backed variables with `env`; those custom values can override generated variables.
 `gateway` and `provider` are optional metadata for most commands, but `aix spend` and `aix usage` accept only an unset gateway or `litellm`.
-`models` contains defaults and aliases. `tools.<name>` contains optional `command`, required `api_format`, and optional secret-backed `env` launch settings. `ApiFormat` is serialized as `anthropic`, `openai`, or `both` for tool entries.
+`models` contains defaults and aliases. `tools.<name>` contains optional `command`, required `api_format`, and optional secret-backed `env` launch settings. Its optional `chatgpt` block declares the access-token environment name, prepended arguments, and inherited variables to clear. `ApiFormat` is serialized as `anthropic`, `openai`, or `both` for tool entries.
 
 ### `src/secrets.rs` — Secret resolution
 
@@ -57,19 +57,24 @@ emit `[secret]` — never the actual value.
 
 ### `src/auth/` and `src/commands/auth.rs` — ChatGPT auth lifecycle
 
-`AuthService` owns sign-in, offline status, logout, and the internal access-token
-refresh path. `protocol.rs` builds the PKCE authorization request, validates the
-loopback callback, exchanges authorization codes, verifies ID-token signatures
-and claims from OpenID metadata/JWKS, discovers revocation, and refreshes tokens.
+`AuthService` owns sign-in, offline status, logout, and the access-token refresh
+path. `protocol.rs` builds the PKCE authorization request, validates the loopback
+callback, exchanges authorization codes, verifies ID-token signatures and
+claims from OpenID metadata/JWKS, discovers revocation, and refreshes tokens.
 `store.rs` writes versioned, profile-scoped records atomically and uses file
-locks to serialize login/logout/refresh across processes.
+locks to serialize login/logout/refresh across processes. `launch.rs` asks this
+service for a usable access token only for an explicitly ChatGPT-bound tool.
 
 The store lives under the platform local application-data directory (or
 `AIX_AUTH_DIR`). On Unix, the directory and files are restricted to the owner
 (0700/0600). OAuth tokens are persisted as local JSON and are not encrypted at
 rest. The status command reads only local state and never returns token values.
-OAuth tokens are not wired into inference, gateway, or downstream-tool launch;
-those commands reject ChatGPT profiles with an explicit capability error.
+The launch boundary exposes only the short-lived access token, under the
+configured `access_token_env`; refresh tokens, ID tokens, client IDs, and tokens
+for other profiles remain in the auth service/store. No OAuth token is exported
+through `env`, `shell`, generic `exec`, inference, or an unconfigured tool.
+`aix run` uses the same explicit binding, but lease and run-policy paths reject
+ChatGPT profiles before reaching LiteLLM.
 
 ### `src/gateway/` — Gateway capability clients
 
@@ -111,7 +116,8 @@ Owns reusable profile credential collection and `aix env` output formatting.
 - `collect_vars()`: builds the ordered `(name, value)` list for a given `ApiFormat`
 - `format_vars()`: dispatches to one of six format functions (sh / json / nu / fish / powershell / cmd)
 
-The `env` subcommand hardcodes `ApiFormat::Both` and always emits all seven variables:
+For API-key profiles, `env` hardcodes `ApiFormat::Both` and emits all seven
+variables. ChatGPT profiles are rejected rather than exporting OAuth tokens:
 
 | Variable | Value |
 |---|---|
@@ -130,11 +136,15 @@ Anthropic → 5 vars (`AIX_PROFILE` + `ANTHROPIC_*` + `LITELLM_*`), OpenAi → 5
 ### `src/commands/launch.rs` — Process launching
 
 Shared by `exec`, `shell`, `run`, and external named-tool dispatch.
-**Rule:** resolve config and credentials, compose generated/profile/tool env in
-that order, launch a child, and preserve its exit behavior. Configured tool
-names select an executable and API format; unconfigured named tools retain the
-legacy `claude` → Anthropic / other → OpenAI fallback. An unconfigured `aix run`
-command receives both formats.
+**Rule:** resolve config and credentials, compose the appropriate environment,
+launch a child, and preserve its exit behavior. API-key launches keep the
+generated/profile/tool precedence and legacy named-tool fallbacks. ChatGPT
+launches require `tools.<name>.chatgpt`, clear standard inherited API-key
+variables and configured `clear_env`, then apply profile env, tool env, and the
+selected access token last. ChatGPT prepended arguments come before caller
+arguments. Dry-run reports arguments and variable names without loading or
+refreshing OAuth credentials. An unconfigured API-key `aix run` command receives
+both credential formats.
 
 ### Named-tool dispatch (`aix <tool>`) — in `src/app.rs`
 
@@ -142,9 +152,11 @@ command receives both formats.
 The launcher checks `tools.<name>` first, then applies compatibility fallback.
 It does not embed harness-specific behavior beyond the legacy `claude` default.
 
-- `aix <tool>` configured in `[tools]` → configured command, format, and env
-- unconfigured `aix claude` → `ApiFormat::Anthropic`
-- other unconfigured `aix <tool>` → `ApiFormat::OpenAi`
+- API-key profile + configured `[tools.<name>]` → configured command, format, and env
+- API-key profile + unconfigured `aix claude` → `ApiFormat::Anthropic`
+- API-key profile + other unconfigured `aix <tool>` → `ApiFormat::OpenAi`
+- ChatGPT profile + configured `[tools.<name>.chatgpt]` → explicit token handoff
+- ChatGPT profile + missing binding → capability error; no API-key fallback
 
 Usage: `aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]`
 
@@ -152,9 +164,10 @@ Usage: `aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]`
 
 `aix run` wraps an arbitrary child with a UUID and a versioned local record.
 The child receives informational `AIX_RUN_*` metadata; standard streams remain
-inherited. `RunStore` owns state-directory selection, atomic record writes,
-listing, and record lookup. It never captures command arguments or child
-content. `aix exec` remains stateless.
+inherited. A configured tool's prepend arguments and ChatGPT binding are also
+used by plain managed runs. OAuth tokens are never recorded. `RunStore` owns
+state-directory selection, atomic record writes, listing, and record lookup. It
+never captures command arguments or child content. `aix exec` remains stateless.
 
 ### `src/error.rs` — Error types
 
@@ -213,10 +226,13 @@ No Rust changes are required for most provider additions.
 2. Add a named profile under `[profiles.<name>]` with the appropriate `api_key`.
 3. Optionally set `provider` and `gateway` as metadata. Set `gateway = "litellm"` (or leave it unset) when the profile will be used with `aix spend` or `aix usage`; other gateway values are rejected by those commands.
 
-`aix env` and `aix exec` always emit Anthropic, OpenAI, and LiteLLM credential sets.
-Configured tools select a format in `[tools.<name>]`; unconfigured named tools
-retain the `claude`/OpenAI compatibility defaults. Tool env overrides profile
-env, which overrides generated credentials.
+For API-key profiles, `aix env` and `aix exec` emit Anthropic, OpenAI, and
+LiteLLM credential sets. ChatGPT profiles are rejected by those commands rather
+than exporting OAuth tokens. Configured tools select a format in `[tools.<name>]`
+for API-key profiles; unconfigured named tools retain the `claude`/OpenAI
+compatibility defaults. ChatGPT launches require an explicit auth binding.
+Tool env overrides profile env, which overrides generated credentials for
+API-key launches.
 
 If a new credential format is needed, update `ApiFormat`, its config
 deserialization and Home Manager enum, `collect_vars()`, and the corresponding

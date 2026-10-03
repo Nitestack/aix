@@ -116,6 +116,10 @@
             grep -Fxq '[tools.review.env]' ${homeManagerConfigs.configured}
             grep -Fxq 'REVIEW_MODE = "review"' ${homeManagerConfigs.configured}
             grep -q 'AIX_REVIEW_TOKEN' ${homeManagerConfigs.configured}
+            grep -Fxq '[tools.codex.chatgpt]' ${homeManagerConfigs.configured}
+            grep -Fxq 'access_token_env = "ACCESS_TOKEN"' ${homeManagerConfigs.configured}
+            grep -q 'app-server' ${homeManagerConfigs.configured}
+            grep -q 'OPENAI_API_KEY' ${homeManagerConfigs.configured}
             grep -Fxq '[tools.claude]' ${homeManagerConfigs.configured}
             grep -Fxq 'api_format = "anthropic"' ${homeManagerConfigs.configured}
             ! grep -q 'models' ${homeManagerConfigs.legacy}

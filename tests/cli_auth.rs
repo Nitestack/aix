@@ -148,9 +148,7 @@ fn commands_without_chatgpt_auth_support_fail_with_an_explicit_capability_error(
         vec!["doctor", "personal"],
         vec!["--profile", "personal", "ask", "hello"],
         vec!["--profile", "personal", "prompt", "demo"],
-        vec!["--profile", "personal", "run", "--", "echo", "hello"],
         vec!["--profile", "personal", "gate", "--policy", "unknown"],
-        vec!["--profile", "personal", "claude", "--dry-run"],
     ] {
         command(&config, &auth_dir)
             .args(args.clone())
@@ -158,6 +156,19 @@ fn commands_without_chatgpt_auth_support_fail_with_an_explicit_capability_error(
             .code(2)
             .stderr(predicate::str::contains(
                 "requires an API-key profile; ChatGPT authentication is not supported",
+            ));
+    }
+
+    for args in [
+        vec!["--profile", "personal", "run", "--", "echo", "hello"],
+        vec!["--profile", "personal", "claude", "--dry-run"],
+    ] {
+        command(&config, &auth_dir)
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(
+                "not configured to consume ChatGPT-plan credentials",
             ));
     }
 }

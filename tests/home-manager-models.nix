@@ -93,6 +93,22 @@ in
           };
         };
       };
+      codex = {
+        command = "codex";
+        apiFormat = "openai";
+        chatgpt = {
+          accessTokenEnv = "ACCESS_TOKEN";
+          prependArgs = [
+            "app-server"
+            "--listen"
+            "stdio://"
+          ];
+          clearEnv = [
+            "OPENAI_API_KEY"
+            "CODEX_API_KEY"
+          ];
+        };
+      };
       claude = {
         apiFormat = "anthropic";
       };

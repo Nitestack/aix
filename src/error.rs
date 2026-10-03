@@ -26,6 +26,12 @@ pub enum AixError {
     #[error("this command requires an API-key profile; ChatGPT authentication is not supported by this command")]
     ChatGptAuthUnsupported,
 
+    #[error("tool {tool:?} is not configured to consume ChatGPT-plan credentials; configure [tools.{tool}.chatgpt] with access_token_env")]
+    ChatGptToolNotConfigured { tool: String },
+
+    #[error("LiteLLM lease and run-policy flows require an API-key profile; ChatGPT plan usage is not a LiteLLM lease")]
+    ChatGptRunLeaseUnsupported,
+
     #[error(
         "`aix auth login` requires interactive browser authorization; remove --non-interactive"
     )]
@@ -249,6 +255,9 @@ pub enum AixError {
     #[error("invalid environment variable name {name:?} in tool {tool:?}")]
     InvalidToolEnvironmentVariableName { tool: String, name: String },
 
+    #[error("ChatGPT access-token environment variable {name:?} for tool {tool:?} must not also appear in clear_env")]
+    ChatGptAccessTokenEnvCleared { tool: String, name: String },
+
     #[allow(dead_code)]
     #[error("profile selection cancelled")]
     SelectionCancelled,
@@ -458,6 +467,8 @@ impl AixError {
             | Self::MissingEndpointUrl
             | Self::ChatGptProfileBaseUrl { .. }
             | Self::ChatGptAuthUnsupported
+            | Self::ChatGptToolNotConfigured { .. }
+            | Self::ChatGptRunLeaseUnsupported
             | Self::AuthLoginRequiresInteractive
             | Self::AuthProfileNotChatGpt
             | Self::NoModelConfigured
@@ -494,6 +505,7 @@ impl AixError {
             | Self::RunPolicyDurationExceeded { .. }
             | Self::RunPolicyModelNotAllowed
             | Self::InvalidToolEnvironmentVariableName { .. }
+            | Self::ChatGptAccessTokenEnvCleared { .. }
             | Self::SelectionCancelled
             | Self::NoInteractiveTerminal
             | Self::ExecNoCommand

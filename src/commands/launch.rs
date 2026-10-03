@@ -8,8 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+#[path = "launch/chatgpt.rs"]
+mod chatgpt;
+
 pub struct LaunchEnv {
     pub vars: Vec<(String, String)>,
+    pub auth_vars: Vec<(String, SecretString)>,
     pub(crate) display_only_vars: Vec<String>,
     pub clear_vars: Vec<String>,
     pub remove_vars: Vec<String>,
@@ -35,10 +39,15 @@ pub struct ResolvedRunLaunch {
     pub env: LaunchEnv,
     pub program: String,
     pub logical_tool_name: Option<String>,
-    pub base_url: SecretString,
-    pub parent_api_key: SecretString,
+    pub parent_gateway: Option<ParentGatewayCredentials>,
     pub allowed_models: Vec<String>,
     pub policy: Option<ResolvedRunPolicy>,
+    pub prepend_args: Vec<String>,
+}
+
+pub(crate) struct ParentGatewayCredentials {
+    pub base_url: SecretString,
+    pub api_key: SecretString,
 }
 
 #[derive(Clone, Debug)]
@@ -53,10 +62,15 @@ struct LaunchResolution {
     env: LaunchEnv,
     program: String,
     logical_tool_name: Option<String>,
-    base_url: SecretString,
-    parent_api_key: SecretString,
+    parent_gateway: Option<ParentGatewayCredentials>,
     allowed_models: Vec<String>,
     policy: Option<ResolvedRunPolicy>,
+    prepend_args: Vec<String>,
+}
+
+struct LaunchContext {
+    cfg: config::Config,
+    profile_name: String,
 }
 
 struct LaunchRequest<'a> {
@@ -105,9 +119,10 @@ pub(crate) struct RunLaunchRequest<'a> {
     pub policy_name: Option<&'a str>,
     pub require_litellm: bool,
     pub dry_run: bool,
+    pub timeout: Duration,
 }
 
-pub(crate) fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<ResolvedRunLaunch> {
+pub(crate) async fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<ResolvedRunLaunch> {
     let RunLaunchRequest {
         selection,
         explicit_profile,
@@ -117,70 +132,69 @@ pub(crate) fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<Resolv
         policy_name,
         require_litellm,
         dry_run,
+        timeout,
     } = request;
-    resolve_tool_launch(LaunchRequest {
-        selection,
-        explicit_profile,
-        config_path,
-        format_override: None,
-        configured_tool_name: Some(program),
-        tool_env_mode: if dry_run {
-            ToolEnvMode::NamesOnly
-        } else {
-            ToolEnvMode::Resolve
+    resolve_tool_launch(
+        LaunchRequest {
+            selection,
+            explicit_profile,
+            config_path,
+            format_override: None,
+            configured_tool_name: Some(program),
+            tool_env_mode: if dry_run {
+                ToolEnvMode::NamesOnly
+            } else {
+                ToolEnvMode::Resolve
+            },
+            allowed_models,
+            policy_name,
+            require_litellm,
         },
-        allowed_models,
-        policy_name,
-        require_litellm,
-    })
+        timeout,
+    )
+    .await
 }
 
-fn resolve_tool_launch(request: LaunchRequest<'_>) -> Result<ResolvedRunLaunch> {
-    let resolution = resolve_launch_env_inner(request)?;
+async fn resolve_tool_launch(
+    request: LaunchRequest<'_>,
+    timeout: Duration,
+) -> Result<ResolvedRunLaunch> {
+    let context = load_launch_context(&request)?;
+    let is_chatgpt = context.cfg.profiles[&context.profile_name]
+        .auth
+        .is_chatgpt();
+    let resolution = if is_chatgpt {
+        chatgpt::resolve_tool_launch(request, context, timeout).await?
+    } else {
+        resolve_api_key_launch(request, context)?
+    };
     Ok(ResolvedRunLaunch {
         env: resolution.env,
         program: resolution.program,
         logical_tool_name: resolution.logical_tool_name,
-        base_url: resolution.base_url,
-        parent_api_key: resolution.parent_api_key,
+        parent_gateway: resolution.parent_gateway,
         allowed_models: resolution.allowed_models,
         policy: resolution.policy,
+        prepend_args: resolution.prepend_args,
     })
 }
 
 fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResolution> {
-    let LaunchRequest {
-        selection,
-        explicit_profile,
-        config_path,
-        format_override,
-        configured_tool_name,
-        tool_env_mode,
-        allowed_models,
-        policy_name,
-        require_litellm,
-    } = request;
-    let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
+    let context = load_launch_context(&request)?;
+    resolve_api_key_launch(request, context)
+}
+
+fn load_launch_context(request: &LaunchRequest<'_>) -> Result<LaunchContext> {
+    let path =
+        config::find_config_path(request.config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
     let cfg = config::load(&path)?;
     config::validate(&cfg)?;
     config::load_env_files(&cfg)?;
 
-    let policy = policy_name
-        .map(|name| {
-            cfg.run_policies
-                .get(name)
-                .ok_or_else(|| AixError::RunPolicyNotFound {
-                    name: name.to_string(),
-                    available_hint: config::sorted_run_policy_names(&cfg)
-                        .into_iter()
-                        .map(|name| format!("  {name}"))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                })
-        })
-        .transpose()?;
+    let policy = resolve_run_policy(&cfg, request.policy_name)?;
     if let Some(policy_profile) = policy.and_then(|policy| policy.profile.as_deref()) {
-        if explicit_profile
+        if request
+            .explicit_profile
             .as_deref()
             .is_some_and(|selected| selected != policy_profile)
         {
@@ -192,7 +206,7 @@ fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResoluti
         cfg.endpoint.gateway.as_ref(),
         Some(config::Gateway::Custom(_))
     );
-    if require_litellm && explicit_non_litellm_gateway {
+    if request.require_litellm && explicit_non_litellm_gateway {
         return Err(AixError::LeaseNotLiteLlm.into());
     }
 
@@ -200,11 +214,56 @@ fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResoluti
         ProfileSelection {
             profile: policy
                 .and_then(|policy| policy.profile.clone())
-                .or(selection.profile),
-            non_interactive: selection.non_interactive,
+                .or_else(|| request.selection.profile.clone()),
+            non_interactive: request.selection.non_interactive,
         },
         &cfg,
     )?;
+    let _profile_entry =
+        cfg.profiles
+            .get(&profile_name)
+            .ok_or_else(|| AixError::ProfileNotFound {
+                name: profile_name.clone(),
+                available_hint: config::format_available_profiles(&cfg),
+            })?;
+
+    Ok(LaunchContext { cfg, profile_name })
+}
+
+fn resolve_run_policy<'a>(
+    cfg: &'a config::Config,
+    policy_name: Option<&str>,
+) -> Result<Option<&'a config::RunPolicy>> {
+    Ok(policy_name
+        .map(|name| {
+            cfg.run_policies
+                .get(name)
+                .ok_or_else(|| AixError::RunPolicyNotFound {
+                    name: name.to_string(),
+                    available_hint: config::sorted_run_policy_names(cfg)
+                        .into_iter()
+                        .map(|name| format!("  {name}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                })
+        })
+        .transpose()?)
+}
+
+fn resolve_api_key_launch(
+    request: LaunchRequest<'_>,
+    context: LaunchContext,
+) -> Result<LaunchResolution> {
+    let LaunchRequest {
+        format_override,
+        configured_tool_name,
+        tool_env_mode,
+        allowed_models,
+        policy_name,
+        ..
+    } = request;
+    let LaunchContext { cfg, profile_name } = context;
+    let policy = resolve_run_policy(&cfg, policy_name)?;
     let profile_entry =
         cfg.profiles
             .get(&profile_name)
@@ -254,16 +313,7 @@ fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResoluti
     )?;
     let mut display_only_vars = Vec::new();
     if let Some(tool) = configured_tool {
-        let mut tool_vars: Vec<_> = tool.env.iter().collect();
-        tool_vars.sort_unstable_by_key(|(key, _)| key.as_str());
-        for (key, value) in tool_vars {
-            match tool_env_mode {
-                ToolEnvMode::Resolve => {
-                    vars.push((key.clone(), value.resolve()?.expose_secret().to_string()));
-                }
-                ToolEnvMode::NamesOnly => display_only_vars.push(key.clone()),
-            }
-        }
+        append_configured_env(&tool.env, tool_env_mode, &mut vars, &mut display_only_vars)?;
     }
 
     let logical_tool_name = configured_tool.map(|_| configured_tool_name.unwrap().to_string());
@@ -276,6 +326,7 @@ fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResoluti
     Ok(LaunchResolution {
         env: LaunchEnv {
             vars,
+            auth_vars: Vec::new(),
             display_only_vars,
             clear_vars,
             remove_vars: Vec::new(),
@@ -283,8 +334,7 @@ fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResoluti
         },
         program: effective_program,
         logical_tool_name,
-        base_url,
-        parent_api_key: api_key,
+        parent_gateway: Some(ParentGatewayCredentials { base_url, api_key }),
         allowed_models: resolved_allowed_models,
         policy: policy.map(|policy| ResolvedRunPolicy {
             name: policy_name.unwrap_or_default().to_string(),
@@ -292,7 +342,27 @@ fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResoluti
             max_duration: policy.max_duration.clone(),
             tags: policy.tags.clone(),
         }),
+        prepend_args: Vec::new(),
     })
+}
+
+fn append_configured_env(
+    values: &std::collections::HashMap<String, crate::secrets::SecretSource>,
+    mode: ToolEnvMode,
+    vars: &mut Vec<(String, String)>,
+    display_only_vars: &mut Vec<String>,
+) -> Result<()> {
+    let mut values: Vec<_> = values.iter().collect();
+    values.sort_unstable_by_key(|(key, _)| key.as_str());
+    for (key, value) in values {
+        match mode {
+            ToolEnvMode::Resolve => {
+                vars.push((key.clone(), value.resolve()?.expose_secret().to_string()));
+            }
+            ToolEnvMode::NamesOnly => display_only_vars.push(key.clone()),
+        }
+    }
+    Ok(())
 }
 
 fn resolve_allowed_models(
@@ -374,12 +444,13 @@ pub fn apply_lease_credentials(
     }
 }
 
-pub fn run_named_tool(
+pub async fn run_named_tool(
     name: &str,
     selection: ProfileSelection,
     config_path: Option<PathBuf>,
     dry_run: bool,
     args: Vec<String>,
+    timeout: Duration,
 ) -> Result<()> {
     let fallback_format = if name == "claude" {
         config::ApiFormat::Anthropic
@@ -391,17 +462,27 @@ pub fn run_named_tool(
     } else {
         ToolEnvMode::Resolve
     };
-    let resolved = resolve_tool_launch(LaunchRequest {
-        selection,
-        explicit_profile: None,
-        config_path,
-        format_override: Some(fallback_format),
-        configured_tool_name: Some(name),
-        tool_env_mode,
-        allowed_models: &[],
-        policy_name: None,
-        require_litellm: false,
-    })?;
+    let resolved = resolve_tool_launch(
+        LaunchRequest {
+            selection,
+            explicit_profile: None,
+            config_path,
+            format_override: Some(fallback_format),
+            configured_tool_name: Some(name),
+            tool_env_mode,
+            allowed_models: &[],
+            policy_name: None,
+            require_litellm: false,
+        },
+        timeout,
+    )
+    .await?;
+    let args = resolved
+        .prepend_args
+        .iter()
+        .cloned()
+        .chain(args)
+        .collect::<Vec<_>>();
     run_command(&resolved.program, &args, &resolved.env, dry_run)
 }
 
@@ -420,6 +501,7 @@ pub fn run_command(program: &str, args: &[String], env: &LaunchEnv, dry_run: boo
             .vars
             .iter()
             .map(|(key, _)| key)
+            .chain(env.auth_vars.iter().map(|(key, _)| key))
             .chain(env.display_only_vars.iter())
         {
             eprintln!("  {key}");
@@ -543,6 +625,9 @@ fn command_with_env(
     }
     for (key, value) in &env.vars {
         command.env(key, value);
+    }
+    for (key, value) in &env.auth_vars {
+        command.env(key, value.expose_secret());
     }
     Ok(command)
 }

@@ -54,7 +54,10 @@ pub(crate) fn inputs_contain_parent_key(
     metadata: &RunMetadata,
     args: &[String],
 ) -> bool {
-    let parent_key = resolved.parent_api_key.expose_secret();
+    let Some(parent_gateway) = resolved.parent_gateway.as_ref() else {
+        return false;
+    };
+    let parent_key = parent_gateway.api_key.expose_secret();
     if parent_key.is_empty() {
         return false;
     }
@@ -71,7 +74,10 @@ pub(crate) fn inputs_contain_parent_key(
             .logical_tool_name
             .as_deref()
             .is_some_and(contains_key)
-        || contains_key(resolved.base_url.expose_secret())
+        || resolved
+            .parent_gateway
+            .as_ref()
+            .is_some_and(|parent_gateway| contains_key(parent_gateway.base_url.expose_secret()))
         || resolved
             .allowed_models
             .iter()
@@ -116,6 +122,7 @@ pub(crate) fn print_dry_run(
     eprintln!("Would set variable names:");
     let mut names = BTreeSet::new();
     names.extend(resolved.env.vars.iter().map(|(name, _)| name.as_str()));
+    names.extend(resolved.env.auth_vars.iter().map(|(name, _)| name.as_str()));
     names.extend(resolved.env.display_only_vars.iter().map(String::as_str));
     names.insert("AIX_RUN_ID");
     if resolved.policy.is_some() {

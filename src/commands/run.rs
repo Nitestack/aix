@@ -77,7 +77,9 @@ pub async fn run(options: RunOptions) -> Result<()> {
         policy_name: policy.as_deref(),
         require_litellm: lease || policy.is_some(),
         dry_run,
-    })?;
+        timeout,
+    })
+    .await?;
     if let Some(run_policy) = &resolved.policy {
         metadata.tags = merge_tags(&run_policy.tags, &metadata.tags);
     }
@@ -130,6 +132,9 @@ pub async fn run(options: RunOptions) -> Result<()> {
     {
         return Err(AixError::LeaseInputContainsCredential.into());
     }
+
+    let mut child_args = resolved.prepend_args.clone();
+    child_args.extend(command_args.iter().cloned());
 
     if dry_run {
         launch::validate_executable(&resolved.program)?;
@@ -204,9 +209,13 @@ pub async fn run(options: RunOptions) -> Result<()> {
         let budget = budget.expect("validated lease budget");
         let duration = duration.as_deref().expect("validated lease duration");
         let key_alias = format!("aix-run-{run_id}");
+        let parent_gateway = resolved
+            .parent_gateway
+            .as_ref()
+            .ok_or(AixError::ChatGptRunLeaseUnsupported)?;
         let client = LiteLlmAdminClient::with_timeout(
-            resolved.base_url.expose_secret(),
-            resolved.parent_api_key.expose_secret(),
+            parent_gateway.base_url.expose_secret(),
+            parent_gateway.api_key.expose_secret(),
             timeout,
         );
         let metadata_tags = effective_tags.clone().unwrap_or_else(|| {
@@ -236,7 +245,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
             }
         };
 
-        let parent_key = resolved.parent_api_key.expose_secret();
+        let parent_key = parent_gateway.api_key.expose_secret();
         let mut lease_record = RunLeaseRecord {
             key_alias,
             budget,
@@ -269,9 +278,9 @@ pub async fn run(options: RunOptions) -> Result<()> {
         };
         launch::apply_lease_credentials(
             &mut resolved.env,
-            resolved.parent_api_key.expose_secret(),
+            parent_gateway.api_key.expose_secret(),
             active.key.expose_secret(),
-            resolved.base_url.expose_secret(),
+            parent_gateway.base_url.expose_secret(),
         );
         record.lease = Some(active.record.clone());
         if let Err(error) = store.write(&mut handle, &record) {
@@ -297,7 +306,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     let started = Instant::now();
     let child_result = launch::run_command_status_interruptible(
         &resolved.program,
-        command_args,
+        &child_args,
         &resolved.env,
         &interrupt_requested,
         &terminated,

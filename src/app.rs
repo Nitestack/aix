@@ -272,7 +272,9 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
                 config_path,
                 dry_run,
                 tool_args,
+                timeout,
             )
+            .await
         }
     }
 }

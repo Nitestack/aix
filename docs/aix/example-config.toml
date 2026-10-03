@@ -19,7 +19,9 @@ default_profile = "work"
 #   OPENAI_API_KEY,    OPENAI_BASE_URL   (base_url with "/v1" appended)
 #   LITELLM_API_KEY,   LITELLM_BASE_URL  (base_url with "/v1" appended)
 #
-# `aix env`, `aix exec`, and unconfigured `aix run` emit all seven variables.
+# For API-key profiles, `aix env`, `aix exec`, and unconfigured `aix run` emit
+# all seven variables. ChatGPT profiles use only an explicitly configured
+# [tools.<name>.chatgpt] binding; they do not receive generated API-key vars.
 # Named tools select a format via [tools.<name>].api_format; without an entry,
 # `aix claude` uses Anthropic and other tool names use OpenAI. LITELLM_* is
 # included for all profile-backed child launches.

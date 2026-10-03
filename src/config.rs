@@ -75,6 +75,18 @@ pub struct Tool {
     pub api_format: ApiFormat,
     #[serde(default)]
     pub env: HashMap<String, SecretSource>,
+    #[serde(default)]
+    pub chatgpt: Option<ChatGptTool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatGptTool {
+    pub access_token_env: String,
+    #[serde(default)]
+    pub prepend_args: Vec<String>,
+    #[serde(default)]
+    pub clear_env: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -493,6 +505,32 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
                 });
             }
         }
+        if let Some(chatgpt) = &tool.chatgpt {
+            if !is_valid_env_name(&chatgpt.access_token_env) {
+                return Err(AixError::InvalidToolEnvironmentVariableName {
+                    tool: name.clone(),
+                    name: chatgpt.access_token_env.clone(),
+                });
+            }
+            for env_name in &chatgpt.clear_env {
+                if !is_valid_env_name(env_name) {
+                    return Err(AixError::InvalidToolEnvironmentVariableName {
+                        tool: name.clone(),
+                        name: env_name.clone(),
+                    });
+                }
+            }
+            if chatgpt
+                .clear_env
+                .iter()
+                .any(|env_name| env_name == &chatgpt.access_token_env)
+            {
+                return Err(AixError::ChatGptAccessTokenEnvCleared {
+                    tool: name.clone(),
+                    name: chatgpt.access_token_env.clone(),
+                });
+            }
+        }
     }
 
     Ok(())
@@ -839,6 +877,61 @@ fast = "work-fast-model"
             validate(&cfg),
             Err(AixError::ChatGptProfileBaseUrl { ref name }) if name == "personal"
         ));
+    }
+
+    #[test]
+    fn chatgpt_tool_binding_parses_in_all_supported_formats() {
+        let configs = [
+            toml::from_str::<Config>(
+                r#"
+[profiles.personal]
+auth = { type = "chatgpt" }
+[tools.codex]
+api_format = "openai"
+[tools.codex.chatgpt]
+access_token_env = "ACCESS_TOKEN"
+prepend_args = ["app-server", "--listen", "stdio://"]
+clear_env = ["OPENAI_API_KEY", "CODEX_API_KEY"]
+"#,
+            )
+            .unwrap(),
+            serde_yaml::from_str::<Config>(
+                "profiles:\n  personal:\n    auth:\n      type: chatgpt\ntools:\n  codex:\n    api_format: openai\n    chatgpt:\n      access_token_env: ACCESS_TOKEN\n      prepend_args: [app-server, --listen, stdio://]\n      clear_env: [OPENAI_API_KEY, CODEX_API_KEY]\n",
+            )
+            .unwrap(),
+            serde_json::from_str::<Config>(
+                r#"{"profiles":{"personal":{"auth":{"type":"chatgpt"}}},"tools":{"codex":{"api_format":"openai","chatgpt":{"access_token_env":"ACCESS_TOKEN","prepend_args":["app-server","--listen","stdio://"],"clear_env":["OPENAI_API_KEY","CODEX_API_KEY"]}}}}"#,
+            )
+            .unwrap(),
+            json5::from_str::<Config>(
+                "{profiles:{personal:{auth:{type:'chatgpt'}}},tools:{codex:{api_format:'openai',chatgpt:{access_token_env:'ACCESS_TOKEN',prepend_args:['app-server','--listen','stdio://'],clear_env:['OPENAI_API_KEY','CODEX_API_KEY']}}}}",
+            )
+            .unwrap(),
+        ];
+
+        for config in configs {
+            validate(&config).unwrap();
+            let binding = config.tools["codex"].chatgpt.as_ref().unwrap();
+            assert_eq!(binding.access_token_env, "ACCESS_TOKEN");
+            assert_eq!(binding.prepend_args, ["app-server", "--listen", "stdio://"]);
+            assert_eq!(binding.clear_env, ["OPENAI_API_KEY", "CODEX_API_KEY"]);
+        }
+    }
+
+    #[test]
+    fn chatgpt_tool_binding_rejects_invalid_or_conflicting_env_names() {
+        for binding in [
+            "access_token_env = ''",
+            "access_token_env = 'NOT VALID'",
+            "access_token_env = 'ACCESS_TOKEN'\nclear_env = ['NOT VALID']",
+            "access_token_env = 'ACCESS_TOKEN'\nclear_env = ['ACCESS_TOKEN']",
+        ] {
+            let input = format!(
+                "[profiles.personal]\nauth = {{ type = 'chatgpt' }}\n[tools.codex]\napi_format = 'openai'\n[tools.codex.chatgpt]\n{binding}\n"
+            );
+            let config: Config = toml::from_str(&input).unwrap();
+            assert!(validate(&config).is_err(), "accepted binding: {binding}");
+        }
     }
 
     #[test]
