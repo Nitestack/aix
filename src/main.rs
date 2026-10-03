@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
 mod app;
+mod auth;
 mod cache;
 mod cli;
 mod commands;

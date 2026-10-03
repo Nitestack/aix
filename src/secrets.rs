@@ -44,6 +44,18 @@ impl fmt::Display for SecretString {
     }
 }
 
+impl serde::Serialize for SecretString {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretString {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::new)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SourceKind — private inner type shared by SecretSource and DynamicValue
 // ---------------------------------------------------------------------------

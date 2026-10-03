@@ -19,7 +19,7 @@ pub async fn run(
     json: bool,
 ) -> Result<()> {
     let GatewayRequestOptions { selection, timeout } = options;
-    let report = diagnose(selection.profile, config_path, timeout).await;
+    let report = diagnose(selection.profile, config_path, timeout).await?;
     let failed = report.failure_category.is_some();
     if json {
         let data = DoctorOutput {
@@ -51,7 +51,7 @@ async fn diagnose(
     profile_arg: Option<String>,
     config_path: Option<PathBuf>,
     timeout: Duration,
-) -> DoctorReport {
+) -> Result<DoctorReport> {
     let mut report = DoctorReport::new();
 
     let path = match config::find_config_path(config_path.as_deref()) {
@@ -160,9 +160,16 @@ async fn diagnose(
         None
     };
 
+    if selected_profile
+        .as_ref()
+        .is_some_and(|profile| profile.auth.is_chatgpt())
+    {
+        return Err(AixError::ChatGptAuthUnsupported.into());
+    }
+
     let (api_key, base_url) = match (selected_profile, config.as_ref(), env_files_loaded) {
         (Some(profile), Some(cfg), true) => {
-            let api_key = match profile.api_key.resolve() {
+            let api_key = match profile.resolve_api_key() {
                 Ok(value) if !value.expose_secret().trim().is_empty() => {
                     report.pass(
                         "api_key",
@@ -378,7 +385,7 @@ async fn diagnose(
         );
     }
 
-    report
+    Ok(report)
 }
 
 fn resolve_profile_without_picker(profile: Option<String>, config: &Config) -> Option<String> {

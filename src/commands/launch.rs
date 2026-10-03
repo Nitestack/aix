@@ -223,7 +223,7 @@ fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResoluti
         &cfg,
         profile_entry,
     )?;
-    let api_key = profile_entry.api_key.resolve()?;
+    let api_key = profile_entry.resolve_api_key()?;
     let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
     let configured_tool = configured_tool_name.and_then(|name| cfg.tools.get(name));
     let api_format = configured_tool

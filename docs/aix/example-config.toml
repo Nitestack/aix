@@ -54,6 +54,11 @@ api_key = "sk-no-key"     # literal — fine for a local dev gateway
 # label   = "Personal"
 # api_key = { file = "/run/secrets/aix/personal" }
 
+# ChatGPT OAuth profile (does not inherit endpoint.base_url and has no api_key):
+# [profiles.chatgpt]
+# label = "Personal ChatGPT"
+# auth = { type = "chatgpt" }
+
 # Optional shared model default and local aliases for `aix ask`.
 [models]
 default = "gateway/model-default"

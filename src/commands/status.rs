@@ -39,7 +39,7 @@ pub async fn run(
         .transpose()?
         .unwrap_or_else(|| profile_name.clone());
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
-    let api_key = profile.api_key.resolve()?;
+    let api_key = profile.resolve_api_key()?;
     let base_url = base_url.expose_secret();
     let api_key = api_key.expose_secret();
 

@@ -45,7 +45,7 @@ pub async fn run(
             available_hint: config::format_available_profiles(&cfg),
         })?;
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
-    let api_key = profile.api_key.resolve()?;
+    let api_key = profile.resolve_api_key()?;
     let client = LiteLlmAdminClient::with_timeout(
         base_url.expose_secret(),
         api_key.expose_secret(),

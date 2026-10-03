@@ -26,7 +26,7 @@ pub fn run(
             available_hint: config::format_available_profiles(&cfg),
         })?;
 
-    let api_key = profile.api_key.resolve()?;
+    let api_key = profile.resolve_api_key()?;
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
 
     let vars = collect_profile_vars(

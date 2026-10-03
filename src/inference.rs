@@ -75,7 +75,7 @@ pub(crate) async fn execute(
         })?;
     let resolved_model = config::resolve_model(requested_model, cfg, profile)?;
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
-    let api_key = profile.api_key.resolve()?;
+    let api_key = profile.resolve_api_key()?;
 
     let request = json!({ "model": resolved_model.clone(), "messages": messages });
     let client =

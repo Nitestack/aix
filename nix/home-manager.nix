@@ -234,7 +234,12 @@ let
 
   mkProfile =
     _name: profile:
-    {
+    lib.optionalAttrs (profile.auth == "chatgpt") {
+      auth = {
+        type = "chatgpt";
+      };
+    }
+    // lib.optionalAttrs (profile.apiKey != null) {
       api_key = encodeSecretSource profile.apiKey;
     }
     // lib.optionalAttrs (profile.label != null) {
@@ -252,7 +257,7 @@ let
 
   mkEndpoint =
     ep:
-    {
+    lib.optionalAttrs (ep.baseUrl != null) {
       base_url = encodeSecretSource ep.baseUrl;
     }
     // lib.optionalAttrs (ep.gateway != null) { gateway = ep.gateway; }
@@ -260,8 +265,13 @@ let
 
   configAttrs =
     lib.optionalAttrs (cfg.defaultProfile != null) { default_profile = cfg.defaultProfile; }
+    //
+      lib.optionalAttrs
+        (cfg.endpoint.baseUrl != null || cfg.endpoint.gateway != null || cfg.endpoint.provider != null)
+        {
+          endpoint = mkEndpoint cfg.endpoint;
+        }
     // {
-      endpoint = mkEndpoint cfg.endpoint;
       profiles = lib.mapAttrs mkProfile cfg.profiles;
     }
     // lib.optionalAttrs (hasModelConfig cfg.models) {
@@ -308,12 +318,14 @@ in
     };
 
     endpoint = lib.mkOption {
-      description = "Gateway endpoint shared by all profiles.";
+      default = { };
+      description = "Optional gateway endpoint shared by API-key profiles.";
       type = lib.types.submodule {
         options = {
           baseUrl = lib.mkOption {
-            type = secretSourceType;
-            apply = validateSecretSource;
+            type = lib.types.nullOr secretSourceType;
+            default = null;
+            apply = value: if value != null then validateSecretSource value else null;
             example = lib.literalExpression ''{ file = "/run/secrets/aix/base-url"; }'';
             description = "Gateway base URL. Accepts any secret source.";
           };
@@ -386,7 +398,7 @@ in
     };
 
     profiles = lib.mkOption {
-      description = "Named API profiles. At least one must be defined when enable = true.";
+      description = "Named API-key or ChatGPT-authenticated profiles. At least one must be defined when enable = true.";
       default = { };
       type = lib.types.attrsOf (
         lib.types.submodule {
@@ -403,9 +415,19 @@ in
               '';
             };
 
+            auth = lib.mkOption {
+              type = lib.types.enum [
+                "api_key"
+                "chatgpt"
+              ];
+              default = "api_key";
+              description = "Use a gateway API key or aix-owned Sign in with ChatGPT credentials.";
+            };
+
             apiKey = lib.mkOption {
-              type = secretSourceType;
-              apply = validateSecretSource;
+              type = lib.types.nullOr secretSourceType;
+              default = null;
+              apply = value: if value != null then validateSecretSource value else null;
               example = lib.literalExpression ''{ file = "/run/secrets/aix/work-key"; }'';
               description = ''
                 API key for this profile. Accepts any secret source.
@@ -454,7 +476,15 @@ in
         assertion = cfg.profiles != { };
         message = "programs.aix.profiles must define at least one profile when programs.aix.enable = true.";
       }
-    ];
+    ]
+    ++ lib.mapAttrsToList (name: profile: {
+      assertion =
+        if profile.auth == "chatgpt" then
+          profile.apiKey == null && profile.baseUrl == null
+        else
+          profile.apiKey != null && (profile.baseUrl != null || cfg.endpoint.baseUrl != null);
+      message = "programs.aix.profiles.${name}: API-key profiles require apiKey and an effective base URL; ChatGPT profiles must omit apiKey and baseUrl.";
+    }) cfg.profiles;
 
     home.packages = [ cfg.package ];
 

@@ -41,7 +41,7 @@ pub async fn run(
         })?;
 
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
-    let api_key = profile.api_key.resolve()?;
+    let api_key = profile.resolve_api_key()?;
     let cache = Cache::from_config(&cfg.cache);
 
     let hit = if !no_cache {

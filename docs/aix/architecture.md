@@ -4,9 +4,10 @@
 
 `aix` is a standalone Rust CLI that resolves named profiles and secret sources
 from configuration. It launches downstream tools, offers OpenAI-compatible and
-LiteLLM gateway capabilities, provides one-shot inference, and can record
-metadata-only provenance around arbitrary child processes. Nix is a deployment
-mechanism and config generator, not a runtime dependency.
+LiteLLM gateway capabilities, provides one-shot inference, manages ChatGPT OAuth
+sign-in state, and can record metadata-only provenance around arbitrary child
+processes. Nix is a deployment mechanism and config generator, not a runtime
+dependency.
 
 ---
 
@@ -18,7 +19,7 @@ Owns the CLI surface: flags, subcommands, value types.
 **Rule:** contains no business logic. Parsing only.
 
 - Global flags: `--profile`, `--config`, `--json`
-- Subcommands: `init`, `use`, `current`, `profiles`, `env`, `shell`, `exec`, `config`, `spend`, `status`, `models`, `usage`, `ask`, `prompt`, `run`, `runs`, `cache`, `<tool>` (external catch-all)
+- Subcommands: `init`, `use`, `current`, `profiles`, `env`, `shell`, `exec`, `config`, `auth`, `spend`, `status`, `models`, `usage`, `ask`, `prompt`, `run`, `runs`, `cache`, `<tool>` (external catch-all)
 - Format enum (`EnvFormat`): sh / json / nu / fish / powershell / cmd
 
 ### `src/config.rs` — Config loading and validation
@@ -34,7 +35,7 @@ Owns the config file data model and all file I/O related to config.
 | `load_env_files()` | Load `.env` files listed under `env_files`; real env wins |
 | `sorted_profiles()` | Return `(name, label)` pairs sorted by name |
 
-Config types: `Config`, `Endpoint`, `Profile`, `Provider`, `Gateway`, `CacheConfig`, `ModelConfig`, `PromptPreset`, and `Tool`.
+Config types: `Config`, `Endpoint`, `Profile`, `ProfileAuth`, `Provider`, `Gateway`, `CacheConfig`, `ModelConfig`, `PromptPreset`, and `Tool`. A profile has exactly one auth source: a legacy `api_key` or `auth = { type = "chatgpt" }`. ChatGPT profiles may omit the shared endpoint and cannot set a profile `base_url`.
 A profile can override `endpoint.base_url` with `base_url` and append custom, secret-backed variables with `env`; those custom values can override generated variables.
 `gateway` and `provider` are optional metadata for most commands, but `aix spend` and `aix usage` accept only an unset gateway or `litellm`.
 `models` contains defaults and aliases. `tools.<name>` contains optional `command`, required `api_format`, and optional secret-backed `env` launch settings. `ApiFormat` is serialized as `anthropic`, `openai`, or `both` for tool entries.
@@ -53,6 +54,22 @@ Owns the `SecretSource` enum and `SecretString` wrapper.
 
 `SecretString` zeroes its memory on drop. Its `Debug` and `Display` impls
 emit `[secret]` — never the actual value.
+
+### `src/auth/` and `src/commands/auth.rs` — ChatGPT auth lifecycle
+
+`AuthService` owns sign-in, offline status, logout, and the internal access-token
+refresh path. `protocol.rs` builds the PKCE authorization request, validates the
+loopback callback, exchanges authorization codes, verifies ID-token signatures
+and claims from OpenID metadata/JWKS, discovers revocation, and refreshes tokens.
+`store.rs` writes versioned, profile-scoped records atomically and uses file
+locks to serialize login/logout/refresh across processes.
+
+The store lives under the platform local application-data directory (or
+`AIX_AUTH_DIR`). On Unix, the directory and files are restricted to the owner
+(0700/0600). OAuth tokens are persisted as local JSON and are not encrypted at
+rest. The status command reads only local state and never returns token values.
+OAuth tokens are not wired into inference, gateway, or downstream-tool launch;
+those commands reject ChatGPT profiles with an explicit capability error.
 
 ### `src/gateway/` — Gateway capability clients
 
@@ -167,7 +184,8 @@ These invariants must hold across all future changes.
    `SecretString::Debug` and `SecretString::Display` emit `[secret]`.  
    `SecretSource::Direct::Debug` emits `[redacted]`.  
    Error messages include the source identifier (env var name, file path, command string)
-   but not the resolved value.
+    but not the resolved value. ChatGPT OAuth tokens are intentionally persisted
+    in the owner-only auth store, but never printed or exported.
 
 4. **Output formats must be tested.**  
     Every format function (sh, json, nu, fish, powershell, cmd) has unit tests for:

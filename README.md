@@ -3,9 +3,9 @@
 > [!NOTE]
 > **Not IBM AIX.** This project has no relation to IBM's AIX operating system.
 
-Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway, and `aix ask` plus configured `aix prompt` presets provide domain-agnostic one-shot inference.
+Profile-aware CLI for AI tools and AI gateway utilities. Profiles can use gateway API keys or aix-managed Sign in with ChatGPT credentials. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway, and `aix ask` plus configured `aix prompt` presets provide domain-agnostic one-shot inference for API-key profiles.
 
-`aix` reads a config file, resolves API keys and gateway URLs from various secret sources, and either exports them as shell variables, runs a command with those variables pre-set, or sends a one-shot text request to the gateway. No credentials are stored in shell history or process lists.
+`aix` reads a config file, resolves API keys and gateway URLs from various secret sources, and either exports them as shell variables, runs a command with those variables pre-set, or sends a one-shot text request to the gateway. ChatGPT sign-in credentials are stored separately with owner-only filesystem permissions; they are not exported to subprocesses.
 
 ---
 
@@ -15,6 +15,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses Li
 - [Installation](#installation)
 - [Config path resolution](#config-path-resolution)
 - [Config format](#config-format)
+- [ChatGPT authentication](#chatgpt-authentication)
 - [Secret sources](#secret-sources)
 - [Environment variables emitted](#environment-variables-emitted)
 - [Shell integration](#shell-integration)
@@ -42,7 +43,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Spend reporting uses Li
 config file → profile selection → secret resolution → env vars → your tool
 ```
 
-The tool never logs, prints, or stores resolved secrets outside the subprocess environment.
+API-key values are not logged or written to disk by aix. OAuth credentials are the exception: they are retained in aix's local auth store so `aix auth status` and `aix auth logout` work across invocations.
 
 ---
 
@@ -274,6 +275,36 @@ label   = "Staging"
 # Never commit real keys.
 api_key = "sk-fake-staging-0000000000000000000000"
 ```
+
+### ChatGPT-authenticated profile
+
+ChatGPT authentication does not use `[endpoint]` or an API key. Add a profile
+with the explicit `auth` object:
+
+```toml
+default_profile = "personal"
+
+[profiles.personal]
+label = "Personal ChatGPT"
+auth = { type = "chatgpt" }
+```
+
+Then manage the local sign-in:
+
+```sh
+aix auth login personal   # opens the system browser; requires an interactive session
+aix auth status personal  # reads local state only; makes no network requests
+aix auth logout personal  # revokes remotely when possible and always clears local tokens
+```
+
+The profile can also be declared in Home Manager as
+`programs.aix.profiles.personal.auth = "chatgpt";`. Existing profiles with
+`api_key` remain API-key profiles and need no migration.
+
+This release provides auth lifecycle management only. It does not use ChatGPT
+OAuth tokens for inference or tool launches, and never prints or exports the ID,
+access, or refresh token. Commands that need gateway API-key credentials fail
+with an explicit unsupported-authentication error for ChatGPT profiles.
 
 ### Model defaults and aliases
 
@@ -1001,6 +1032,22 @@ Deletes all cached response files and prints a count of removed files.
 
 ## Security notes
 
+### ChatGPT OAuth credentials
+
+The auth store defaults to the platform's local application-data directory under
+`aix/auth`; set `AIX_AUTH_DIR` to use another location. On Unix, the auth
+directory is mode `0700` and credential files are mode `0600`. The store keeps
+the issued client ID, verified account identity, scopes, and OAuth tokens as
+local JSON. They are protected by filesystem permissions, **not encrypted at
+rest**. Protect the account and storage device accordingly.
+
+Login uses a loopback callback with OAuth state and PKCE verification. The ID
+token signature, issuer, audience, expiry, and nonce are checked before the
+identity is saved. Refreshes serialize per profile and persist rotated tokens
+atomically. Status is offline and omits token values. Logout clears local token
+values even if remote revocation cannot be confirmed; in that case aix prints a
+warning to disconnect aix from ChatGPT settings if needed.
+
 ### Prefer indirect secret sources
 
 Avoid `direct` keys in config files that live on disk. Prefer, in order:
@@ -1025,6 +1072,6 @@ If you use the Nix deployment, the generated config uses `file` sources pointing
 
 `aix` does **not** automatically load `.env` files from the working directory. Loading happens only when you explicitly list files under `env_files` in your config. Environment variables set before `aix` runs always win over `.env` values.
 
-### Secrets are zeroized after use
+### In-memory secrets are zeroized on drop
 
-Resolved secret values are held in memory types that zero their contents when dropped. They are never written to disk, printed in logs, or exposed via `--dry-run` output. Dry-run shows variable *names* only.
+Resolved secret values use memory types that zero their contents when dropped. API keys are not written to disk by aix, printed in logs, or exposed via `--dry-run` output. ChatGPT tokens are intentionally persisted in the owner-only auth store described above. Dry-run shows variable *names* only.

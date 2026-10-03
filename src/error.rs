@@ -17,6 +17,67 @@ pub enum AixError {
     #[error("default_profile \"{0}\" is not defined in profiles")]
     UnknownDefaultProfile(String),
 
+    #[error("API-key profiles require endpoint.base_url or a profile base_url")]
+    MissingEndpointUrl,
+
+    #[error("ChatGPT profile {name:?} must not configure base_url because its authorization is restricted to OpenAI's public API")]
+    ChatGptProfileBaseUrl { name: String },
+
+    #[error("this command requires an API-key profile; ChatGPT authentication is not supported by this command")]
+    ChatGptAuthUnsupported,
+
+    #[error(
+        "`aix auth login` requires interactive browser authorization; remove --non-interactive"
+    )]
+    AuthLoginRequiresInteractive,
+
+    #[error("aix auth login/logout only apply to profiles configured with auth.type = chatgpt")]
+    AuthProfileNotChatGpt,
+
+    #[error("local auth storage failed: {0}")]
+    AuthStoreIo(#[source] std::io::Error),
+
+    #[error("local auth storage contains an invalid or unsupported record")]
+    AuthStoreMalformed,
+
+    #[error(
+        "ChatGPT authorization could not be completed; check the browser sign-in and try again"
+    )]
+    AuthAuthorizationDenied,
+
+    #[error("ChatGPT authorization callback could not be verified")]
+    AuthCallbackInvalid,
+
+    #[error("timed out waiting for the ChatGPT browser callback")]
+    AuthCallbackTimeout,
+
+    #[error("could not open the system browser for ChatGPT sign-in")]
+    AuthBrowserOpen,
+
+    #[error("ChatGPT rejected the OAuth request (HTTP {status})")]
+    AuthOAuthRejected { status: u16, terminal: bool },
+
+    #[error("ChatGPT authentication failed; sign in again")]
+    AuthIdentityInvalid,
+
+    #[error("ChatGPT authorization completed for a different account; saved credentials were not changed")]
+    AuthIdentityMismatch,
+
+    #[error("ChatGPT plan usage is not enabled for this profile")]
+    AuthPlanUsageDisabled,
+
+    #[error("this ChatGPT profile has no usable refresh token; run `aix auth login` again")]
+    AuthRefreshTokenUnavailable,
+
+    #[error("ChatGPT token refresh is not yet allowed; retry after the saved refresh time")]
+    AuthRefreshNotYetAllowed,
+
+    #[error("ChatGPT {operation} request failed or timed out")]
+    AuthNetwork { operation: &'static str },
+
+    #[error("ChatGPT returned an incomplete or invalid OAuth response")]
+    AuthProtocol,
+
     #[error("no model specified and no default model is configured; pass --model <MODEL> or configure [models].default or [profiles.<PROFILE>.models].default")]
     NoModelConfigured,
 
@@ -289,7 +350,7 @@ pub enum AixError {
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix current`, `aix profiles`, `aix policies`, `aix policy show`, `aix spend`, `aix models`, `aix status`, `aix doctor`, `aix usage`, `aix ask`, `aix prompt`, `aix runs`, `aix leases`, and `aix lease show`"
+        "JSON output is only supported by `aix current`, `aix profiles`, `aix policies`, `aix policy show`, `aix spend`, `aix models`, `aix status`, `aix doctor`, `aix usage`, `aix ask`, `aix prompt`, `aix auth status`, `aix runs`, `aix leases`, and `aix lease show`"
     )]
     JsonUnsupportedCommand,
 
@@ -394,6 +455,11 @@ impl AixError {
             Self::UnknownFormat { .. }
             | Self::ParseError { .. }
             | Self::UnknownDefaultProfile(_)
+            | Self::MissingEndpointUrl
+            | Self::ChatGptProfileBaseUrl { .. }
+            | Self::ChatGptAuthUnsupported
+            | Self::AuthLoginRequiresInteractive
+            | Self::AuthProfileNotChatGpt
             | Self::NoModelConfigured
             | Self::AskInstructionRequired
             | Self::AskInputRequired
@@ -455,12 +521,22 @@ impl AixError {
             | Self::SecretCommandFailed { .. }
             | Self::SecretCommandSpawn { .. }
             | Self::SecretCommandEncoding { .. }
-            | Self::EnvFileLoad { .. } => 3,
+            | Self::EnvFileLoad { .. }
+            | Self::AuthStoreIo(_)
+            | Self::AuthStoreMalformed => 3,
             Self::GatewayError {
                 status: 401 | 403, ..
             }
             | Self::LeaseGenerationDenied { .. }
-            | Self::GatewayRequestFailed { status: 401 | 403 } => 4,
+            | Self::GatewayRequestFailed { status: 401 | 403 }
+            | Self::AuthAuthorizationDenied
+            | Self::AuthCallbackInvalid
+            | Self::AuthOAuthRejected { .. }
+            | Self::AuthIdentityInvalid
+            | Self::AuthIdentityMismatch
+            | Self::AuthPlanUsageDisabled
+            | Self::AuthRefreshTokenUnavailable
+            | Self::AuthRefreshNotYetAllowed => 4,
             Self::GatewayError { .. }
             | Self::LeaseGenerationFailed { .. }
             | Self::LeaseGenerationUnavailable
@@ -468,7 +544,11 @@ impl AixError {
             | Self::GatewayRequestFailed { .. }
             | Self::GatewayProtocolError(_)
             | Self::HttpError(_)
-            | Self::UsageUnavailable => 5,
+            | Self::UsageUnavailable
+            | Self::AuthCallbackTimeout
+            | Self::AuthBrowserOpen
+            | Self::AuthNetwork { .. }
+            | Self::AuthProtocol => 5,
             Self::BudgetExceeded { .. } => 6,
             Self::DoctorChecksFailed { category } => category.exit_code(),
             Self::GateChecksFailed { category } => category.exit_code(),

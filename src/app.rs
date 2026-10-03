@@ -104,6 +104,16 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             args,
         ),
         Command::Config { action } => crate::commands::config::run(action, config_path),
+        Command::Auth { action } => {
+            crate::commands::auth::run(
+                action,
+                selection_for(None, non_interactive),
+                config_path,
+                json,
+                timeout,
+            )
+            .await
+        }
         Command::Spend { profile, no_cache } => {
             crate::commands::spend::run(request_options_for(profile), config_path, json, no_cache)
                 .await

@@ -133,6 +133,11 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Manage ChatGPT authentication for a profile
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
     /// Show spend and budget info for the selected profile (LiteLLM only)
     Spend {
         /// Profile name (positional; overrides the global --profile flag)
@@ -310,8 +315,30 @@ impl Command {
                     action: LeaseAction::Show { .. }
                 }
                 | Self::Runs { .. }
+                | Self::Auth {
+                    action: AuthAction::Status { .. }
+                }
         )
     }
+}
+
+#[derive(Subcommand)]
+pub enum AuthAction {
+    /// Sign a ChatGPT account into a profile using the system browser
+    Login {
+        /// Profile name (positional; overrides global --profile and AIX_PROFILE)
+        profile: Option<String>,
+    },
+    /// Show local authentication state without making network requests
+    Status {
+        /// Profile name (positional; overrides global --profile and AIX_PROFILE)
+        profile: Option<String>,
+    },
+    /// Revoke and clear ChatGPT credentials for a profile
+    Logout {
+        /// Profile name (positional; overrides global --profile and AIX_PROFILE)
+        profile: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

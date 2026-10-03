@@ -120,6 +120,12 @@
             grep -Fxq 'api_format = "anthropic"' ${homeManagerConfigs.configured}
             ! grep -q 'models' ${homeManagerConfigs.legacy}
             ! grep -q 'tools' ${homeManagerConfigs.legacy}
+            grep -Fxq '[profiles.personal.auth]' ${homeManagerConfigs.chatgpt}
+            grep -Fxq 'type = "chatgpt"' ${homeManagerConfigs.chatgpt}
+            grep -Fxq 'label = "Personal ChatGPT"' ${homeManagerConfigs.chatgpt}
+            ! grep -q '^\[endpoint\]' ${homeManagerConfigs.chatgpt}
+            ! grep -q 'api_key' ${homeManagerConfigs.chatgpt}
+            ! grep -Eq 'access_token|refresh_token|id_token' ${homeManagerConfigs.chatgpt}
             touch $out
           '';
           aix-home-manager-prompts = pkgs.runCommand "aix-home-manager-prompts-check" { } ''

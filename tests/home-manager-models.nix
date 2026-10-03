@@ -10,6 +10,7 @@ let
       models ? { },
       workModels ? { },
       tools ? { },
+      chatgpt ? false,
     }:
     let
       evaluated = lib.evalModules {
@@ -41,23 +42,38 @@ let
               programs.aix = {
                 enable = true;
                 package = pkgs.hello;
-                endpoint.baseUrl = {
-                  env = "AIX_GATEWAY_URL";
+                endpoint = lib.optionalAttrs (!chatgpt) {
+                  baseUrl = {
+                    env = "AIX_GATEWAY_URL";
+                  };
                 };
                 inherit models;
                 inherit tools;
-                profiles.work = {
-                  apiKey = {
-                    env = "AIX_TEST_API_KEY";
-                  };
-                  models = workModels;
-                };
+                profiles =
+                  if chatgpt then
+                    {
+                      personal = {
+                        auth = "chatgpt";
+                        label = "Personal ChatGPT";
+                        models = workModels;
+                      };
+                    }
+                  else
+                    {
+                      work = {
+                        apiKey = {
+                          env = "AIX_TEST_API_KEY";
+                        };
+                        models = workModels;
+                      };
+                    };
               };
             }
           )
         ];
       };
     in
+    assert builtins.all (assertion: assertion.assertion) evaluated.config.assertions;
     evaluated.config.xdg.configFile."aix/aix.toml".source;
 in
 {
@@ -88,4 +104,12 @@ in
   };
 
   legacy = render { };
+
+  chatgpt = render {
+    chatgpt = true;
+    workModels = {
+      default = "openai/gpt-codex";
+      aliases.fast = "openai/gpt-codex-mini";
+    };
+  };
 }

@@ -23,6 +23,9 @@ pub(crate) struct GateOptions {
 
 pub(crate) async fn run(options: GateOptions) -> Result<()> {
     let preflight = preflight(options).await;
+    if preflight.unsupported_auth {
+        return Err(AixError::ChatGptAuthUnsupported.into());
+    }
     let failure_category = preflight.report.failure_category;
     report::print_report(&preflight.report, preflight.json)?;
 
@@ -35,6 +38,7 @@ pub(crate) async fn run(options: GateOptions) -> Result<()> {
 struct PreflightReport {
     report: GateReport,
     json: bool,
+    unsupported_auth: bool,
 }
 
 enum ModelDiscovery {
@@ -74,6 +78,7 @@ async fn preflight(options: GateOptions) -> PreflightReport {
             return PreflightReport {
                 report,
                 json: json_output,
+                unsupported_auth: false,
             };
         }
         Err(_) => {
@@ -87,6 +92,7 @@ async fn preflight(options: GateOptions) -> PreflightReport {
             return PreflightReport {
                 report,
                 json: json_output,
+                unsupported_auth: false,
             };
         }
     };
@@ -104,6 +110,7 @@ async fn preflight(options: GateOptions) -> PreflightReport {
             return PreflightReport {
                 report,
                 json: json_output,
+                unsupported_auth: false,
             };
         }
     };
@@ -118,6 +125,7 @@ async fn preflight(options: GateOptions) -> PreflightReport {
         return PreflightReport {
             report,
             json: json_output,
+            unsupported_auth: false,
         };
     }
     if config::load_env_files(&cfg).is_err() {
@@ -131,6 +139,7 @@ async fn preflight(options: GateOptions) -> PreflightReport {
         return PreflightReport {
             report,
             json: json_output,
+            unsupported_auth: false,
         };
     }
     report.pass(
@@ -167,6 +176,17 @@ async fn preflight(options: GateOptions) -> PreflightReport {
     .ok()
     .and_then(|name| cfg.profiles.get(&name).map(|profile| (name, profile)));
 
+    if resolved_profile
+        .as_ref()
+        .is_some_and(|(_, profile)| profile.auth.is_chatgpt())
+    {
+        return PreflightReport {
+            report,
+            json: json_output,
+            unsupported_auth: true,
+        };
+    }
+
     if let Some((profile_name, _)) = &resolved_profile {
         if profile_conflict {
             report.fail(
@@ -194,8 +214,7 @@ async fn preflight(options: GateOptions) -> PreflightReport {
     let (api_key, base_url) = match &resolved_profile {
         Some((_, profile)) => {
             let api_key = profile
-                .api_key
-                .resolve()
+                .resolve_api_key()
                 .ok()
                 .filter(|value| !value.expose_secret().trim().is_empty());
             let base_url = config::resolve_base_url(profile, &cfg.endpoint)
@@ -450,6 +469,7 @@ async fn preflight(options: GateOptions) -> PreflightReport {
     PreflightReport {
         report,
         json: json_output,
+        unsupported_auth: false,
     }
 }
 

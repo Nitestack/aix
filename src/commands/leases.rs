@@ -242,7 +242,7 @@ fn resolve_parent(
 
     Ok(ResolvedLeaseParent {
         profile_name,
-        api_key: profile.api_key.resolve()?,
+        api_key: profile.resolve_api_key()?,
         base_url: config::resolve_base_url(profile, &cfg.endpoint)?,
         allowed_models,
     })
@@ -264,7 +264,7 @@ fn admin_client_for_profile(
         .profiles
         .get(profile_name)
         .ok_or(AixError::LeaseParentProfileNotFound)?;
-    let api_key = profile.api_key.resolve()?;
+    let api_key = profile.resolve_api_key()?;
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
     Ok(LiteLlmAdminClient::with_timeout(
         base_url.expose_secret(),

@@ -16,6 +16,7 @@ pub struct Config {
     /// when the variable is not already set.
     #[serde(default)]
     pub env_files: Vec<PathBuf>,
+    #[serde(default)]
     pub endpoint: Endpoint,
     #[serde(default)]
     pub cache: CacheConfig,
@@ -76,26 +77,108 @@ pub struct Tool {
     pub env: HashMap<String, SecretSource>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
-    pub base_url: SecretSource,
+    pub base_url: Option<SecretSource>,
     pub provider: Option<Provider>,
     pub gateway: Option<Gateway>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct Profile {
     pub label: Option<DynamicValue>,
-    pub api_key: SecretSource,
+    pub auth: ProfileAuth,
     /// Overrides the shared endpoint URL for this profile when configured.
     pub base_url: Option<SecretSource>,
     /// Additional environment variables injected when this profile is used.
-    #[serde(default)]
     pub env: HashMap<String, SecretSource>,
-    #[serde(default)]
     pub models: ModelConfig,
+}
+
+#[derive(Debug)]
+pub enum ProfileAuth {
+    ApiKey { api_key: SecretSource },
+    ChatGpt,
+}
+
+impl ProfileAuth {
+    pub fn is_chatgpt(&self) -> bool {
+        matches!(self, Self::ChatGpt)
+    }
+
+    pub fn auth_type(&self) -> &'static str {
+        match self {
+            Self::ApiKey { .. } => "api_key",
+            Self::ChatGpt => "chatgpt",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileConfig {
+    #[serde(default)]
+    label: Option<DynamicValue>,
+    #[serde(default)]
+    api_key: Option<SecretSource>,
+    #[serde(default)]
+    auth: Option<ProfileAuthConfig>,
+    #[serde(default)]
+    base_url: Option<SecretSource>,
+    #[serde(default)]
+    env: HashMap<String, SecretSource>,
+    #[serde(default)]
+    models: ModelConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileAuthConfig {
+    #[serde(rename = "type")]
+    kind: ProfileAuthKind,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProfileAuthKind {
+    Chatgpt,
+}
+
+impl<'de> Deserialize<'de> for Profile {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let config = ProfileConfig::deserialize(deserializer)?;
+        let auth = match (config.api_key, config.auth) {
+            (Some(api_key), None) => ProfileAuth::ApiKey { api_key },
+            (
+                None,
+                Some(ProfileAuthConfig {
+                    kind: ProfileAuthKind::Chatgpt,
+                }),
+            ) => ProfileAuth::ChatGpt,
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "profile must configure exactly one of api_key or ChatGPT auth",
+                ))
+            }
+        };
+        Ok(Self {
+            label: config.label,
+            auth,
+            base_url: config.base_url,
+            env: config.env,
+            models: config.models,
+        })
+    }
+}
+
+impl Profile {
+    pub fn resolve_api_key(&self) -> Result<crate::secrets::SecretString, AixError> {
+        match &self.auth {
+            ProfileAuth::ApiKey { api_key } => api_key.resolve(),
+            ProfileAuth::ChatGpt => Err(AixError::ChatGptAuthUnsupported),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
@@ -226,9 +309,16 @@ pub fn resolve_base_url(
     profile: &Profile,
     endpoint: &Endpoint,
 ) -> Result<crate::secrets::SecretString, AixError> {
+    if profile.auth.is_chatgpt() {
+        return Err(AixError::ChatGptAuthUnsupported);
+    }
     match &profile.base_url {
         Some(base_url) => base_url.resolve(),
-        None => endpoint.base_url.resolve(),
+        None => endpoint
+            .base_url
+            .as_ref()
+            .ok_or(AixError::MissingEndpointUrl)?
+            .resolve(),
     }
 }
 
@@ -345,6 +435,19 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
     for name in sorted_names {
         let profile = &config.profiles[name];
         validate_models(&profile.models, &format!("profiles.{name}.models"))?;
+        match &profile.auth {
+            ProfileAuth::ApiKey { .. }
+                if profile.base_url.is_none() && config.endpoint.base_url.is_none() =>
+            {
+                return Err(AixError::MissingEndpointUrl);
+            }
+            ProfileAuth::ChatGpt if profile.base_url.is_some() => {
+                return Err(AixError::ChatGptProfileBaseUrl {
+                    name: name.to_string(),
+                });
+            }
+            _ => {}
+        }
         for env_name in profile.env.keys() {
             if !is_valid_env_name(env_name) {
                 return Err(AixError::InvalidEnvironmentVariableName {
@@ -620,7 +723,10 @@ fast = "work-fast-model"
             cfg.endpoint.provider,
             Some(Provider::Known(KnownProvider::LiteLlm))
         );
-        assert!(matches!(cfg.endpoint.base_url.0, SourceKind::Env(_)));
+        assert!(matches!(
+            cfg.endpoint.base_url.as_ref().unwrap().0,
+            SourceKind::Env(_)
+        ));
         assert!(cfg.profiles.contains_key("work"));
         assert!(cfg.profiles.contains_key("local"));
         assert_eq!(cfg.models.default.as_deref(), Some("global-model"));
@@ -640,10 +746,13 @@ fast = "work-fast-model"
                 .map(String::as_str),
             Some("work-fast-model")
         );
-        assert!(matches!(cfg.profiles["work"].api_key.0, SourceKind::Env(_)));
         assert!(matches!(
-            cfg.profiles["local"].api_key.0,
-            SourceKind::Direct(_)
+            &cfg.profiles["work"].auth,
+            ProfileAuth::ApiKey { api_key } if matches!(api_key.0, SourceKind::Env(_))
+        ));
+        assert!(matches!(
+            &cfg.profiles["local"].auth,
+            ProfileAuth::ApiKey { api_key } if matches!(api_key.0, SourceKind::Direct(_))
         ));
         assert!(matches!(
             cfg.profiles["local"].base_url.as_ref().unwrap().0,
@@ -673,6 +782,63 @@ fast = "work-fast-model"
     fn parse_json5() {
         let cfg: Config = json5::from_str(JSON5).unwrap();
         assert_standard(&cfg);
+    }
+
+    #[test]
+    fn chatgpt_profile_parses_in_all_supported_formats_without_an_endpoint() {
+        let configs = [
+            toml::from_str::<Config>(
+                "[profiles.personal]\nlabel = 'Personal'\nauth = { type = 'chatgpt' }\n",
+            )
+            .unwrap(),
+            serde_yaml::from_str::<Config>(
+                "profiles:\n  personal:\n    label: Personal\n    auth:\n      type: chatgpt\n",
+            )
+            .unwrap(),
+            serde_json::from_str::<Config>(
+                r#"{"profiles":{"personal":{"label":"Personal","auth":{"type":"chatgpt"}}}}"#,
+            )
+            .unwrap(),
+            json5::from_str::<Config>(
+                "{profiles:{personal:{label:'Personal',auth:{type:'chatgpt'}}}}",
+            )
+            .unwrap(),
+        ];
+
+        for config in configs {
+            validate(&config).unwrap();
+            assert!(matches!(
+                config.profiles["personal"].auth,
+                ProfileAuth::ChatGpt
+            ));
+            assert!(config.endpoint.base_url.is_none());
+        }
+    }
+
+    #[test]
+    fn profile_requires_exactly_one_supported_auth_source() {
+        for invalid in [
+            "[profiles.work]",
+            "[profiles.work]\napi_key = 'key'\nauth = { type = 'chatgpt' }",
+            "[profiles.work]\nauth = { type = 'oauth' }",
+        ] {
+            assert!(
+                toml::from_str::<Config>(invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn chatgpt_profile_rejects_profile_gateway_override() {
+        let cfg: Config = toml::from_str(
+            "[profiles.personal]\nauth = { type = 'chatgpt' }\nbase_url = 'https://example.invalid'\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            validate(&cfg),
+            Err(AixError::ChatGptProfileBaseUrl { ref name }) if name == "personal"
+        ));
     }
 
     #[test]

@@ -24,10 +24,17 @@ thiserror   = "2"
 color-eyre  = { version = "0.6", default-features = false }
 zeroize     = "1"
 reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio       = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio       = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "io-util"] }
 owo-colors  = { version = "4", features = ["supports-colors"] }
 chrono      = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid        = { version = "1", features = ["serde", "v4"] }
+base64      = "0.22"
+fs2         = "0.4"
+jsonwebtoken = "9"
+sha2        = "0.10"
+tempfile    = "3"
+url         = "2"
+webbrowser  = "1"
 ctrlc       = "3"
 time        = { version = "0.3", features = ["formatting"] }
 signal-hook = "0.3"

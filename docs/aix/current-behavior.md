@@ -21,6 +21,9 @@ The old Nix shell-script implementation has been superseded; see `docs/aix/migra
 | `aix <tool> [PROFILE] [--dry-run] [-- args...]` | Run a configured tool or use the legacy `claude`/OpenAI fallback |
 | `aix config path` | Print the resolved config file path |
 | `aix config validate` | Validate the config file and exit |
+| `aix auth login [PROFILE]` | Sign in to a ChatGPT-authenticated profile using the system browser |
+| `aix auth status [PROFILE] [--json]` | Show local auth state without network access or token values |
+| `aix auth logout [PROFILE]` | Revoke the ChatGPT refresh token when possible and always clear local tokens |
 | `aix spend [PROFILE] [--json] [--no-cache]` | Show LiteLLM spend and budget information |
 | `aix status [PROFILE] [--json] [--refresh]` | Probe gateway connectivity and report profile and spend status |
 | `aix models [PROFILE] [--filter TEXT] [--json]` | Discover sorted model IDs from `/v1/models` |
@@ -59,6 +62,23 @@ execution shares `aix ask`'s inference and input pipeline; it reads only stdin
 and files explicitly supplied with `--file`. Listing is sorted and does not
 expose prompt or system text. There are no built-in presets or project/Git
 discovery behaviors.
+
+### ChatGPT-authenticated profiles
+
+Profiles may use either the legacy `api_key` field or
+`auth = { type = "chatgpt" }`; exactly one is required. ChatGPT profiles do not
+need a gateway endpoint and may not set a profile-specific `base_url`. Login
+uses a loopback callback, OAuth state, PKCE, and verified ID-token claims. The
+issued client registration and OAuth tokens are stored per profile under the
+platform application-data directory (`AIX_AUTH_DIR` overrides the location).
+Unix storage uses mode `0700` for the directory and `0600` for files; tokens are
+not encrypted at rest.
+
+`aix auth status` is offline and reports only non-secret state. `aix auth
+logout` clears local tokens even if remote revocation is unavailable. OAuth
+tokens are never exported to child processes. This release does not provide
+inference or tool integration for ChatGPT profiles; gateway and launch commands
+that require API-key credentials return an explicit unsupported-auth error.
 
 ---
 
@@ -165,7 +185,7 @@ are atomic. `aix exec` remains unrecorded.
 Commands with JSON support return the versioned aix-owned envelope
 `{ "schema_version": 1, "command": "...", "data": ... }`. The global
 `--json` flag is supported by `current`, `profiles`, `spend`, `status`, `models`,
-`usage`, `ask`, `prompt`, and `runs`. Prompt listing returns sorted preset
+`usage`, `ask`, `prompt`, `runs`, and `auth status`. Prompt listing returns sorted preset
 summaries (`name`, `model`, and `has_system`); execution returns the resolved
 model, assistant content, and usage. `runs show` reports its canonical command name as
 `runs show`. Failed JSON commands leave stdout empty; diagnostics go to stderr.

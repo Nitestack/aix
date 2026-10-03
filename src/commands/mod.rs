@@ -1,4 +1,5 @@
 pub mod ask;
+pub mod auth;
 use std::time::Duration;
 
 pub mod cache;
