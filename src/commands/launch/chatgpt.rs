@@ -9,7 +9,8 @@ use std::time::Duration;
 
 pub(super) async fn resolve_tool_launch(
     request: LaunchRequest<'_>,
-    context: LaunchContext,
+    context: &LaunchContext,
+    profile: &config::Profile,
     timeout: Duration,
 ) -> Result<LaunchResolution> {
     let LaunchRequest {
@@ -37,13 +38,6 @@ pub(super) async fn resolve_tool_launch(
         .ok_or_else(|| AixError::ChatGptToolNotConfigured {
             tool: tool_name.to_string(),
         })?;
-    let profile = cfg
-        .profiles
-        .get(&profile_name)
-        .ok_or_else(|| AixError::ProfileNotFound {
-            name: profile_name.clone(),
-            available_hint: config::format_available_profiles(&cfg),
-        })?;
     let program = tool.command.as_deref().unwrap_or(tool_name).to_string();
 
     let mut auth_vars = Vec::new();
@@ -52,7 +46,7 @@ pub(super) async fn resolve_tool_launch(
         display_only_vars.push(binding.access_token_env.clone());
     } else {
         let service = crate::auth::AuthService::new(timeout)?;
-        let access_token = service.access_token(&profile_name).await?;
+        let access_token = service.access_token(profile_name).await?;
         auth_vars.push((binding.access_token_env.clone(), access_token));
         validate_executable(&program)?;
     }

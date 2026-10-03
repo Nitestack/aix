@@ -73,6 +73,18 @@ struct LaunchContext {
     profile_name: String,
 }
 
+impl LaunchContext {
+    fn profile(&self) -> Result<&config::Profile, AixError> {
+        self.cfg
+            .profiles
+            .get(&self.profile_name)
+            .ok_or_else(|| AixError::ProfileNotFound {
+                name: self.profile_name.clone(),
+                available_hint: config::format_available_profiles(&self.cfg),
+            })
+    }
+}
+
 struct LaunchRequest<'a> {
     selection: ProfileSelection,
     explicit_profile: Option<String>,
@@ -160,13 +172,12 @@ async fn resolve_tool_launch(
     timeout: Duration,
 ) -> Result<ResolvedRunLaunch> {
     let context = load_launch_context(&request)?;
-    let is_chatgpt = context.cfg.profiles[&context.profile_name]
-        .auth
-        .is_chatgpt();
+    let profile = context.profile()?;
+    let is_chatgpt = profile.auth.is_chatgpt();
     let resolution = if is_chatgpt {
-        chatgpt::resolve_tool_launch(request, context, timeout).await?
+        chatgpt::resolve_tool_launch(request, &context, profile, timeout).await?
     } else {
-        resolve_api_key_launch(request, context)?
+        resolve_api_key_launch(request, &context, profile)?
     };
     Ok(ResolvedRunLaunch {
         env: resolution.env,
@@ -181,7 +192,8 @@ async fn resolve_tool_launch(
 
 fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResolution> {
     let context = load_launch_context(&request)?;
-    resolve_api_key_launch(request, context)
+    let profile = context.profile()?;
+    resolve_api_key_launch(request, &context, profile)
 }
 
 fn load_launch_context(request: &LaunchRequest<'_>) -> Result<LaunchContext> {
@@ -219,13 +231,6 @@ fn load_launch_context(request: &LaunchRequest<'_>) -> Result<LaunchContext> {
         },
         &cfg,
     )?;
-    let _profile_entry =
-        cfg.profiles
-            .get(&profile_name)
-            .ok_or_else(|| AixError::ProfileNotFound {
-                name: profile_name.clone(),
-                available_hint: config::format_available_profiles(&cfg),
-            })?;
 
     Ok(LaunchContext { cfg, profile_name })
 }
@@ -252,7 +257,8 @@ fn resolve_run_policy<'a>(
 
 fn resolve_api_key_launch(
     request: LaunchRequest<'_>,
-    context: LaunchContext,
+    context: &LaunchContext,
+    profile_entry: &config::Profile,
 ) -> Result<LaunchResolution> {
     let LaunchRequest {
         format_override,
@@ -263,23 +269,16 @@ fn resolve_api_key_launch(
         ..
     } = request;
     let LaunchContext { cfg, profile_name } = context;
-    let policy = resolve_run_policy(&cfg, policy_name)?;
-    let profile_entry =
-        cfg.profiles
-            .get(&profile_name)
-            .ok_or_else(|| AixError::ProfileNotFound {
-                name: profile_name.clone(),
-                available_hint: config::format_available_profiles(&cfg),
-            })?;
+    let policy = resolve_run_policy(cfg, policy_name)?;
 
     let resolved_requested_models = allowed_models
         .iter()
-        .map(|model| config::resolve_model(Some(model), &cfg, profile_entry))
+        .map(|model| config::resolve_model(Some(model), cfg, profile_entry))
         .collect::<Result<Vec<_>, _>>()?;
     let resolved_allowed_models = resolve_allowed_models(
         policy.and_then(|policy| policy.allowed_models.as_ref()),
         resolved_requested_models,
-        &cfg,
+        cfg,
         profile_entry,
     )?;
     let api_key = profile_entry.resolve_api_key()?;
@@ -305,7 +304,7 @@ fn resolve_api_key_launch(
     };
 
     let mut vars = collect_profile_vars(
-        &profile_name,
+        profile_name,
         api_key.expose_secret(),
         base_url.expose_secret(),
         &api_format,
@@ -330,7 +329,7 @@ fn resolve_api_key_launch(
             display_only_vars,
             clear_vars,
             remove_vars: Vec::new(),
-            profile_name,
+            profile_name: profile_name.clone(),
         },
         program: effective_program,
         logical_tool_name,
