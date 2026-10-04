@@ -17,6 +17,7 @@ mod run_history;
 mod secrets;
 mod usage_event;
 mod usage_observer;
+mod usage_store;
 
 #[tokio::main]
 async fn main() -> ExitCode {

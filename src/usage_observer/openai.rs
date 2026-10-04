@@ -77,33 +77,22 @@ fn observe_openai_frame(
         *terminal = Some(TerminalEvent::Completed);
         return;
     }
-    let event_type = frame.event.as_deref();
-    if matches!(protocol, OpenAiProtocol::Responses) {
-        match event_type {
-            Some("response.completed") => *terminal = Some(TerminalEvent::Completed),
-            Some("response.incomplete") => *terminal = Some(TerminalEvent::Incomplete),
-            Some("response.failed" | "error") => *terminal = Some(TerminalEvent::Failed),
-            _ => {}
-        }
-    } else if event_type == Some("error") {
-        *terminal = Some(TerminalEvent::Failed);
-    }
-
-    let Ok(envelope) = serde_json::from_slice::<OpenAiResponseEnvelope>(&frame.data) else {
+    let envelope = serde_json::from_slice::<OpenAiResponseEnvelope>(&frame.data).ok();
+    let event_type = frame.event.as_deref().or_else(|| {
+        envelope
+            .as_ref()
+            .and_then(|envelope| envelope.event_type.as_deref())
+    });
+    *terminal = match (protocol, event_type) {
+        (OpenAiProtocol::Responses, Some("response.completed")) => Some(TerminalEvent::Completed),
+        (OpenAiProtocol::Responses, Some("response.incomplete")) => Some(TerminalEvent::Incomplete),
+        (OpenAiProtocol::Responses, Some("response.failed" | "error"))
+        | (OpenAiProtocol::ChatCompletions, Some("error")) => Some(TerminalEvent::Failed),
+        _ => *terminal,
+    };
+    let Some(envelope) = envelope else {
         return;
     };
-    if let Some(event_type) = envelope.event_type.as_deref() {
-        if matches!(protocol, OpenAiProtocol::Responses) {
-            match event_type {
-                "response.completed" => *terminal = Some(TerminalEvent::Completed),
-                "response.incomplete" => *terminal = Some(TerminalEvent::Incomplete),
-                "response.failed" | "error" => *terminal = Some(TerminalEvent::Failed),
-                _ => {}
-            }
-        } else if event_type == "error" {
-            *terminal = Some(TerminalEvent::Failed);
-        }
-    }
     let update = match protocol {
         OpenAiProtocol::Responses => envelope
             .response

@@ -3,8 +3,11 @@ use crate::commands::launch::LaunchEnv;
 use crate::local_gateway::{self, LaunchContext, ServerHandle};
 #[cfg(test)]
 use crate::secrets::SecretString;
-use crate::usage_event::{UsageEventRecorder, UsageOutcome, UsageStore};
+use crate::usage_event::{UsageEventRecorder, UsageOutcome};
 use crate::usage_observer::openai::OpenAiResponsesObserver;
+#[cfg(test)]
+use crate::usage_store::UsageEventFilter;
+use crate::usage_store::UsageStore;
 use axum::body::Body;
 use axum::extract::{Extension, State};
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
@@ -144,7 +147,7 @@ impl BridgeHandle {
             auth,
             upstream_base,
             client,
-            UsageStore::from_environment().ok(),
+            UsageStore::from_environment_or_warn(),
         )
         .await
     }
@@ -774,16 +777,29 @@ mod tests {
         )
     }
 
-    fn usage_event_files(state_dir: &std::path::Path) -> Vec<String> {
-        let root = state_dir.join("usage/events");
-        let Ok(days) = fs::read_dir(root) else {
-            return Vec::new();
-        };
-        days.flatten()
-            .filter_map(|day| fs::read_dir(day.path()).ok())
-            .flat_map(|files| files.flatten())
-            .filter_map(|file| fs::read_to_string(file.path()).ok())
-            .collect()
+    fn persisted_state(state_dir: &std::path::Path) -> String {
+        fn collect_files(directory: &std::path::Path, contents: &mut Vec<String>) {
+            let Ok(entries) = fs::read_dir(directory) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    collect_files(&path, contents);
+                } else if file_type.is_file() {
+                    if let Ok(content) = fs::read_to_string(path) {
+                        contents.push(content);
+                    }
+                }
+            }
+        }
+
+        let mut contents = Vec::new();
+        collect_files(state_dir, &mut contents);
+        contents.join("\n")
     }
 
     #[test]
@@ -1189,10 +1205,10 @@ mod tests {
         assert_eq!(oauth.received_requests().await.unwrap().len(), 1);
 
         let events = UsageStore::new(usage_dir.path())
-            .events(&crate::usage_event::UsageEventFilter {
+            .events(&UsageEventFilter {
                 start_unix_ms: 0,
                 end_unix_ms: u64::MAX,
-                ..crate::usage_event::UsageEventFilter::default()
+                ..UsageEventFilter::default()
             })
             .unwrap();
         assert_eq!(events.len(), 2, "model discovery must not be recorded");
@@ -1216,7 +1232,7 @@ mod tests {
             assert_eq!(event.actual_cost_usd, None);
             assert_eq!(event.cost_source, None);
         }
-        let persisted = usage_event_files(usage_dir.path()).join("\n");
+        let persisted = persisted_state(usage_dir.path());
         for marker in [
             "SYSTEM_PROMPT_MARKER_DO_NOT_PERSIST",
             "PROMPT_MARKER_DO_NOT_PERSIST",
@@ -1315,10 +1331,10 @@ mod tests {
         assert!(stream_failure.bytes().await.is_err());
 
         let events = UsageStore::new(usage_dir.path())
-            .events(&crate::usage_event::UsageEventFilter {
+            .events(&UsageEventFilter {
                 start_unix_ms: 0,
                 end_unix_ms: u64::MAX,
-                ..crate::usage_event::UsageEventFilter::default()
+                ..UsageEventFilter::default()
             })
             .unwrap();
         assert_eq!(events.len(), 4);
@@ -1349,7 +1365,7 @@ mod tests {
                 && event.outcome == UsageOutcome::Succeeded
                 && event.usage_completeness == crate::usage_event::UsageCompleteness::Unavailable
         }));
-        let persisted = usage_event_files(usage_dir.path()).join("\n");
+        let persisted = persisted_state(usage_dir.path());
         for marker in [
             "PROMPT_MARKER_DO_NOT_PERSIST",
             "ANOTHER_PROMPT_MARKER_DO_NOT_PERSIST",
@@ -1407,10 +1423,10 @@ mod tests {
         let _ = response.bytes().await.unwrap();
 
         let events = UsageStore::new(usage_dir.path())
-            .events(&crate::usage_event::UsageEventFilter {
+            .events(&UsageEventFilter {
                 start_unix_ms: 0,
                 end_unix_ms: u64::MAX,
-                ..crate::usage_event::UsageEventFilter::default()
+                ..UsageEventFilter::default()
             })
             .unwrap();
         assert_eq!(events.len(), 1);
@@ -1423,7 +1439,7 @@ mod tests {
             Some(StatusCode::BAD_GATEWAY.as_u16())
         );
         assert_eq!(events[0].error_category.as_deref(), Some("authentication"));
-        let persisted = usage_event_files(usage_dir.path()).join("\n");
+        let persisted = persisted_state(usage_dir.path());
         for marker in [
             "PROMPT_SECRET_MARKER_DO_NOT_PERSIST",
             "ACCESS_SECRET_MARKER_DO_NOT_PERSIST",
@@ -1437,5 +1453,43 @@ mod tests {
         assert_eq!(oauth.received_requests().await.unwrap().len(), 1);
 
         bridge.stop().await;
+    }
+
+    #[tokio::test]
+    async fn usage_storage_failure_does_not_break_a_successful_inference_request() {
+        let auth_directory = TempDir::new().unwrap();
+        let auth = auth_service(
+            &auth_directory,
+            Url::parse("https://auth.openai.com/api/accounts/oauth/token").unwrap(),
+            "valid-access-token",
+        );
+        let (upstream, capture, upstream_task) = fake_api_server().await;
+        let state_file = auth_directory.path().join("not-a-directory");
+        fs::write(&state_file, "block usage store directory creation").unwrap();
+        let bridge = BridgeHandle::start_for_test_with_usage_store(
+            launch_context(),
+            auth,
+            upstream,
+            "gpt-test",
+            UsageStore::new(&state_file),
+        )
+        .await
+        .unwrap();
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{}/v1/responses", bridge.address()))
+            .bearer_auth(bridge.child_token().expose_secret())
+            .json(&json!({"model":"gpt-test","input":[]}))
+            .send()
+            .await
+            .unwrap();
+        capture.release_second_chunk.notify_one();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("response.completed"));
+        assert!(!body.contains("PROMPT"));
+
+        bridge.stop().await;
+        upstream_task.abort();
     }
 }
