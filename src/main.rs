@@ -15,6 +15,8 @@ mod local_gateway;
 mod output;
 mod run_history;
 mod secrets;
+mod usage_event;
+mod usage_observer;
 
 #[tokio::main]
 async fn main() -> ExitCode {

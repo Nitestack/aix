@@ -3,6 +3,8 @@ use crate::commands::launch::LaunchEnv;
 use crate::local_gateway::{self, LaunchContext, ServerHandle};
 #[cfg(test)]
 use crate::secrets::SecretString;
+use crate::usage_event::{UsageEventRecorder, UsageOutcome, UsageStore};
+use crate::usage_observer::openai::OpenAiResponsesObserver;
 use axum::body::Body;
 use axum::extract::{Extension, State};
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
@@ -116,6 +118,7 @@ struct BridgeState {
     auth: Arc<AuthService>,
     upstream_base: Url,
     client: reqwest::Client,
+    usage_store: Option<UsageStore>,
 }
 
 pub(super) struct BridgeHandle {
@@ -135,7 +138,15 @@ impl BridgeHandle {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .build()?;
-        Self::bind(plan, context, auth, upstream_base, client).await
+        Self::bind(
+            plan,
+            context,
+            auth,
+            upstream_base,
+            client,
+            UsageStore::from_environment().ok(),
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -157,6 +168,29 @@ impl BridgeHandle {
             auth,
             upstream_base,
             client,
+            None,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    async fn start_for_test_with_usage_store(
+        context: LaunchContext,
+        auth: Arc<AuthService>,
+        upstream_base: Url,
+        model: &str,
+        usage_store: UsageStore,
+    ) -> Result<Self> {
+        let client = reqwest::Client::new();
+        Self::bind(
+            OpenCodeSiwcPlan {
+                model: model.to_string(),
+            },
+            context,
+            auth,
+            upstream_base,
+            client,
+            Some(usage_store),
         )
         .await
     }
@@ -167,11 +201,13 @@ impl BridgeHandle {
         auth: Arc<AuthService>,
         upstream_base: Url,
         client: reqwest::Client,
+        usage_store: Option<UsageStore>,
     ) -> Result<Self> {
         let state = Arc::new(BridgeState {
             auth,
             upstream_base,
             client,
+            usage_store,
         });
         let app = Router::new().fallback(handle_request).with_state(state);
         let server = ServerHandle::start(
@@ -228,7 +264,11 @@ async fn handle_request(
     request: Request<Body>,
 ) -> Response<Body> {
     let (parts, body) = request.into_parts();
+    let is_inference = parts.uri.path() == "/v1/responses";
+    let mut usage = is_inference
+        .then(|| UsageEventRecorder::new(state.usage_store.clone(), &context, "openai_responses"));
     if parts.uri.query().is_some() {
+        reject_inference_request(&mut usage, StatusCode::NOT_FOUND, "local_compatibility");
         return error_response(StatusCode::NOT_FOUND, "Route not found");
     }
 
@@ -240,38 +280,88 @@ async fn handle_request(
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.starts_with("application/json"));
             if !is_json {
+                reject_inference_request(
+                    &mut usage,
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "local_compatibility",
+                );
                 return error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Expected JSON request");
             }
             let body = match local_gateway::read_bounded_body(body).await {
                 Ok(body) => body,
                 Err(_) => {
-                    return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large")
+                    reject_inference_request(
+                        &mut usage,
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "local_compatibility",
+                    );
+                    return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
                 }
             };
             let mut request: Value = match serde_json::from_slice(&body) {
                 Ok(request) => request,
-                Err(_) => return error_response(StatusCode::BAD_REQUEST, "Invalid JSON request"),
+                Err(_) => {
+                    reject_inference_request(&mut usage, StatusCode::BAD_REQUEST, "invalid_json");
+                    return error_response(StatusCode::BAD_REQUEST, "Invalid JSON request");
+                }
             };
+            if let Some(recorder) = &mut usage {
+                recorder.set_model(request.get("model").and_then(Value::as_str));
+            }
             let normalized = match normalize_response_request(&mut request) {
                 Ok(request) => request,
                 Err(error) => {
-                    return error_response(StatusCode::BAD_REQUEST, error.to_string().as_str())
+                    reject_inference_request(
+                        &mut usage,
+                        StatusCode::BAD_REQUEST,
+                        "local_compatibility",
+                    );
+                    return error_response(StatusCode::BAD_REQUEST, error.to_string().as_str());
                 }
             };
             let body = match serde_json::to_vec(&normalized) {
                 Ok(body) => body,
-                Err(_) => return error_response(StatusCode::BAD_REQUEST, "Invalid JSON request"),
+                Err(_) => {
+                    reject_inference_request(&mut usage, StatusCode::BAD_REQUEST, "invalid_json");
+                    return error_response(StatusCode::BAD_REQUEST, "Invalid JSON request");
+                }
             };
             ("responses", Method::POST, Some(body))
         }
         (&Method::GET, "/v1/models") => ("models", Method::GET, None),
-        (_, "/v1/responses" | "/v1/models") => {
+        (_, "/v1/responses") => {
+            reject_inference_request(
+                &mut usage,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "local_compatibility",
+            );
+            return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed");
+        }
+        (_, "/v1/models") => {
             return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed")
         }
         _ => return error_response(StatusCode::NOT_FOUND, "Route not found"),
     };
 
-    proxy_upstream(state, &context.profile, endpoint, method, request_body).await
+    proxy_upstream(
+        state,
+        &context.profile,
+        endpoint,
+        method,
+        request_body,
+        usage,
+    )
+    .await
+}
+
+fn reject_inference_request(
+    recorder: &mut Option<UsageEventRecorder>,
+    status: StatusCode,
+    category: &str,
+) {
+    if let Some(mut recorder) = recorder.take() {
+        recorder.finish(UsageOutcome::Failed, Some(status.as_u16()), Some(category));
+    }
 }
 
 async fn proxy_upstream(
@@ -280,17 +370,32 @@ async fn proxy_upstream(
     endpoint: &str,
     method: Method,
     request_body: Option<Vec<u8>>,
+    mut usage: Option<UsageEventRecorder>,
 ) -> Response<Body> {
     let token = match state.auth.access_token(profile_name).await {
         Ok(token) => token,
         Err(_) => {
+            if let Some(mut recorder) = usage.take() {
+                recorder.finish(
+                    UsageOutcome::Failed,
+                    Some(StatusCode::BAD_GATEWAY.as_u16()),
+                    Some("authentication"),
+                );
+            }
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 "Could not obtain the selected ChatGPT profile's access token",
-            )
+            );
         }
     };
     let Ok(url) = state.upstream_base.join(endpoint) else {
+        if let Some(mut recorder) = usage.take() {
+            recorder.finish(
+                UsageOutcome::Failed,
+                Some(StatusCode::BAD_GATEWAY.as_u16()),
+                Some("upstream_transport"),
+            );
+        }
         return error_response(StatusCode::BAD_GATEWAY, "Upstream request failed");
     };
     let mut request = state
@@ -308,8 +413,34 @@ async fn proxy_upstream(
 
     let upstream = match request.send().await {
         Ok(response) => response,
-        Err(_) => return error_response(StatusCode::BAD_GATEWAY, "Upstream request failed"),
+        Err(_) => {
+            if let Some(mut recorder) = usage.take() {
+                recorder.finish(
+                    UsageOutcome::Failed,
+                    Some(StatusCode::BAD_GATEWAY.as_u16()),
+                    Some("upstream_transport"),
+                );
+            }
+            return error_response(StatusCode::BAD_GATEWAY, "Upstream request failed");
+        }
     };
+    if endpoint == "responses" {
+        let status = upstream.status().as_u16();
+        let observer = Box::new(OpenAiResponsesObserver::new(
+            usage
+                .take()
+                .expect("Responses request has a usage recorder"),
+            status,
+        ));
+        return match local_gateway::forward_response_observed(
+            upstream,
+            FORWARDED_RESPONSE_HEADERS,
+            observer,
+        ) {
+            Ok(response) => response,
+            Err(_) => error_response(StatusCode::BAD_GATEWAY, "Upstream response failed"),
+        };
+    }
     match local_gateway::forward_response(upstream, FORWARDED_RESPONSE_HEADERS) {
         Ok(response) => response,
         Err(_) => error_response(StatusCode::BAD_GATEWAY, "Upstream response failed"),
@@ -451,6 +582,7 @@ mod tests {
     use futures_util::stream;
     use serde_json::json;
     use std::convert::Infallible;
+    use std::fs;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
     use tokio::net::TcpListener;
@@ -471,6 +603,7 @@ mod tests {
     struct FakeApiState {
         requests: Arc<Mutex<Vec<CapturedRequest>>>,
         release_second_chunk: Arc<Notify>,
+        release_stream_failure: Arc<Notify>,
     }
 
     async fn fake_api_handler(
@@ -491,6 +624,10 @@ mod tests {
         } else {
             serde_json::from_slice(&body_bytes).unwrap()
         };
+        let model = body.get("model").and_then(Value::as_str);
+        let is_failed_model = model == Some("failed-model");
+        let is_stream_failure = model == Some("stream-failure-model");
+        let is_no_usage_model = model == Some("no-usage-model");
         let request_index = {
             let mut requests = state.requests.lock().await;
             let index = requests.len();
@@ -501,26 +638,72 @@ mod tests {
             });
             index
         };
+        if is_failed_model {
+            return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"error":"RESPONSE_MARKER_DO_NOT_PERSIST"}"#))
+                .unwrap();
+        }
+        if is_no_usage_model {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/event-stream")
+                .body(Body::from(
+                    "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+                ))
+                .unwrap();
+        }
+        if is_stream_failure {
+            let release = Arc::clone(&state.release_stream_failure);
+            let body = stream::unfold((0u8, release), |(index, release)| async move {
+                match index {
+                    0 => Some((
+                        Ok::<_, std::io::Error>(Bytes::from_static(
+                            b"event: response.created\ndata: {}\n\n",
+                        )),
+                        (1, release),
+                    )),
+                    1 => {
+                        release.notified().await;
+                        Some((
+                            Err(std::io::Error::other("mock stream failure")),
+                            (2, release),
+                        ))
+                    }
+                    _ => None,
+                }
+            });
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(body))
+                .unwrap();
+        }
         let release = Arc::clone(&state.release_second_chunk);
         let body = stream::unfold(
             (0u8, request_index, release),
             |(chunk_index, request_index, release)| async move {
                 match (chunk_index, request_index) {
                     (0, _) => Some((
-                        Ok::<_, Infallible>(Bytes::from_static(b"data: response.created\n\n")),
+                        Ok::<_, Infallible>(Bytes::from_static(
+                            b"event: response.created\ndata: {}\n\nevent: response.future_type\ndata: {\"future\":true}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"RESPONSE_MARKER_DO_NOT_PERSIST\"}\n\n",
+                        )),
                         (1, request_index, release),
                     )),
                     (1, 0) => {
                         release.notified().await;
                         Some((
                             Ok::<_, Infallible>(Bytes::from_static(
-                                b"data: response.completed\n\n",
+                                b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens\":3,\"total_tokens\":10}}}\n\n",
                             )),
                             (2, request_index, release),
                         ))
                     }
                     (1, _) => Some((
-                        Ok::<_, Infallible>(Bytes::from_static(b"data: response.completed\n\n")),
+                        Ok::<_, Infallible>(Bytes::from_static(
+                            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens\":3,\"total_tokens\":10}}}\n\n",
+                        )),
                         (2, request_index, release),
                     )),
                     _ => None,
@@ -580,6 +763,27 @@ mod tests {
 
     fn launch_context() -> LaunchContext {
         LaunchContext::new("personal".to_string(), "opencode".to_string(), None, None)
+    }
+
+    fn run_launch_context() -> LaunchContext {
+        LaunchContext::new(
+            "personal".to_string(),
+            "opencode".to_string(),
+            Some("run-25-test".to_string()),
+            Some("bounded".to_string()),
+        )
+    }
+
+    fn usage_event_files(state_dir: &std::path::Path) -> Vec<String> {
+        let root = state_dir.join("usage/events");
+        let Ok(days) = fs::read_dir(root) else {
+            return Vec::new();
+        };
+        days.flatten()
+            .filter_map(|day| fs::read_dir(day.path()).ok())
+            .flat_map(|files| files.flatten())
+            .filter_map(|file| fs::read_to_string(file.path()).ok())
+            .collect()
     }
 
     #[test]
@@ -859,10 +1063,16 @@ mod tests {
             "initial-access-token",
         );
         let (upstream, capture, upstream_task) = fake_api_server().await;
-        let bridge =
-            BridgeHandle::start_for_test(launch_context(), Arc::clone(&auth), upstream, "gpt-test")
-                .await
-                .unwrap();
+        let usage_dir = TempDir::new().unwrap();
+        let bridge = BridgeHandle::start_for_test_with_usage_store(
+            run_launch_context(),
+            Arc::clone(&auth),
+            upstream,
+            "gpt-test",
+            UsageStore::new(usage_dir.path()),
+        )
+        .await
+        .unwrap();
         let token = bridge.child_token();
         let address = bridge.address();
         let client = reqwest::Client::new();
@@ -870,9 +1080,10 @@ mod tests {
             "model": "gpt-test",
             "instructions": "existing instructions",
             "input": [
-                { "type": "message", "role": "system", "content": "system context" },
-                { "type": "message", "role": "user", "content": "hello" },
-                { "type": "function_call", "name": "inspect", "call_id": "call-1" }
+                { "type": "message", "role": "system", "content": "SYSTEM_PROMPT_MARKER_DO_NOT_PERSIST" },
+                { "type": "message", "role": "user", "content": "PROMPT_MARKER_DO_NOT_PERSIST" },
+                { "type": "function_call", "name": "inspect", "call_id": "call-1", "arguments": "TOOL_ARGUMENT_MARKER_DO_NOT_PERSIST" },
+                { "type": "function_call_output", "call_id": "call-1", "output": "TOOL_RESULT_MARKER_DO_NOT_PERSIST" }
             ],
             "store": true,
             "stream": false,
@@ -911,7 +1122,10 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(first_chunk, "data: response.created\n\n");
+        assert_eq!(
+            first_chunk,
+            "event: response.created\ndata: {}\n\nevent: response.future_type\ndata: {\"future\":true}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"RESPONSE_MARKER_DO_NOT_PERSIST\"}\n\n"
+        );
         capture.release_second_chunk.notify_one();
         let remaining = response.bytes().await.unwrap();
         assert_eq!(
@@ -920,7 +1134,7 @@ mod tests {
                 String::from_utf8_lossy(&first_chunk),
                 String::from_utf8_lossy(&remaining)
             ),
-            "data: response.created\n\ndata: response.completed\n\n"
+            "event: response.created\ndata: {}\n\nevent: response.future_type\ndata: {\"future\":true}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"RESPONSE_MARKER_DO_NOT_PERSIST\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens\":3,\"total_tokens\":10}}}\n\n"
         );
 
         auth.expire_access_token_for_test("personal").unwrap();
@@ -954,9 +1168,9 @@ mod tests {
         assert_eq!(requests[0].body["stream"], true);
         assert_eq!(
             requests[0].body["instructions"],
-            "existing instructions\n\nsystem context"
+            "existing instructions\n\nSYSTEM_PROMPT_MARKER_DO_NOT_PERSIST"
         );
-        assert_eq!(requests[0].body["input"].as_array().unwrap().len(), 2);
+        assert_eq!(requests[0].body["input"].as_array().unwrap().len(), 3);
         assert!(requests[0].body.get("temperature").is_none());
         assert!(requests[0].body.get("previous_response_id").is_none());
         assert_ne!(
@@ -974,7 +1188,254 @@ mod tests {
         );
         assert_eq!(oauth.received_requests().await.unwrap().len(), 1);
 
+        let events = UsageStore::new(usage_dir.path())
+            .events(&crate::usage_event::UsageEventFilter {
+                start_unix_ms: 0,
+                end_unix_ms: u64::MAX,
+                ..crate::usage_event::UsageEventFilter::default()
+            })
+            .unwrap();
+        assert_eq!(events.len(), 2, "model discovery must not be recorded");
+        for event in &events {
+            assert_eq!(event.profile, "personal");
+            assert_eq!(event.logical_tool_name, "opencode");
+            assert_eq!(event.run_id.as_deref(), Some("run-25-test"));
+            assert_eq!(event.run_policy.as_deref(), Some("bounded"));
+            assert_eq!(event.protocol, "openai_responses");
+            assert_eq!(event.model.as_deref(), Some("gpt-test"));
+            assert_eq!(event.input_tokens_total, Some(7));
+            assert_eq!(event.input_tokens_uncached, Some(5));
+            assert_eq!(event.cache_read_input_tokens, Some(2));
+            assert_eq!(event.output_tokens, Some(3));
+            assert_eq!(event.total_tokens, Some(10));
+            assert_eq!(event.request_count, 1);
+            assert_eq!(
+                event.usage_completeness,
+                crate::usage_event::UsageCompleteness::Complete
+            );
+            assert_eq!(event.actual_cost_usd, None);
+            assert_eq!(event.cost_source, None);
+        }
+        let persisted = usage_event_files(usage_dir.path()).join("\n");
+        for marker in [
+            "SYSTEM_PROMPT_MARKER_DO_NOT_PERSIST",
+            "PROMPT_MARKER_DO_NOT_PERSIST",
+            "TOOL_ARGUMENT_MARKER_DO_NOT_PERSIST",
+            "TOOL_RESULT_MARKER_DO_NOT_PERSIST",
+            "RESPONSE_MARKER_DO_NOT_PERSIST",
+            "initial-access-token",
+            "refreshed-access-token",
+            "saved-refresh-token",
+        ] {
+            assert!(
+                !persisted.contains(marker),
+                "persisted private marker {marker}"
+            );
+        }
+
         bridge.stop().await;
         upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn records_local_rejections_and_upstream_http_failures_without_content() {
+        let directory = TempDir::new().unwrap();
+        let auth = auth_service(
+            &directory,
+            Url::parse("https://auth.openai.com/api/accounts/oauth/token").unwrap(),
+            "ACCESS_SECRET_MARKER_DO_NOT_PERSIST",
+        );
+        let (upstream, capture, upstream_task) = fake_api_server().await;
+        let usage_dir = TempDir::new().unwrap();
+        let bridge = BridgeHandle::start_for_test_with_usage_store(
+            launch_context(),
+            auth,
+            upstream,
+            "gpt-test",
+            UsageStore::new(usage_dir.path()),
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        let token = bridge.child_token();
+        let address = bridge.address();
+
+        let rejected = client
+            .post(format!("http://{address}/v1/responses"))
+            .bearer_auth(token.expose_secret())
+            .json(&json!({
+                "model": "rejected-model",
+                "input": [{"type":"message","role":"user","content":"PROMPT_MARKER_DO_NOT_PERSIST"}],
+                "tools": [{"type":"file_search","vector_store_ids":["TOOL_ARGUMENT_MARKER_DO_NOT_PERSIST"]}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        let _ = rejected.bytes().await.unwrap();
+
+        let failed = client
+            .post(format!("http://{address}/v1/responses"))
+            .bearer_auth(token.expose_secret())
+            .json(&json!({
+                "model": "failed-model",
+                "input": [{"type":"message","role":"user","content":"ANOTHER_PROMPT_MARKER_DO_NOT_PERSIST"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(failed.status(), StatusCode::TOO_MANY_REQUESTS);
+        let _ = failed.bytes().await.unwrap();
+
+        let no_usage = client
+            .post(format!("http://{address}/v1/responses"))
+            .bearer_auth(token.expose_secret())
+            .json(&json!({
+                "model": "no-usage-model",
+                "input": []
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(no_usage.status(), StatusCode::OK);
+        let _ = no_usage.bytes().await.unwrap();
+
+        let stream_failure = client
+            .post(format!("http://{address}/v1/responses"))
+            .bearer_auth(token.expose_secret())
+            .json(&json!({
+                "model": "stream-failure-model",
+                "input": []
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stream_failure.status(), StatusCode::OK);
+        capture.release_stream_failure.notify_one();
+        assert!(stream_failure.bytes().await.is_err());
+
+        let events = UsageStore::new(usage_dir.path())
+            .events(&crate::usage_event::UsageEventFilter {
+                start_unix_ms: 0,
+                end_unix_ms: u64::MAX,
+                ..crate::usage_event::UsageEventFilter::default()
+            })
+            .unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(events
+            .iter()
+            .all(|event| event.run_id.is_none() && event.run_policy.is_none()));
+        assert!(events.iter().any(|event| {
+            event.model.as_deref() == Some("rejected-model")
+                && event.outcome == UsageOutcome::Failed
+                && event.http_status == Some(StatusCode::BAD_REQUEST.as_u16())
+                && event.error_category.as_deref() == Some("local_compatibility")
+        }));
+        assert!(events.iter().any(|event| {
+            event.model.as_deref() == Some("failed-model")
+                && event.outcome == UsageOutcome::Failed
+                && event.http_status == Some(StatusCode::TOO_MANY_REQUESTS.as_u16())
+                && event.error_category.as_deref() == Some("upstream_http")
+                && event.usage_completeness == crate::usage_event::UsageCompleteness::Unavailable
+        }));
+        assert!(events.iter().any(|event| {
+            event.model.as_deref() == Some("stream-failure-model")
+                && event.outcome == UsageOutcome::Failed
+                && event.http_status == Some(StatusCode::OK.as_u16())
+                && event.error_category.as_deref() == Some("upstream_stream")
+        }));
+        assert!(events.iter().any(|event| {
+            event.model.as_deref() == Some("no-usage-model")
+                && event.outcome == UsageOutcome::Succeeded
+                && event.usage_completeness == crate::usage_event::UsageCompleteness::Unavailable
+        }));
+        let persisted = usage_event_files(usage_dir.path()).join("\n");
+        for marker in [
+            "PROMPT_MARKER_DO_NOT_PERSIST",
+            "ANOTHER_PROMPT_MARKER_DO_NOT_PERSIST",
+            "TOOL_ARGUMENT_MARKER_DO_NOT_PERSIST",
+            "RESPONSE_MARKER_DO_NOT_PERSIST",
+            "ACCESS_SECRET_MARKER_DO_NOT_PERSIST",
+        ] {
+            assert!(
+                !persisted.contains(marker),
+                "persisted private marker {marker}"
+            );
+        }
+
+        bridge.stop().await;
+        upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn records_auth_refresh_failure_without_persisting_request_or_credentials() {
+        let oauth = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&oauth)
+            .await;
+        let directory = TempDir::new().unwrap();
+        let auth = auth_service(
+            &directory,
+            Url::parse(&format!("{}/token", oauth.uri())).unwrap(),
+            "ACCESS_SECRET_MARKER_DO_NOT_PERSIST",
+        );
+        auth.expire_access_token_for_test("personal").unwrap();
+        let usage_dir = TempDir::new().unwrap();
+        let bridge = BridgeHandle::start_for_test_with_usage_store(
+            launch_context(),
+            auth,
+            Url::parse("http://127.0.0.1:9/v1/").unwrap(),
+            "gpt-test",
+            UsageStore::new(usage_dir.path()),
+        )
+        .await
+        .unwrap();
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{}/v1/responses", bridge.address()))
+            .bearer_auth(bridge.child_token().expose_secret())
+            .json(&json!({
+                "model": "auth-failure-model",
+                "input": [{"type":"message","role":"user","content":"PROMPT_SECRET_MARKER_DO_NOT_PERSIST"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let _ = response.bytes().await.unwrap();
+
+        let events = UsageStore::new(usage_dir.path())
+            .events(&crate::usage_event::UsageEventFilter {
+                start_unix_ms: 0,
+                end_unix_ms: u64::MAX,
+                ..crate::usage_event::UsageEventFilter::default()
+            })
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].profile, "personal");
+        assert_eq!(events[0].logical_tool_name, "opencode");
+        assert_eq!(events[0].run_id, None);
+        assert_eq!(events[0].model.as_deref(), Some("auth-failure-model"));
+        assert_eq!(
+            events[0].http_status,
+            Some(StatusCode::BAD_GATEWAY.as_u16())
+        );
+        assert_eq!(events[0].error_category.as_deref(), Some("authentication"));
+        let persisted = usage_event_files(usage_dir.path()).join("\n");
+        for marker in [
+            "PROMPT_SECRET_MARKER_DO_NOT_PERSIST",
+            "ACCESS_SECRET_MARKER_DO_NOT_PERSIST",
+            "saved-refresh-token",
+        ] {
+            assert!(
+                !persisted.contains(marker),
+                "persisted private marker {marker}"
+            );
+        }
+        assert_eq!(oauth.received_requests().await.unwrap().len(), 1);
+
+        bridge.stop().await;
     }
 }

@@ -4,7 +4,9 @@ mod stream;
 
 pub(crate) use context::LaunchContext;
 pub(crate) use server::ServerHandle;
-pub(crate) use stream::forward_response;
+pub(crate) use stream::{
+    forward_response, forward_response_observed, ResponseBodyObserver, ResponseStreamEnd,
+};
 
 use axum::body::{to_bytes, Body, Bytes};
 use axum::http::{Response, StatusCode};
