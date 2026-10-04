@@ -14,6 +14,27 @@ use std::time::Duration;
 
 const REFRESH_SAFETY_MARGIN_SECS: u64 = 120;
 
+fn manual_authorization_url(authorize_url: &url::Url) -> url::Url {
+    let query_pairs = authorize_url
+        .query_pairs()
+        // Keep stored account hints in the auto-opened URL, but not in terminal output.
+        .filter(|(name, _)| name != "id_token_hint" && name != "login_hint")
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    let mut manual_url = authorize_url.clone();
+    manual_url
+        .query_pairs_mut()
+        .clear()
+        .extend_pairs(query_pairs);
+    manual_url
+}
+
+fn authorization_url_instructions(authorize_url: &url::Url) -> String {
+    format!(
+        "Opening ChatGPT sign-in in your browser. If it doesn't open, copy and paste this URL:\n{authorize_url}"
+    )
+}
+
 pub(crate) struct AuthService {
     store: store::AuthStore,
     client: reqwest::Client,
@@ -157,10 +178,16 @@ impl AuthService {
             existing.as_ref().and_then(|record| record.email.as_deref()),
         )?;
 
+        eprintln!(
+            "{}",
+            authorization_url_instructions(&manual_authorization_url(&authorize_url))
+        );
         let opened = webbrowser::open(authorize_url.as_str()).is_ok();
         authorize_url.set_query(None);
         if !opened {
-            return Err(AixError::AuthBrowserOpen);
+            eprintln!(
+                "Could not open a browser automatically; waiting for you to open the URL above."
+            );
         }
 
         let callback = protocol::wait_for_callback(listener, &attempt.state).await?;
@@ -457,6 +484,35 @@ mod tests {
             Duration::from_secs(3),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn login_instructions_include_the_manual_authorization_url() {
+        let authorize_url = url::Url::parse(
+            "https://auth.example.test/authorize?client_id=example&state=one-time-state&nonce=one-time-nonce&login_hint=person%40example.test&id_token_hint=id-token-secret",
+        )
+        .unwrap();
+
+        let manual_url = manual_authorization_url(&authorize_url);
+        let instructions = authorization_url_instructions(&manual_url);
+        let query = manual_url
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert!(instructions.contains("copy and paste this URL"));
+        assert!(instructions.contains(manual_url.as_str()));
+        assert_eq!(
+            query.get("state").map(|value| value.as_ref()),
+            Some("one-time-state")
+        );
+        assert_eq!(
+            query.get("nonce").map(|value| value.as_ref()),
+            Some("one-time-nonce")
+        );
+        assert!(!query.contains_key("login_hint"));
+        assert!(!query.contains_key("id_token_hint"));
+        assert!(!instructions.contains("person@example.test"));
+        assert!(!instructions.contains("id-token-secret"));
     }
 
     async fn mock_openid(server: &MockServer) -> protocol::OAuthEndpoints {

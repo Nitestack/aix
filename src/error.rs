@@ -57,9 +57,6 @@ pub enum AixError {
     #[error("timed out waiting for the ChatGPT browser callback")]
     AuthCallbackTimeout,
 
-    #[error("could not open the system browser for ChatGPT sign-in")]
-    AuthBrowserOpen,
-
     #[error("ChatGPT rejected the OAuth request (HTTP {status})")]
     AuthOAuthRejected { status: u16, terminal: bool },
 
@@ -558,7 +555,6 @@ impl AixError {
             | Self::HttpError(_)
             | Self::UsageUnavailable
             | Self::AuthCallbackTimeout
-            | Self::AuthBrowserOpen
             | Self::AuthNetwork { .. }
             | Self::AuthProtocol => 5,
             Self::BudgetExceeded { .. } => 6,
