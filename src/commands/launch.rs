@@ -52,7 +52,7 @@ pub struct ResolvedRunLaunch {
 }
 
 enum LaunchSidecarPlan {
-    OpenCodeSiwc(opencode::OpenCodeSiwcPlan),
+    OpenCodeSiwc,
 }
 
 pub(crate) struct StartedLaunchSidecar(ServerHandle);
@@ -549,8 +549,8 @@ pub(crate) async fn start_launch_sidecar(
     };
     let context = sidecar_context(resolved, run_id);
     let server = match plan {
-        LaunchSidecarPlan::OpenCodeSiwc(plan) => {
-            let bridge = opencode::BridgeHandle::start(plan, context, timeout).await?;
+        LaunchSidecarPlan::OpenCodeSiwc => {
+            let bridge = opencode::BridgeHandle::start(context, timeout).await?;
             bridge.configure_env(&mut resolved.env);
             bridge.into_server()
         }
@@ -573,7 +573,7 @@ fn sidecar_context(resolved: &ResolvedRunLaunch, run_id: Option<Uuid>) -> LocalG
 pub(crate) fn print_sidecar_dry_run(resolved: &ResolvedRunLaunch) {
     if let Some(plan) = &resolved.sidecar_plan {
         match plan {
-            LaunchSidecarPlan::OpenCodeSiwc(plan) => opencode::print_dry_run(plan),
+            LaunchSidecarPlan::OpenCodeSiwc => opencode::print_dry_run(),
         }
     }
 }
@@ -821,16 +821,10 @@ mod tests {
         .unwrap()
     }
 
-    fn chatgpt_opencode_config(model: Option<&str>) -> config::Config {
-        let model = model
-            .map(|model| format!("[profiles.personal.models]\ndefault = {model:?}\n"))
-            .unwrap_or_default();
+    fn chatgpt_opencode_config() -> config::Config {
         let config_text = format!(
             r#"
 default_profile = "personal"
-
-[models]
-default = "global-model"
 
 [profiles.personal]
 auth = {{ type = "chatgpt" }}
@@ -852,8 +846,6 @@ TOOL_SETTING = "kept"
 [tools.opencode.chatgpt]
 access_token_env = "ACCESS_TOKEN"
 clear_env = ["CODEX_API_KEY"]
-
-{model}
 "#,
             test_tool_command()
         );
@@ -880,9 +872,9 @@ clear_env = ["CODEX_API_KEY"]
     }
 
     #[tokio::test]
-    async fn chatgpt_opencode_uses_profile_model_and_only_plans_a_local_bridge() {
+    async fn chatgpt_opencode_needs_no_aix_model_default_and_only_plans_a_local_bridge() {
         let context = LaunchContext {
-            cfg: chatgpt_opencode_config(Some("personal-model")),
+            cfg: chatgpt_opencode_config(),
             profile_name: "personal".to_string(),
         };
         let profile = context.profile().unwrap();
@@ -895,8 +887,10 @@ clear_env = ["CODEX_API_KEY"]
         .await
         .unwrap();
 
-        let LaunchSidecarPlan::OpenCodeSiwc(sidecar) = resolved.sidecar_plan.as_ref().unwrap();
-        assert_eq!(sidecar.model, "personal-model");
+        assert!(matches!(
+            resolved.sidecar_plan.as_ref().unwrap(),
+            LaunchSidecarPlan::OpenCodeSiwc
+        ));
         assert!(resolved.env.auth_vars.is_empty());
         assert!(!resolved.env.vars.iter().any(|(name, _)| {
             matches!(
@@ -916,7 +910,7 @@ clear_env = ["CODEX_API_KEY"]
     #[tokio::test]
     async fn opencode_dry_run_resolves_no_token_and_reports_only_variable_names() {
         let context = LaunchContext {
-            cfg: chatgpt_opencode_config(Some("personal-model")),
+            cfg: chatgpt_opencode_config(),
             profile_name: "personal".to_string(),
         };
         let profile = context.profile().unwrap();
@@ -950,29 +944,24 @@ clear_env = ["CODEX_API_KEY"]
     }
 
     #[tokio::test]
-    async fn chatgpt_opencode_requires_an_effective_default_model() {
-        let mut cfg = chatgpt_opencode_config(None);
-        cfg.models.default = None;
+    async fn chatgpt_opencode_does_not_require_an_effective_default_model() {
+        let cfg = chatgpt_opencode_config();
         let context = LaunchContext {
             cfg,
             profile_name: "personal".to_string(),
         };
         let profile = context.profile().unwrap();
-        let error = match chatgpt::resolve_tool_launch(
+        let resolved = chatgpt::resolve_tool_launch(
             test_launch_request(ToolEnvMode::NamesOnly),
             &context,
             profile,
             Duration::from_secs(5),
         )
         .await
-        {
-            Ok(_) => panic!("an OpenCode profile without a default model should fail"),
-            Err(error) => error,
-        };
-
+        .expect("OpenCode selects models through its native picker");
         assert!(matches!(
-            error.downcast_ref::<AixError>(),
-            Some(AixError::NoModelConfigured)
+            resolved.sidecar_plan,
+            Some(LaunchSidecarPlan::OpenCodeSiwc)
         ));
     }
 

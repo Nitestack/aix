@@ -46,21 +46,15 @@ pub(super) async fn resolve_tool_launch(
     let mut sidecar_plan = None;
     if matches!(tool_env_mode, ToolEnvMode::NamesOnly) {
         if uses_opencode_bridge {
-            let model = config::resolve_model(None, cfg, profile)?;
             display_only_vars.push(super::opencode::BRIDGE_TOKEN_ENV.to_string());
             display_only_vars.push(super::opencode::OPENCODE_CONFIG_ENV.to_string());
-            sidecar_plan = Some(super::LaunchSidecarPlan::OpenCodeSiwc(
-                super::opencode::OpenCodeSiwcPlan { model },
-            ));
+            sidecar_plan = Some(super::LaunchSidecarPlan::OpenCodeSiwc);
         } else {
             display_only_vars.push(binding.access_token_env.clone());
         }
     } else if uses_opencode_bridge {
         validate_executable(&program)?;
-        let model = config::resolve_model(None, cfg, profile)?;
-        sidecar_plan = Some(super::LaunchSidecarPlan::OpenCodeSiwc(
-            super::opencode::OpenCodeSiwcPlan { model },
-        ));
+        sidecar_plan = Some(super::LaunchSidecarPlan::OpenCodeSiwc);
     } else {
         let service = crate::auth::AuthService::new(timeout)?;
         let access_token = service.access_token(profile_name).await?;

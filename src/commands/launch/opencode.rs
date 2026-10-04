@@ -62,7 +62,39 @@ const UNSUPPORTED_INPUT_ITEM_TYPES: &[&str] = &[
 ];
 
 const PROVIDER_ID: &str = "aix-chatgpt";
-const PROVIDER_MODEL_ID: &str = "aix-selected";
+// Mirror the ChatGPT-eligible models in OpenCode's v2 OpenAI catalog. The
+// canonical provider supplies their labels and capabilities; this distinct
+// provider ID prevents saved OpenCode credentials from overriding the bridge.
+const CHATGPT_MODEL_IDS: &[&str] = &[
+    "gpt-5.3-codex-spark",
+    "gpt-5.5",
+    "gpt-5.5-fast",
+    "gpt-5.6",
+    "gpt-5.6-fast",
+    "gpt-5.6-luna",
+    "gpt-5.6-luna-fast",
+    "gpt-5.6-luna-pro",
+    "gpt-5.6-pro",
+    "gpt-5.6-sol",
+    "gpt-5.6-sol-fast",
+    "gpt-5.6-sol-pro",
+    "gpt-5.6-terra",
+    "gpt-5.6-terra-fast",
+    "gpt-5.6-terra-pro",
+    "gpt-6-astra",
+    "gpt-6-astra-fast",
+    "gpt-6-astra-pro",
+    "gpt-6-astra-ultrafast",
+    "gpt-6-luna",
+    "gpt-6-luna-fast",
+    "gpt-6-luna-pro",
+    "gpt-6-sol",
+    "gpt-6-sol-fast",
+    "gpt-6-sol-pro",
+    "gpt-6.1-sol",
+    "gpt-6.1-sol-fast",
+    "gpt-6.1-sol-pro",
+];
 pub(super) const OPENCODE_CONFIG_ENV: &str = "OPENCODE_CONFIG_CONTENT";
 pub(super) const BRIDGE_TOKEN_ENV: &str = "AIX_OPENCODE_BRIDGE_TOKEN";
 const RESPONSES_PROVIDER_PACKAGE: &str = "@opencode/ai/providers/openai/responses";
@@ -77,41 +109,30 @@ const FORWARDED_RESPONSE_HEADERS: &[&str] = &[
     "openai-version",
 ];
 
-pub(super) struct OpenCodeSiwcPlan {
-    pub model: String,
-}
-
-pub(super) fn print_dry_run(plan: &OpenCodeSiwcPlan) {
+pub(super) fn print_dry_run() {
     eprintln!(
-        "Would use ephemeral OpenCode SIWC bridge with provider aix-chatgpt (model {})",
-        plan.model
+        "Would use ephemeral OpenCode SIWC bridge with OpenCode's native ChatGPT model picker"
     );
 }
 
-pub(super) fn runtime_config(port: u16, model: &str) -> Result<String, serde_json::Error> {
+pub(super) fn runtime_config(port: u16) -> Result<String, serde_json::Error> {
     let base_url = format!("http://127.0.0.1:{port}/v1");
-    let model_reference = format!("{PROVIDER_ID}/{PROVIDER_MODEL_ID}");
+    let models = CHATGPT_MODEL_IDS
+        .iter()
+        .map(|model| ((*model).to_string(), serde_json::json!({})))
+        .collect::<serde_json::Map<String, serde_json::Value>>();
     serde_json::to_string(&serde_json::json!({
-        "model": model_reference,
         "providers": {
             (PROVIDER_ID): {
                 "name": "ChatGPT plan via aix",
                 "env": [BRIDGE_TOKEN_ENV],
                 "package": RESPONSES_PROVIDER_PACKAGE,
+                "canonical": "openai",
                 "settings": {
                     "baseURL": base_url,
+                    "transport": "http",
                 },
-                "models": {
-                    (PROVIDER_MODEL_ID): {
-                        "modelID": model,
-                        "name": model,
-                        "tool_call": true,
-                        "modalities": {
-                            "input": ["text"],
-                            "output": ["text"],
-                        },
-                    },
-                },
+                "models": models,
             },
         },
     }))
@@ -130,11 +151,7 @@ pub(super) struct BridgeHandle {
 }
 
 impl BridgeHandle {
-    pub(super) async fn start(
-        plan: OpenCodeSiwcPlan,
-        context: LaunchContext,
-        timeout: Duration,
-    ) -> Result<Self> {
+    pub(super) async fn start(context: LaunchContext, timeout: Duration) -> Result<Self> {
         let auth = Arc::new(AuthService::new(timeout)?);
         let upstream_base = Url::parse(OPENAI_PUBLIC_API_BASE)?;
         let client = reqwest::Client::builder()
@@ -142,7 +159,6 @@ impl BridgeHandle {
             .connect_timeout(Duration::from_secs(15))
             .build()?;
         Self::bind(
-            plan,
             context,
             auth,
             upstream_base,
@@ -157,23 +173,12 @@ impl BridgeHandle {
         context: LaunchContext,
         auth: Arc<AuthService>,
         upstream_base: Url,
-        model: &str,
     ) -> Result<Self> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
             .build()?;
-        Self::bind(
-            OpenCodeSiwcPlan {
-                model: model.to_string(),
-            },
-            context,
-            auth,
-            upstream_base,
-            client,
-            None,
-        )
-        .await
+        Self::bind(context, auth, upstream_base, client, None).await
     }
 
     #[cfg(test)]
@@ -181,25 +186,13 @@ impl BridgeHandle {
         context: LaunchContext,
         auth: Arc<AuthService>,
         upstream_base: Url,
-        model: &str,
         usage_store: UsageStore,
     ) -> Result<Self> {
         let client = reqwest::Client::new();
-        Self::bind(
-            OpenCodeSiwcPlan {
-                model: model.to_string(),
-            },
-            context,
-            auth,
-            upstream_base,
-            client,
-            Some(usage_store),
-        )
-        .await
+        Self::bind(context, auth, upstream_base, client, Some(usage_store)).await
     }
 
     async fn bind(
-        plan: OpenCodeSiwcPlan,
         context: LaunchContext,
         auth: Arc<AuthService>,
         upstream_base: Url,
@@ -222,7 +215,7 @@ impl BridgeHandle {
             ),
         )
         .await?;
-        let runtime_config = runtime_config(server.port(), &plan.model)?;
+        let runtime_config = runtime_config(server.port())?;
         Ok(Self {
             server,
             runtime_config,
@@ -906,11 +899,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_selects_the_v2_responses_provider_and_profile_model() {
+    fn runtime_config_offers_native_model_choices_without_selecting_or_overriding_openai() {
         let config: serde_json::Value =
-            serde_json::from_str(&runtime_config(43127, "gpt-test").unwrap()).unwrap();
+            serde_json::from_str(&runtime_config(43127).unwrap()).unwrap();
 
-        assert_eq!(config["model"], "aix-chatgpt/aix-selected");
+        assert!(config.get("model").is_none());
         assert_eq!(
             config["providers"]["aix-chatgpt"]["package"],
             "@opencode/ai/providers/openai/responses"
@@ -924,11 +917,23 @@ mod tests {
             "http://127.0.0.1:43127/v1"
         );
         assert_eq!(
-            config["providers"]["aix-chatgpt"]["models"]["aix-selected"]["modelID"],
-            "gpt-test"
+            config["providers"]["aix-chatgpt"]["settings"]["transport"],
+            "http"
         );
+        assert_eq!(config["providers"]["aix-chatgpt"]["canonical"], "openai");
+        assert_eq!(
+            config["providers"]["aix-chatgpt"]["models"]["gpt-6-luna"],
+            json!({})
+        );
+        assert_eq!(
+            config["providers"]["aix-chatgpt"]["models"]
+                .as_object()
+                .unwrap()
+                .len(),
+            CHATGPT_MODEL_IDS.len()
+        );
+        assert!(config["providers"].get("openai").is_none());
         assert!(config.get("provider").is_none());
-        assert!(config["providers"]["aix-chatgpt"]["package"] != "openai");
     }
 
     #[tokio::test]
@@ -940,18 +945,13 @@ mod tests {
             "real-access-token",
         );
         let upstream = Url::parse("http://127.0.0.1:9/v1/").unwrap();
-        let bridge = BridgeHandle::start_for_test(
-            launch_context(),
-            Arc::clone(&auth),
-            upstream.clone(),
-            "gpt-test",
-        )
-        .await
-        .unwrap();
-        let second_bridge =
-            BridgeHandle::start_for_test(launch_context(), auth, upstream, "gpt-test")
+        let bridge =
+            BridgeHandle::start_for_test(launch_context(), Arc::clone(&auth), upstream.clone())
                 .await
                 .unwrap();
+        let second_bridge = BridgeHandle::start_for_test(launch_context(), auth, upstream)
+            .await
+            .unwrap();
 
         assert_eq!(bridge.address().ip(), Ipv4Addr::LOCALHOST);
         assert_ne!(bridge.port(), 0);
@@ -1084,7 +1084,6 @@ mod tests {
             run_launch_context(),
             Arc::clone(&auth),
             upstream,
-            "gpt-test",
             UsageStore::new(usage_dir.path()),
         )
         .await
@@ -1267,7 +1266,6 @@ mod tests {
             launch_context(),
             auth,
             upstream,
-            "gpt-test",
             UsageStore::new(usage_dir.path()),
         )
         .await
@@ -1403,7 +1401,6 @@ mod tests {
             launch_context(),
             auth,
             Url::parse("http://127.0.0.1:9/v1/").unwrap(),
-            "gpt-test",
             UsageStore::new(usage_dir.path()),
         )
         .await
@@ -1470,7 +1467,6 @@ mod tests {
             launch_context(),
             auth,
             upstream,
-            "gpt-test",
             UsageStore::new(&state_file),
         )
         .await
