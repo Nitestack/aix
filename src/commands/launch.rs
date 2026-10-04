@@ -2,12 +2,14 @@ use crate::commands::env::{collect_profile_vars, resolve_profile};
 use crate::commands::ProfileSelection;
 use crate::config;
 use crate::error::AixError;
+use crate::local_gateway::{LaunchContext as LocalGatewayContext, ServerHandle};
 use crate::secrets::SecretString;
 use color_eyre::Result;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 #[path = "launch/chatgpt.rs"]
 mod chatgpt;
@@ -46,19 +48,24 @@ pub struct ResolvedRunLaunch {
     pub allowed_models: Vec<String>,
     pub policy: Option<ResolvedRunPolicy>,
     pub prepend_args: Vec<String>,
-    pub(crate) opencode_sidecar: Option<OpenCodeSidecarPlan>,
+    sidecar_plan: Option<LaunchSidecarPlan>,
 }
 
-pub(crate) struct OpenCodeSidecarPlan {
-    pub profile_name: String,
-    pub model: String,
+enum LaunchSidecarPlan {
+    OpenCodeSiwc(opencode::OpenCodeSiwcPlan),
 }
 
-pub(crate) struct StartedLaunchSidecar(opencode::BridgeHandle);
+pub(crate) struct StartedLaunchSidecar(ServerHandle);
 
 impl StartedLaunchSidecar {
-    pub(crate) async fn stop(self) {
+    async fn stop(self) {
         self.0.stop().await;
+    }
+
+    pub(crate) async fn run_child<T>(self, run_child: impl FnOnce() -> T) -> T {
+        let result = run_child();
+        self.stop().await;
+        result
     }
 }
 
@@ -83,7 +90,7 @@ struct LaunchResolution {
     allowed_models: Vec<String>,
     policy: Option<ResolvedRunPolicy>,
     prepend_args: Vec<String>,
-    opencode_sidecar: Option<OpenCodeSidecarPlan>,
+    sidecar_plan: Option<LaunchSidecarPlan>,
 }
 
 struct LaunchContext {
@@ -205,7 +212,7 @@ async fn resolve_tool_launch(
         allowed_models: resolution.allowed_models,
         policy: resolution.policy,
         prepend_args: resolution.prepend_args,
-        opencode_sidecar: resolution.opencode_sidecar,
+        sidecar_plan: resolution.sidecar_plan,
     })
 }
 
@@ -361,7 +368,7 @@ fn resolve_api_key_launch(
             tags: policy.tags.clone(),
         }),
         prepend_args: Vec::new(),
-        opencode_sidecar: None,
+        sidecar_plan: None,
     })
 }
 
@@ -507,18 +514,21 @@ pub async fn run_named_tool(
         return run_command(&resolved.program, &args, &resolved.env, true);
     }
 
-    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout).await? else {
+    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None).await? else {
         return run_command(&resolved.program, &args, &resolved.env, false);
     };
     let (interrupt_requested, terminated) = install_interrupt_handlers()?;
-    let child_result = run_command_status_interruptible(
-        &resolved.program,
-        &args,
-        &resolved.env,
-        &interrupt_requested,
-        &terminated,
-    );
-    sidecar.stop().await;
+    let child_result = sidecar
+        .run_child(|| {
+            run_command_status_interruptible(
+                &resolved.program,
+                &args,
+                &resolved.env,
+                &interrupt_requested,
+                &terminated,
+            )
+        })
+        .await;
     let status = child_result?;
     if let Some(interruption) = interruption_reason(&interrupt_requested, &terminated) {
         std::process::exit(interruption.exit_code());
@@ -532,29 +542,39 @@ pub async fn run_named_tool(
 pub(crate) async fn start_launch_sidecar(
     resolved: &mut ResolvedRunLaunch,
     timeout: Duration,
+    run_id: Option<Uuid>,
 ) -> Result<Option<StartedLaunchSidecar>> {
-    let Some(plan) = resolved.opencode_sidecar.take() else {
+    let Some(plan) = resolved.sidecar_plan.take() else {
         return Ok(None);
     };
-    let bridge = opencode::BridgeHandle::start(&plan.profile_name, timeout).await?;
-    let runtime_config = opencode::runtime_config(bridge.port(), &plan.model)?;
-    resolved
-        .env
-        .vars
-        .push((opencode::OPENCODE_CONFIG_ENV.to_string(), runtime_config));
-    resolved
-        .env
-        .auth_vars
-        .push((opencode::BRIDGE_TOKEN_ENV.to_string(), bridge.child_token()));
-    Ok(Some(StartedLaunchSidecar(bridge)))
+    let context = sidecar_context(resolved, run_id);
+    let server = match plan {
+        LaunchSidecarPlan::OpenCodeSiwc(plan) => {
+            let bridge = opencode::BridgeHandle::start(plan, context, timeout).await?;
+            bridge.configure_env(&mut resolved.env);
+            bridge.into_server()
+        }
+    };
+    Ok(Some(StartedLaunchSidecar(server)))
+}
+
+fn sidecar_context(resolved: &ResolvedRunLaunch, run_id: Option<Uuid>) -> LocalGatewayContext {
+    LocalGatewayContext::new(
+        resolved.env.profile_name.clone(),
+        resolved
+            .logical_tool_name
+            .clone()
+            .expect("a sidecar launch has a logical tool name"),
+        run_id.map(|run_id| run_id.to_string()),
+        resolved.policy.as_ref().map(|policy| policy.name.clone()),
+    )
 }
 
 pub(crate) fn print_sidecar_dry_run(resolved: &ResolvedRunLaunch) {
-    if let Some(plan) = &resolved.opencode_sidecar {
-        eprintln!(
-            "Would use ephemeral OpenCode SIWC bridge with provider aix-chatgpt (model {})",
-            plan.model
-        );
+    if let Some(plan) = &resolved.sidecar_plan {
+        match plan {
+            LaunchSidecarPlan::OpenCodeSiwc(plan) => opencode::print_dry_run(plan),
+        }
     }
 }
 
@@ -789,6 +809,7 @@ fn detect_shell_impl() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local_gateway::AuthFailureResponse;
 
     fn test_tool_command() -> String {
         serde_json::to_string(
@@ -874,8 +895,7 @@ clear_env = ["CODEX_API_KEY"]
         .await
         .unwrap();
 
-        let sidecar = resolved.opencode_sidecar.as_ref().unwrap();
-        assert_eq!(sidecar.profile_name, "personal");
+        let LaunchSidecarPlan::OpenCodeSiwc(sidecar) = resolved.sidecar_plan.as_ref().unwrap();
         assert_eq!(sidecar.model, "personal-model");
         assert!(resolved.env.auth_vars.is_empty());
         assert!(!resolved.env.vars.iter().any(|(name, _)| {
@@ -926,7 +946,7 @@ clear_env = ["CODEX_API_KEY"]
             .env
             .display_only_vars
             .contains(&"ACCESS_TOKEN".to_string()));
-        assert!(resolved.opencode_sidecar.is_some());
+        assert!(resolved.sidecar_plan.is_some());
     }
 
     #[tokio::test]
@@ -1002,12 +1022,88 @@ access_token_env = "ACCESS_TOKEN"
         .unwrap();
 
         assert!(resolution.parent_gateway.is_some());
-        assert!(resolution.opencode_sidecar.is_none());
+        assert!(resolution.sidecar_plan.is_none());
         assert!(resolution
             .env
             .vars
             .iter()
             .any(|(name, _)| name == "OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn sidecar_context_carries_run_metadata_without_inventing_named_tool_runs() {
+        let mut resolved = ResolvedRunLaunch {
+            env: LaunchEnv {
+                vars: Vec::new(),
+                auth_vars: Vec::new(),
+                display_only_vars: Vec::new(),
+                clear_vars: Vec::new(),
+                remove_vars: Vec::new(),
+                profile_name: "personal".to_string(),
+            },
+            program: "opencode".to_string(),
+            logical_tool_name: Some("opencode".to_string()),
+            parent_gateway: None,
+            allowed_models: Vec::new(),
+            policy: Some(ResolvedRunPolicy {
+                name: "bounded".to_string(),
+                max_budget: 10.0,
+                max_duration: "1h".to_string(),
+                tags: Vec::new(),
+            }),
+            prepend_args: Vec::new(),
+            sidecar_plan: None,
+        };
+        let run_id = Uuid::parse_str("4b9a85df-51d9-49a4-9a17-69d7f0dc91f1").unwrap();
+        let run_id_string = run_id.to_string();
+
+        let run_context = sidecar_context(&resolved, Some(run_id));
+        assert_eq!(run_context.profile, "personal");
+        assert_eq!(run_context.logical_tool_name, "opencode");
+        assert_eq!(run_context.run_id.as_deref(), Some(run_id_string.as_str()));
+        assert_eq!(run_context.run_policy.as_deref(), Some("bounded"));
+
+        resolved.policy = None;
+        let named_tool_context = sidecar_context(&resolved, None);
+        assert_eq!(named_tool_context.run_id, None);
+        assert_eq!(named_tool_context.run_policy, None);
+    }
+
+    #[tokio::test]
+    async fn sidecar_stops_after_success_failure_interrupt_or_spawn_error() {
+        let outcomes: [Result<&str, &str>; 4] = [
+            Ok("success"),
+            Ok("child failure"),
+            Ok("interrupt"),
+            Err("spawn failure"),
+        ];
+        let client = reqwest::Client::new();
+
+        for outcome in outcomes {
+            let app = axum::Router::new().route("/ready", axum::routing::get(|| async { "ready" }));
+            let server = ServerHandle::start(
+                app,
+                LocalGatewayContext::new(
+                    "personal".to_string(),
+                    "opencode".to_string(),
+                    None,
+                    None,
+                ),
+                AuthFailureResponse::new("test_error", "Invalid test credential"),
+            )
+            .await
+            .unwrap();
+            let address = server.address();
+
+            let result = StartedLaunchSidecar(server).run_child(|| outcome).await;
+
+            assert_eq!(result, outcome);
+            assert!(client
+                .get(format!("http://{address}/ready"))
+                .send()
+                .await
+                .is_err());
+        }
     }
 
     #[test]

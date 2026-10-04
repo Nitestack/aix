@@ -147,8 +147,9 @@ pub async fn run(options: RunOptions) -> Result<()> {
         );
         return Ok(());
     }
-    let mut active_sidecar = launch::start_launch_sidecar(&mut resolved, timeout).await?;
     let run_id = Uuid::new_v4();
+    let mut active_sidecar =
+        launch::start_launch_sidecar(&mut resolved, timeout, Some(run_id)).await?;
     let effective_tags = resolved
         .policy
         .as_ref()
@@ -306,16 +307,19 @@ pub async fn run(options: RunOptions) -> Result<()> {
     );
 
     let started = Instant::now();
-    let child_result = launch::run_command_status_interruptible(
-        &resolved.program,
-        &child_args,
-        &resolved.env,
-        &interrupt_requested,
-        &terminated,
-    );
-    if let Some(sidecar) = active_sidecar.take() {
-        sidecar.stop().await;
-    }
+    let run_child = || {
+        launch::run_command_status_interruptible(
+            &resolved.program,
+            &child_args,
+            &resolved.env,
+            &interrupt_requested,
+            &terminated,
+        )
+    };
+    let child_result = match active_sidecar.take() {
+        Some(sidecar) => sidecar.run_child(run_child).await,
+        None => run_child(),
+    };
     record.finished_at_unix_ms = Some(RunRecord::now_unix_ms());
     record.duration_ms = Some(started.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
     let (child_status, child_error) = match child_result {

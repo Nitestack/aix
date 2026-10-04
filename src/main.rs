@@ -11,6 +11,7 @@ mod error;
 mod gateway;
 mod inference;
 mod lease_registry;
+mod local_gateway;
 mod output;
 mod run_history;
 mod secrets;

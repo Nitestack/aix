@@ -1,18 +1,17 @@
 use crate::auth::AuthService;
+use crate::commands::launch::LaunchEnv;
+use crate::local_gateway::{self, LaunchContext, ServerHandle};
+#[cfg(test)]
 use crate::secrets::SecretString;
-use axum::body::{to_bytes, Body};
-use axum::extract::State;
-use axum::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
-use axum::http::{HeaderMap, HeaderName, Method, Request, Response, StatusCode};
+use axum::body::Body;
+use axum::extract::{Extension, State};
+use axum::http::header::{ACCEPT, CONTENT_TYPE};
+use axum::http::{Method, Request, Response, StatusCode};
 use axum::Router;
 use color_eyre::Result;
-use futures_util::StreamExt;
 use serde_json::Value;
-use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
 use url::Url;
 
 // OpenAI's current OSS SIWC preview contract: https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
@@ -63,8 +62,6 @@ pub(super) const OPENCODE_CONFIG_ENV: &str = "OPENCODE_CONFIG_CONTENT";
 pub(super) const BRIDGE_TOKEN_ENV: &str = "AIX_OPENCODE_BRIDGE_TOKEN";
 const RESPONSES_PROVIDER_PACKAGE: &str = "@opencode/ai/providers/openai/responses";
 const OPENAI_PUBLIC_API_BASE: &str = "https://api.openai.com/v1/";
-const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
-
 const FORWARDED_RESPONSE_HEADERS: &[&str] = &[
     "content-type",
     "cache-control",
@@ -74,6 +71,17 @@ const FORWARDED_RESPONSE_HEADERS: &[&str] = &[
     "openai-processing-ms",
     "openai-version",
 ];
+
+pub(super) struct OpenCodeSiwcPlan {
+    pub model: String,
+}
+
+pub(super) fn print_dry_run(plan: &OpenCodeSiwcPlan) {
+    eprintln!(
+        "Would use ephemeral OpenCode SIWC bridge with provider aix-chatgpt (model {})",
+        plan.model
+    );
+}
 
 pub(super) fn runtime_config(port: u16, model: &str) -> Result<String, serde_json::Error> {
     let base_url = format!("http://127.0.0.1:{port}/v1");
@@ -105,113 +113,121 @@ pub(super) fn runtime_config(port: u16, model: &str) -> Result<String, serde_jso
 }
 
 struct BridgeState {
-    profile_name: String,
     auth: Arc<AuthService>,
-    bridge_token: SecretString,
     upstream_base: Url,
     client: reqwest::Client,
 }
 
 pub(super) struct BridgeHandle {
-    address: SocketAddr,
-    child_token: SecretString,
-    server: Option<JoinHandle<()>>,
+    server: ServerHandle,
+    runtime_config: String,
 }
 
 impl BridgeHandle {
-    pub(super) async fn start(profile_name: &str, timeout: Duration) -> Result<Self> {
+    pub(super) async fn start(
+        plan: OpenCodeSiwcPlan,
+        context: LaunchContext,
+        timeout: Duration,
+    ) -> Result<Self> {
         let auth = Arc::new(AuthService::new(timeout)?);
         let upstream_base = Url::parse(OPENAI_PUBLIC_API_BASE)?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .build()?;
-        Self::bind(profile_name, auth, upstream_base, client).await
+        Self::bind(plan, context, auth, upstream_base, client).await
     }
 
     #[cfg(test)]
     async fn start_for_test(
-        profile_name: &str,
+        context: LaunchContext,
         auth: Arc<AuthService>,
         upstream_base: Url,
+        model: &str,
     ) -> Result<Self> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
             .build()?;
-        Self::bind(profile_name, auth, upstream_base, client).await
+        Self::bind(
+            OpenCodeSiwcPlan {
+                model: model.to_string(),
+            },
+            context,
+            auth,
+            upstream_base,
+            client,
+        )
+        .await
     }
 
     async fn bind(
-        profile_name: &str,
+        plan: OpenCodeSiwcPlan,
+        context: LaunchContext,
         auth: Arc<AuthService>,
         upstream_base: Url,
         client: reqwest::Client,
     ) -> Result<Self> {
-        let child_token = SecretString::new(format!(
-            "{}{}",
-            uuid::Uuid::new_v4().simple(),
-            uuid::Uuid::new_v4().simple()
-        ));
-        let server_token = SecretString::new(child_token.expose_secret().to_owned());
-        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
-        let address = listener.local_addr()?;
         let state = Arc::new(BridgeState {
-            profile_name: profile_name.to_owned(),
             auth,
-            bridge_token: server_token,
             upstream_base,
             client,
         });
         let app = Router::new().fallback(handle_request).with_state(state);
-        let server = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
+        let server = ServerHandle::start(
+            app,
+            context,
+            local_gateway::AuthFailureResponse::new(
+                "aix_opencode_bridge_error",
+                "Invalid bridge credential",
+            ),
+        )
+        .await?;
+        let runtime_config = runtime_config(server.port(), &plan.model)?;
         Ok(Self {
-            address,
-            child_token,
-            server: Some(server),
+            server,
+            runtime_config,
         })
     }
 
-    pub(super) fn port(&self) -> u16 {
-        self.address.port()
+    pub(super) fn configure_env(&self, env: &mut LaunchEnv) {
+        env.vars
+            .push((OPENCODE_CONFIG_ENV.to_string(), self.runtime_config.clone()));
+        env.auth_vars
+            .push((BRIDGE_TOKEN_ENV.to_string(), self.server.child_token()));
+    }
+
+    pub(super) fn into_server(self) -> ServerHandle {
+        self.server
     }
 
     #[cfg(test)]
-    fn address(&self) -> SocketAddr {
-        self.address
+    pub(super) fn port(&self) -> u16 {
+        self.server.port()
     }
 
+    #[cfg(test)]
+    fn address(&self) -> std::net::SocketAddr {
+        self.server.address()
+    }
+
+    #[cfg(test)]
     pub(super) fn child_token(&self) -> SecretString {
-        SecretString::new(self.child_token.expose_secret().to_owned())
+        self.server.child_token()
     }
 
-    pub(super) async fn stop(mut self) {
-        if let Some(server) = self.server.take() {
-            server.abort();
-            let _ = server.await;
-        }
-    }
-}
-
-impl Drop for BridgeHandle {
-    fn drop(&mut self) {
-        if let Some(server) = self.server.take() {
-            server.abort();
-        }
+    #[cfg(test)]
+    pub(super) async fn stop(self) {
+        self.server.stop().await;
     }
 }
 
 async fn handle_request(
     State(state): State<Arc<BridgeState>>,
+    Extension(context): Extension<LaunchContext>,
     request: Request<Body>,
 ) -> Response<Body> {
     let (parts, body) = request.into_parts();
-    if !has_valid_bridge_token(&parts.headers, &state.bridge_token) {
-        return error_response(StatusCode::UNAUTHORIZED, "Invalid bridge credential");
-    }
-
     if parts.uri.query().is_some() {
         return error_response(StatusCode::NOT_FOUND, "Route not found");
     }
@@ -226,7 +242,7 @@ async fn handle_request(
             if !is_json {
                 return error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Expected JSON request");
             }
-            let body = match to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
+            let body = match local_gateway::read_bounded_body(body).await {
                 Ok(body) => body,
                 Err(_) => {
                     return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large")
@@ -255,45 +271,17 @@ async fn handle_request(
         _ => return error_response(StatusCode::NOT_FOUND, "Route not found"),
     };
 
-    proxy_upstream(state, endpoint, method, request_body).await
-}
-
-fn has_valid_bridge_token(headers: &HeaderMap, expected: &SecretString) -> bool {
-    let mut values = headers.get_all(AUTHORIZATION).iter();
-    let Some(value) = values.next() else {
-        return false;
-    };
-    if values.next().is_some() {
-        return false;
-    }
-    let Some(value) = value
-        .to_str()
-        .ok()
-        .and_then(|value| value.strip_prefix("Bearer "))
-    else {
-        return false;
-    };
-    constant_time_equal(expected.expose_secret().as_bytes(), value.as_bytes())
-}
-
-fn constant_time_equal(expected: &[u8], provided: &[u8]) -> bool {
-    let mut difference = expected.len() ^ provided.len();
-    for index in 0..expected.len().max(provided.len()) {
-        difference |= usize::from(
-            expected.get(index).copied().unwrap_or_default()
-                ^ provided.get(index).copied().unwrap_or_default(),
-        );
-    }
-    difference == 0
+    proxy_upstream(state, &context.profile, endpoint, method, request_body).await
 }
 
 async fn proxy_upstream(
     state: Arc<BridgeState>,
+    profile_name: &str,
     endpoint: &str,
     method: Method,
     request_body: Option<Vec<u8>>,
 ) -> Response<Body> {
-    let token = match state.auth.access_token(&state.profile_name).await {
+    let token = match state.auth.access_token(profile_name).await {
         Ok(token) => token,
         Err(_) => {
             return error_response(
@@ -322,37 +310,14 @@ async fn proxy_upstream(
         Ok(response) => response,
         Err(_) => return error_response(StatusCode::BAD_GATEWAY, "Upstream request failed"),
     };
-    let status = upstream.status();
-    let headers = upstream.headers().clone();
-    let stream = upstream
-        .bytes_stream()
-        .map(|chunk| chunk.map_err(std::io::Error::other));
-    let mut response = Response::builder().status(status);
-    for header in FORWARDED_RESPONSE_HEADERS {
-        let name = HeaderName::from_static(header);
-        if let Some(value) = headers.get(&name) {
-            response = response.header(name, value);
-        }
-    }
-    match response.body(Body::from_stream(stream)) {
+    match local_gateway::forward_response(upstream, FORWARDED_RESPONSE_HEADERS) {
         Ok(response) => response,
         Err(_) => error_response(StatusCode::BAD_GATEWAY, "Upstream response failed"),
     }
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response<Body> {
-    let body = serde_json::json!({
-        "error": {
-            "type": "aix_opencode_bridge_error",
-            "message": message,
-        }
-    })
-    .to_string();
-    Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .expect("static error response is valid")
+    local_gateway::error_response(status, "aix_opencode_bridge_error", message)
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -479,14 +444,18 @@ fn extract_system_text(content: &Value) -> Result<String, CompatibilityError> {
 mod tests {
     use super::*;
     use assert_fs::TempDir;
-    use axum::body::Bytes;
+    use axum::body::{to_bytes, Bytes};
     use axum::extract::State;
+    use axum::http::header::AUTHORIZATION;
     use axum::http::Request;
     use futures_util::stream;
     use serde_json::json;
     use std::convert::Infallible;
+    use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
+    use tokio::net::TcpListener;
     use tokio::sync::{Mutex, Notify};
+    use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -514,7 +483,7 @@ mod tests {
             .get(AUTHORIZATION)
             .and_then(|header| header.to_str().ok())
             .map(str::to_owned);
-        let body_bytes = to_bytes(request.into_body(), MAX_REQUEST_BODY_BYTES)
+        let body_bytes = to_bytes(request.into_body(), local_gateway::MAX_REQUEST_BODY_BYTES)
             .await
             .unwrap();
         let body = if body_bytes.is_empty() {
@@ -607,6 +576,10 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn launch_context() -> LaunchContext {
+        LaunchContext::new("personal".to_string(), "opencode".to_string(), None, None)
     }
 
     #[test]
@@ -747,12 +720,18 @@ mod tests {
             "real-access-token",
         );
         let upstream = Url::parse("http://127.0.0.1:9/v1/").unwrap();
-        let bridge = BridgeHandle::start_for_test("personal", Arc::clone(&auth), upstream.clone())
-            .await
-            .unwrap();
-        let second_bridge = BridgeHandle::start_for_test("personal", auth, upstream)
-            .await
-            .unwrap();
+        let bridge = BridgeHandle::start_for_test(
+            launch_context(),
+            Arc::clone(&auth),
+            upstream.clone(),
+            "gpt-test",
+        )
+        .await
+        .unwrap();
+        let second_bridge =
+            BridgeHandle::start_for_test(launch_context(), auth, upstream, "gpt-test")
+                .await
+                .unwrap();
 
         assert_eq!(bridge.address().ip(), Ipv4Addr::LOCALHOST);
         assert_ne!(bridge.port(), 0);
@@ -762,6 +741,40 @@ mod tests {
         );
         assert_ne!(bridge.child_token().expose_secret(), "real-access-token");
         assert_eq!(format!("{:?}", bridge.child_token()), "[secret]");
+
+        let mut child_env = LaunchEnv {
+            vars: Vec::new(),
+            auth_vars: Vec::new(),
+            display_only_vars: Vec::new(),
+            clear_vars: Vec::new(),
+            remove_vars: Vec::new(),
+            profile_name: "personal".to_string(),
+        };
+        bridge.configure_env(&mut child_env);
+        assert_eq!(
+            child_env
+                .vars
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [OPENCODE_CONFIG_ENV]
+        );
+        assert_eq!(
+            child_env
+                .auth_vars
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [BRIDGE_TOKEN_ENV]
+        );
+        assert_eq!(
+            child_env.auth_vars[0].1.expose_secret(),
+            bridge.child_token().expose_secret()
+        );
+        assert!(!child_env.auth_vars[0]
+            .1
+            .expose_secret()
+            .contains("real-access-token"));
 
         let address = bridge.address();
         let token = bridge.child_token();
@@ -775,6 +788,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            unauthenticated.json::<Value>().await.unwrap(),
+            json!({
+                "error": {
+                    "type": "aix_opencode_bridge_error",
+                    "message": "Invalid bridge credential"
+                }
+            })
+        );
 
         let invalid = client
             .get(format!("http://{address}/v1/models"))
@@ -837,9 +859,10 @@ mod tests {
             "initial-access-token",
         );
         let (upstream, capture, upstream_task) = fake_api_server().await;
-        let bridge = BridgeHandle::start_for_test("personal", Arc::clone(&auth), upstream)
-            .await
-            .unwrap();
+        let bridge =
+            BridgeHandle::start_for_test(launch_context(), Arc::clone(&auth), upstream, "gpt-test")
+                .await
+                .unwrap();
         let token = bridge.child_token();
         let address = bridge.address();
         let client = reqwest::Client::new();
