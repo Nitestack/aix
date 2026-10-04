@@ -138,6 +138,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
 
     if dry_run {
         launch::validate_executable(&resolved.program)?;
+        launch::print_sidecar_dry_run(&resolved);
         run_lease::print_dry_run(
             &resolved,
             budget.expect("validated lease budget"),
@@ -146,6 +147,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         );
         return Ok(());
     }
+    let mut active_sidecar = launch::start_launch_sidecar(&mut resolved, timeout).await?;
     let run_id = Uuid::new_v4();
     let effective_tags = resolved
         .policy
@@ -311,6 +313,9 @@ pub async fn run(options: RunOptions) -> Result<()> {
         &interrupt_requested,
         &terminated,
     );
+    if let Some(sidecar) = active_sidecar.take() {
+        sidecar.stop().await;
+    }
     record.finished_at_unix_ms = Some(RunRecord::now_unix_ms());
     record.duration_ms = Some(started.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
     let (child_status, child_error) = match child_result {

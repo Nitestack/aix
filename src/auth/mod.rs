@@ -65,6 +65,44 @@ impl AuthService {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_test_profile_token(
+        store_root: std::path::PathBuf,
+        profile_name: &str,
+        access_token: &str,
+        refresh_token: &str,
+        expires_at: u64,
+        token_endpoint: url::Url,
+    ) -> Result<Self, AixError> {
+        let store = store::AuthStore::new(store_root);
+        store.save(&store::RegistrationRecord {
+            version: store::RECORD_VERSION,
+            profile: profile_name.to_owned(),
+            client_id: "test-client".to_owned(),
+            subject: "test-subject".to_owned(),
+            email: None,
+            scopes: vec![protocol::DIRECT_SCOPE.to_owned()],
+            id_token: None,
+            access_token: Some(SecretString::new(access_token.to_owned())),
+            refresh_token: Some(SecretString::new(refresh_token.to_owned())),
+            expires_at: Some(expires_at),
+            earliest_refresh_at: None,
+        })?;
+        let mut endpoints = OAuthEndpoints::production();
+        endpoints.token = token_endpoint;
+        Self::with_store_and_endpoints(store, endpoints, Duration::from_secs(5))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_access_token_for_test(&self, profile_name: &str) -> Result<(), AixError> {
+        let mut record = self
+            .store
+            .load(profile_name)?
+            .ok_or(AixError::AuthRefreshTokenUnavailable)?;
+        record.expires_at = Some(0);
+        self.store.save(&record)
+    }
+
     pub(crate) fn status(
         &self,
         profile_name: &str,

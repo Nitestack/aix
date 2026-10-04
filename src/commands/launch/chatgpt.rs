@@ -39,11 +39,30 @@ pub(super) async fn resolve_tool_launch(
             tool: tool_name.to_string(),
         })?;
     let program = tool.command.as_deref().unwrap_or(tool_name).to_string();
+    let uses_opencode_bridge = tool_name == "opencode";
 
     let mut auth_vars = Vec::new();
     let mut display_only_vars = Vec::new();
+    let mut opencode_sidecar = None;
     if matches!(tool_env_mode, ToolEnvMode::NamesOnly) {
-        display_only_vars.push(binding.access_token_env.clone());
+        if uses_opencode_bridge {
+            let model = config::resolve_model(None, cfg, profile)?;
+            display_only_vars.push(super::opencode::BRIDGE_TOKEN_ENV.to_string());
+            display_only_vars.push(super::opencode::OPENCODE_CONFIG_ENV.to_string());
+            opencode_sidecar = Some(super::OpenCodeSidecarPlan {
+                profile_name: profile_name.clone(),
+                model,
+            });
+        } else {
+            display_only_vars.push(binding.access_token_env.clone());
+        }
+    } else if uses_opencode_bridge {
+        validate_executable(&program)?;
+        let model = config::resolve_model(None, cfg, profile)?;
+        opencode_sidecar = Some(super::OpenCodeSidecarPlan {
+            profile_name: profile_name.clone(),
+            model,
+        });
     } else {
         let service = crate::auth::AuthService::new(timeout)?;
         let access_token = service.access_token(profile_name).await?;
@@ -69,8 +88,17 @@ pub(super) async fn resolve_tool_launch(
         "LITELLM_BASE_URL".to_string(),
     ];
     clear_vars.extend(binding.clear_env.iter().cloned());
+    if uses_opencode_bridge {
+        clear_vars.push(binding.access_token_env.clone());
+    }
     clear_vars.sort_unstable();
     clear_vars.dedup();
+
+    if uses_opencode_bridge {
+        vars.retain(|(name, _)| {
+            name != &binding.access_token_env && !clear_vars.iter().any(|clear| clear == name)
+        });
+    }
 
     Ok(LaunchResolution {
         env: LaunchEnv {
@@ -87,5 +115,6 @@ pub(super) async fn resolve_tool_launch(
         allowed_models: Vec::new(),
         policy: None,
         prepend_args: binding.prepend_args.clone(),
+        opencode_sidecar,
     })
 }

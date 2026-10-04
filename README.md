@@ -423,10 +423,11 @@ An optional `[tools.<name>]` entry controls how a named tool is launched by
 `anthropic`, `openai`, or `both`, and `env` adds tool-specific variables. Tool
 environment values override profile values, which override generated
 credentials for API-key profiles. A ChatGPT profile instead requires a
-`chatgpt` binding; it clears inherited standard API-key variables, applies
-`clear_env`, profile env, and tool env, then sets the selected access token in
-`access_token_env` last. Invalid environment names and clearing the access-token
-variable are rejected. Unconfigured tools never receive a ChatGPT token.
+`chatgpt` binding. Other ChatGPT-bound tools receive the selected access token
+in `access_token_env`; the special `opencode` binding instead starts an
+ephemeral SIWC bridge and gives OpenCode only a random local bridge credential.
+It never gives OpenCode the ChatGPT access, refresh, or ID token. Unconfigured
+tools never receive a ChatGPT token.
 
 For `aix <tool> ... --dry-run`, aix lists environment variable names without
 resolving configured secret sources or refreshing ChatGPT credentials.
@@ -521,6 +522,63 @@ send `initialize`, `initialized`, `thread/start`, and `turn/start`, and verify a
 completed response. No `codex login` is needed. See OpenAI's [Codex app-server
 guide](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)
 for the protocol sequence and provider details.
+
+#### OpenCode v2 with ChatGPT plan authentication
+
+OpenCode v2 uses a process-local `aix-chatgpt` Responses provider rather than
+its built-in `openai` provider. This keeps any saved OpenCode login untouched
+and prevents it from overriding the selected aix profile. Configure an
+effective default model for the profile and bind the logical `opencode` tool:
+
+```toml
+[profiles.personal]
+auth = { type = "chatgpt" }
+
+[profiles.personal.models]
+default = "gpt-5-codex"
+
+[tools.opencode]
+command = "opencode"
+api_format = "openai"
+
+[tools.opencode.chatgpt]
+access_token_env = "AIX_OPENCODE_BRIDGE_TOKEN"
+```
+
+Then run:
+
+```bash
+aix opencode personal
+# Or select it for the shell first:
+aix use personal
+aix opencode
+aix opencode personal --dry-run
+```
+
+The dry-run reports that the ephemeral bridge/provider would be used and lists
+environment variable names only. It does not start a listener or read/refresh
+ChatGPT tokens. On a real launch, aix starts a loopback-only bridge on an
+ephemeral port, injects its process-local OpenCode config through
+`OPENCODE_CONFIG_CONTENT`, and gives OpenCode only a random bearer credential
+that is valid for that local bridge. The real ChatGPT access token stays in aix;
+`AuthService` supplies a current token for each upstream request, including
+after refresh. The only upstream destination is the public
+`https://api.openai.com/v1` Responses API. OpenCode's config, credentials,
+sessions, and other user state are not edited.
+
+The bridge streams SSE, enforces `store: false` and `stream: true`, moves text
+system input into `instructions` without dropping its content, and removes the
+fields disallowed by the current [SIWC preview contract](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
+Supported function/custom tools and their history are preserved. Unsupported
+hosted Responses tools fail locally rather than being silently removed.
+Only the profile's effective default model is configured; OpenCode model
+catalog synchronization is not included.
+
+The runtime provider shape is based on the OpenCode
+[v2.0.22 provider configuration](https://opencode.ai/v2/docs/providers/). The
+automated bridge tests use a fake upstream. A real-account, multi-turn live
+smoke test against OpenCode v2.0.22 remains a manual release check; the host's
+installed version may be checked with `opencode --version`.
 
 No tool entries or harness adapters are preconfigured. API-key profiles retain
 the legacy fallback (`claude` gets Anthropic variables; other names get OpenAI
@@ -789,8 +847,9 @@ aix claude -- chat
 aix opencode work --dry-run
 ```
 
-The `[tools]` map is generic launch wiring only. It does not detect or ship
-adapters for particular harnesses, and it does not define prompts or workflows.
+The `[tools]` map is otherwise generic launch wiring. OpenCode is the narrow
+exception: a ChatGPT-authenticated `opencode` entry enables the SIWC bridge
+described above. Other tools do not get harness-specific adapters or workflows.
 
 ### Listing profiles
 

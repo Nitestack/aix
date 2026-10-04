@@ -6,10 +6,13 @@ use crate::secrets::SecretString;
 use color_eyre::Result;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[path = "launch/chatgpt.rs"]
 mod chatgpt;
+#[path = "launch/opencode.rs"]
+mod opencode;
 
 pub struct LaunchEnv {
     pub vars: Vec<(String, String)>,
@@ -43,6 +46,20 @@ pub struct ResolvedRunLaunch {
     pub allowed_models: Vec<String>,
     pub policy: Option<ResolvedRunPolicy>,
     pub prepend_args: Vec<String>,
+    pub(crate) opencode_sidecar: Option<OpenCodeSidecarPlan>,
+}
+
+pub(crate) struct OpenCodeSidecarPlan {
+    pub profile_name: String,
+    pub model: String,
+}
+
+pub(crate) struct StartedLaunchSidecar(opencode::BridgeHandle);
+
+impl StartedLaunchSidecar {
+    pub(crate) async fn stop(self) {
+        self.0.stop().await;
+    }
 }
 
 pub(crate) struct ParentGatewayCredentials {
@@ -66,6 +83,7 @@ struct LaunchResolution {
     allowed_models: Vec<String>,
     policy: Option<ResolvedRunPolicy>,
     prepend_args: Vec<String>,
+    opencode_sidecar: Option<OpenCodeSidecarPlan>,
 }
 
 struct LaunchContext {
@@ -187,6 +205,7 @@ async fn resolve_tool_launch(
         allowed_models: resolution.allowed_models,
         policy: resolution.policy,
         prepend_args: resolution.prepend_args,
+        opencode_sidecar: resolution.opencode_sidecar,
     })
 }
 
@@ -342,6 +361,7 @@ fn resolve_api_key_launch(
             tags: policy.tags.clone(),
         }),
         prepend_args: Vec::new(),
+        opencode_sidecar: None,
     })
 }
 
@@ -461,7 +481,7 @@ pub async fn run_named_tool(
     } else {
         ToolEnvMode::Resolve
     };
-    let resolved = resolve_tool_launch(
+    let mut resolved = resolve_tool_launch(
         LaunchRequest {
             selection,
             explicit_profile: None,
@@ -482,7 +502,77 @@ pub async fn run_named_tool(
         .cloned()
         .chain(args)
         .collect::<Vec<_>>();
-    run_command(&resolved.program, &args, &resolved.env, dry_run)
+    if dry_run {
+        print_sidecar_dry_run(&resolved);
+        return run_command(&resolved.program, &args, &resolved.env, true);
+    }
+
+    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout).await? else {
+        return run_command(&resolved.program, &args, &resolved.env, false);
+    };
+    let (interrupt_requested, terminated) = install_interrupt_handlers()?;
+    let child_result = run_command_status_interruptible(
+        &resolved.program,
+        &args,
+        &resolved.env,
+        &interrupt_requested,
+        &terminated,
+    );
+    sidecar.stop().await;
+    let status = child_result?;
+    if let Some(interruption) = interruption_reason(&interrupt_requested, &terminated) {
+        std::process::exit(interruption.exit_code());
+    }
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+pub(crate) async fn start_launch_sidecar(
+    resolved: &mut ResolvedRunLaunch,
+    timeout: Duration,
+) -> Result<Option<StartedLaunchSidecar>> {
+    let Some(plan) = resolved.opencode_sidecar.take() else {
+        return Ok(None);
+    };
+    let bridge = opencode::BridgeHandle::start(&plan.profile_name, timeout).await?;
+    let runtime_config = opencode::runtime_config(bridge.port(), &plan.model)?;
+    resolved
+        .env
+        .vars
+        .push((opencode::OPENCODE_CONFIG_ENV.to_string(), runtime_config));
+    resolved
+        .env
+        .auth_vars
+        .push((opencode::BRIDGE_TOKEN_ENV.to_string(), bridge.child_token()));
+    Ok(Some(StartedLaunchSidecar(bridge)))
+}
+
+pub(crate) fn print_sidecar_dry_run(resolved: &ResolvedRunLaunch) {
+    if let Some(plan) = &resolved.opencode_sidecar {
+        eprintln!(
+            "Would use ephemeral OpenCode SIWC bridge with provider aix-chatgpt (model {})",
+            plan.model
+        );
+    }
+}
+
+fn install_interrupt_handlers() -> Result<(Arc<AtomicBool>, Arc<AtomicBool>), AixError> {
+    let interrupt_requested = Arc::new(AtomicBool::new(false));
+    let ctrlc_flag = Arc::clone(&interrupt_requested);
+    ctrlc::set_handler(move || ctrlc_flag.store(true, Ordering::SeqCst))
+        .map_err(|error| AixError::RunInterruptHandler(std::io::Error::other(error.to_string())))?;
+    #[cfg(unix)]
+    let terminated = {
+        let flag = Arc::new(AtomicBool::new(false));
+        signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&flag))
+            .map_err(AixError::RunInterruptHandler)?;
+        flag
+    };
+    #[cfg(not(unix))]
+    let terminated = Arc::new(AtomicBool::new(false));
+    Ok((interrupt_requested, terminated))
 }
 
 pub fn detect_shell() -> String {
@@ -699,6 +789,226 @@ fn detect_shell_impl() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_tool_command() -> String {
+        serde_json::to_string(
+            &std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        )
+        .unwrap()
+    }
+
+    fn chatgpt_opencode_config(model: Option<&str>) -> config::Config {
+        let model = model
+            .map(|model| format!("[profiles.personal.models]\ndefault = {model:?}\n"))
+            .unwrap_or_default();
+        let config_text = format!(
+            r#"
+default_profile = "personal"
+
+[models]
+default = "global-model"
+
+[profiles.personal]
+auth = {{ type = "chatgpt" }}
+
+[profiles.personal.env]
+ACCESS_TOKEN = "profile-access-token"
+OPENAI_API_KEY = "profile-openai-key"
+KEEP_ME = "profile-setting"
+
+[tools.opencode]
+command = {}
+api_format = "openai"
+
+[tools.opencode.env]
+ACCESS_TOKEN = "tool-access-token"
+OPENAI_API_KEY = "tool-openai-key"
+TOOL_SETTING = "kept"
+
+[tools.opencode.chatgpt]
+access_token_env = "ACCESS_TOKEN"
+clear_env = ["CODEX_API_KEY"]
+
+{model}
+"#,
+            test_tool_command()
+        );
+        let config: config::Config = toml::from_str(&config_text).unwrap();
+        config::validate(&config).unwrap();
+        config
+    }
+
+    fn test_launch_request<'a>(tool_env_mode: ToolEnvMode) -> LaunchRequest<'a> {
+        LaunchRequest {
+            selection: ProfileSelection {
+                profile: Some("personal".to_string()),
+                non_interactive: true,
+            },
+            explicit_profile: None,
+            config_path: None,
+            format_override: None,
+            configured_tool_name: Some("opencode"),
+            tool_env_mode,
+            allowed_models: &[],
+            policy_name: None,
+            require_litellm: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn chatgpt_opencode_uses_profile_model_and_only_plans_a_local_bridge() {
+        let context = LaunchContext {
+            cfg: chatgpt_opencode_config(Some("personal-model")),
+            profile_name: "personal".to_string(),
+        };
+        let profile = context.profile().unwrap();
+        let resolved = chatgpt::resolve_tool_launch(
+            test_launch_request(ToolEnvMode::Resolve),
+            &context,
+            profile,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        let sidecar = resolved.opencode_sidecar.as_ref().unwrap();
+        assert_eq!(sidecar.profile_name, "personal");
+        assert_eq!(sidecar.model, "personal-model");
+        assert!(resolved.env.auth_vars.is_empty());
+        assert!(!resolved.env.vars.iter().any(|(name, _)| {
+            matches!(
+                name.as_str(),
+                "ACCESS_TOKEN" | "OPENAI_API_KEY" | "CODEX_API_KEY"
+            )
+        }));
+        assert!(resolved
+            .env
+            .clear_vars
+            .contains(&"ACCESS_TOKEN".to_string()));
+        assert!(!resolved.env.vars.iter().any(|(name, _)| {
+            name == opencode::OPENCODE_CONFIG_ENV || name == opencode::BRIDGE_TOKEN_ENV
+        }));
+    }
+
+    #[tokio::test]
+    async fn opencode_dry_run_resolves_no_token_and_reports_only_variable_names() {
+        let context = LaunchContext {
+            cfg: chatgpt_opencode_config(Some("personal-model")),
+            profile_name: "personal".to_string(),
+        };
+        let profile = context.profile().unwrap();
+        let resolved = chatgpt::resolve_tool_launch(
+            test_launch_request(ToolEnvMode::NamesOnly),
+            &context,
+            profile,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        assert!(resolved.env.auth_vars.is_empty());
+        assert_eq!(
+            resolved.env.vars,
+            [("AIX_PROFILE".to_string(), "personal".to_string())]
+        );
+        assert!(resolved
+            .env
+            .display_only_vars
+            .contains(&opencode::BRIDGE_TOKEN_ENV.to_string()));
+        assert!(resolved
+            .env
+            .display_only_vars
+            .contains(&opencode::OPENCODE_CONFIG_ENV.to_string()));
+        assert!(resolved
+            .env
+            .display_only_vars
+            .contains(&"ACCESS_TOKEN".to_string()));
+        assert!(resolved.opencode_sidecar.is_some());
+    }
+
+    #[tokio::test]
+    async fn chatgpt_opencode_requires_an_effective_default_model() {
+        let mut cfg = chatgpt_opencode_config(None);
+        cfg.models.default = None;
+        let context = LaunchContext {
+            cfg,
+            profile_name: "personal".to_string(),
+        };
+        let profile = context.profile().unwrap();
+        let error = match chatgpt::resolve_tool_launch(
+            test_launch_request(ToolEnvMode::NamesOnly),
+            &context,
+            profile,
+            Duration::from_secs(5),
+        )
+        .await
+        {
+            Ok(_) => panic!("an OpenCode profile without a default model should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error.downcast_ref::<AixError>(),
+            Some(AixError::NoModelConfigured)
+        ));
+    }
+
+    #[test]
+    fn api_key_opencode_launch_does_not_gain_a_chatgpt_sidecar() {
+        let config: config::Config = toml::from_str(&format!(
+            r#"
+[endpoint]
+base_url = "https://gateway.example/v1"
+
+[profiles.work]
+api_key = "api-key-profile"
+
+[tools.opencode]
+command = {}
+api_format = "openai"
+[tools.opencode.chatgpt]
+access_token_env = "ACCESS_TOKEN"
+"#,
+            test_tool_command()
+        ))
+        .unwrap();
+        config::validate(&config).unwrap();
+        let context = LaunchContext {
+            cfg: config,
+            profile_name: "work".to_string(),
+        };
+        let profile = context.profile().unwrap();
+        let resolution = resolve_api_key_launch(
+            LaunchRequest {
+                selection: ProfileSelection {
+                    profile: Some("work".to_string()),
+                    non_interactive: true,
+                },
+                explicit_profile: None,
+                config_path: None,
+                format_override: None,
+                configured_tool_name: Some("opencode"),
+                tool_env_mode: ToolEnvMode::Resolve,
+                allowed_models: &[],
+                policy_name: None,
+                require_litellm: false,
+            },
+            &context,
+            profile,
+        )
+        .unwrap();
+
+        assert!(resolution.parent_gateway.is_some());
+        assert!(resolution.opencode_sidecar.is_none());
+        assert!(resolution
+            .env
+            .vars
+            .iter()
+            .any(|(name, _)| name == "OPENAI_API_KEY"));
+    }
 
     #[test]
     #[cfg(unix)]

@@ -23,8 +23,10 @@ inquire     = { version = "0.9", default-features = false, features = ["crosster
 thiserror   = "2"
 color-eyre  = { version = "0.6", default-features = false }
 zeroize     = "1"
-reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio       = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "io-util"] }
+reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+axum        = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+futures-util = "0.3"
+tokio       = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "io-util", "sync"] }
 owo-colors  = { version = "4", features = ["supports-colors"] }
 chrono      = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid        = { version = "1", features = ["serde", "v4"] }

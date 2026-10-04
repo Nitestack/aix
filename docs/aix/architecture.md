@@ -64,15 +64,20 @@ claims from OpenID metadata/JWKS, discovers revocation, and refreshes tokens.
 `store.rs` writes versioned, profile-scoped records atomically and uses file
 locks to serialize login/logout/refresh across processes. `launch.rs` asks this
 service for a usable access token only for an explicitly ChatGPT-bound tool.
+Ordinary bound tools receive that access token at launch; OpenCode's dedicated
+bridge asks `AuthService` for a token per upstream request instead.
 
 The store lives under the platform local application-data directory (or
 `AIX_AUTH_DIR`). On Unix, the directory and files are restricted to the owner
 (0700/0600). OAuth tokens are persisted as local JSON and are not encrypted at
 rest. The status command reads only local state and never returns token values.
-The launch boundary exposes only the short-lived access token, under the
-configured `access_token_env`; refresh tokens, ID tokens, client IDs, and tokens
-for other profiles remain in the auth service/store. No OAuth token is exported
-through `env`, `shell`, generic `exec`, inference, or an unconfigured tool.
+The ordinary launch boundary exposes only the short-lived access token, under
+the configured `access_token_env`; refresh tokens, ID tokens, client IDs, and
+tokens for other profiles remain in the auth service/store. The OpenCode child
+instead receives only a random bridge bearer token; the ChatGPT access token is
+added to a request inside aix and is never placed in the child environment. No
+OAuth token is exported through `env`, `shell`, generic `exec`, inference, or an
+unconfigured tool.
 `aix run` uses the same explicit binding, but lease and run-policy paths reject
 ChatGPT profiles before reaching LiteLLM.
 
@@ -140,22 +145,39 @@ Shared by `exec`, `shell`, `run`, and external named-tool dispatch.
 launch a child, and preserve its exit behavior. API-key launches keep the
 generated/profile/tool precedence and legacy named-tool fallbacks. ChatGPT
 launches require `tools.<name>.chatgpt`, clear standard inherited API-key
-variables and configured `clear_env`, then apply profile env, tool env, and the
-selected access token last. ChatGPT prepended arguments come before caller
-arguments. Dry-run reports arguments and variable names without loading or
-refreshing OAuth credentials. An unconfigured API-key `aix run` command receives
-both credential formats.
+variables and configured `clear_env`, then apply profile env and tool env. Most
+bound tools receive the selected access token last; ChatGPT-authenticated
+OpenCode instead uses the `opencode_sidecar` lifecycle described below.
+ChatGPT prepended arguments come before caller arguments. Dry-run reports
+arguments and variable names without starting the bridge or loading/refreshing
+OAuth credentials. An unconfigured API-key `aix run` command receives both
+credential formats.
+
+### `src/commands/launch/opencode.rs` — OpenCode SIWC bridge
+
+This narrow adapter is selected only for the logical `opencode` tool with a
+ChatGPT profile. It binds an ephemeral listener to `127.0.0.1`, generates a
+per-launch bridge secret, and supplies process-local OpenCode v2 configuration
+for a dedicated `aix-chatgpt` Responses provider. It accepts only authenticated
+`POST /v1/responses` and `GET /v1/models` requests and fixes the upstream base to
+`https://api.openai.com/v1/`. The real access token is fetched from
+`AuthService` for every upstream request; request/response streaming and the
+current SIWC request restrictions are handled here rather than in generic
+launch code. Dropping the sidecar cancels the listener and in-flight requests.
+It writes no OpenCode configuration, credential, session, or project files and
+does not implement a general proxy or model-catalog synchronizer.
 
 ### Named-tool dispatch (`aix <tool>`) — in `src/app.rs`
 
 `aix <tool>` is handled by the `Command::Tool` external subcommand in `app.rs`.
 The launcher checks `tools.<name>` first, then applies compatibility fallback.
-It does not embed harness-specific behavior beyond the legacy `claude` default.
+The only harness-specific behavior is the narrow OpenCode SIWC sidecar above.
 
 - API-key profile + configured `[tools.<name>]` → configured command, format, and env
 - API-key profile + unconfigured `aix claude` → `ApiFormat::Anthropic`
 - API-key profile + other unconfigured `aix <tool>` → `ApiFormat::OpenAi`
-- ChatGPT profile + configured `[tools.<name>.chatgpt]` → explicit token handoff
+- ChatGPT profile + configured non-OpenCode tool → explicit access-token handoff
+- ChatGPT profile + configured `opencode` tool → local bridge credential only
 - ChatGPT profile + missing binding → capability error; no API-key fallback
 
 Usage: `aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]`
@@ -208,7 +230,8 @@ These invariants must hold across all future changes.
 5. **Gateway and tool configuration stays declarative.**
    Gateway endpoints and metadata belong in profiles/config. Tool-specific
    executable, credential format, and extra env belong in `[tools.<name>]`;
-   launch logic stays generic and does not encode harness workflows.
+   launch logic stays generic except for the narrowly scoped OpenCode SIWC
+   sidecar, which must not grow into a general harness proxy framework.
 
 6. **Config format is stable.**  
    TOML, YAML, JSON, and JSON5 config files must parse to identical in-memory
