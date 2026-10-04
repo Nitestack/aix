@@ -133,6 +133,12 @@ let
         description = "Credential variable format to provide to this tool.";
       };
 
+      localGateway = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Route this API-key tool through aix's per-launch local gateway.";
+      };
+
       env = lib.mkOption {
         type = lib.types.attrsOf secretSourceType;
         default = { };
@@ -202,6 +208,9 @@ let
     _name: tool:
     {
       api_format = tool.apiFormat;
+    }
+    // lib.optionalAttrs tool.localGateway {
+      local_gateway = true;
     }
     // lib.optionalAttrs (tool.command != null) {
       command = tool.command;

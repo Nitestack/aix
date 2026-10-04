@@ -33,8 +33,7 @@ struct OpenAiResponseBody {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
-enum OpenAiProtocol {
+pub(crate) enum OpenAiProtocol {
     Responses,
     ChatCompletions,
 }
@@ -155,15 +154,32 @@ pub(crate) struct OpenAiResponsesObserver {
     stream: OpenAiSseUsage,
     recorder: Option<UsageEventRecorder>,
     status: u16,
+    protocol: OpenAiProtocol,
+    is_sse: bool,
+    json_body: Vec<u8>,
+    json_body_overflowed: bool,
     finished: bool,
 }
 
 impl OpenAiResponsesObserver {
     pub(crate) fn new(recorder: UsageEventRecorder, status: u16) -> Self {
+        Self::for_protocol(recorder, status, OpenAiProtocol::Responses, true)
+    }
+
+    pub(crate) fn for_protocol(
+        recorder: UsageEventRecorder,
+        status: u16,
+        protocol: OpenAiProtocol,
+        is_sse: bool,
+    ) -> Self {
         Self {
             stream: OpenAiSseUsage::default(),
             recorder: Some(recorder),
             status,
+            protocol,
+            is_sse,
+            json_body: Vec::new(),
+            json_body_overflowed: false,
             finished: false,
         }
     }
@@ -171,29 +187,52 @@ impl OpenAiResponsesObserver {
 
 impl ResponseBodyObserver for OpenAiResponsesObserver {
     fn observe(&mut self, bytes: &[u8]) {
-        self.stream.push(bytes, OpenAiProtocol::Responses);
+        if self.is_sse {
+            self.stream.push(bytes, self.protocol);
+        } else if self
+            .json_body
+            .len()
+            .checked_add(bytes.len())
+            .is_some_and(|length| length <= MAX_USAGE_JSON_BYTES)
+        {
+            self.json_body.extend_from_slice(bytes);
+        } else {
+            self.json_body.clear();
+            self.json_body_overflowed = true;
+        }
         if let Some(recorder) = &mut self.recorder {
             recorder.set_usage(&self.stream.usage);
         }
     }
 
     fn finish(&mut self, stream_end: ResponseStreamEnd) {
-        self.stream.finish(OpenAiProtocol::Responses);
+        if self.is_sse {
+            self.stream.finish(self.protocol);
+        } else if !self.json_body_overflowed {
+            let usage = match self.protocol {
+                OpenAiProtocol::Responses => responses_json_usage(&self.json_body),
+                OpenAiProtocol::ChatCompletions => chat_completions_json_usage(&self.json_body),
+            };
+            if let Some(usage) = usage {
+                self.stream.usage.merge(&usage);
+            }
+        }
         let (outcome, category) = if !(200..300).contains(&self.status) {
             (UsageOutcome::Failed, Some("upstream_http"))
+        } else if matches!(stream_end, ResponseStreamEnd::Error) {
+            (UsageOutcome::Failed, Some("upstream_stream"))
+        } else if !self.is_sse {
+            (UsageOutcome::Succeeded, None)
         } else {
-            match (self.stream.terminal, stream_end) {
-                (Some(TerminalEvent::Failed), _) => {
+            match self.stream.terminal {
+                Some(TerminalEvent::Failed) => {
                     (UsageOutcome::Failed, Some("upstream_response_error"))
                 }
-                (Some(TerminalEvent::Incomplete), _) => {
+                Some(TerminalEvent::Incomplete) => {
                     (UsageOutcome::Incomplete, Some("incomplete_response"))
                 }
-                (_, ResponseStreamEnd::Error) => (UsageOutcome::Failed, Some("upstream_stream")),
-                (Some(TerminalEvent::Completed), ResponseStreamEnd::Complete) => {
-                    (UsageOutcome::Succeeded, None)
-                }
-                (None, ResponseStreamEnd::Complete) => (
+                Some(TerminalEvent::Completed) => (UsageOutcome::Succeeded, None),
+                None => (
                     UsageOutcome::Incomplete,
                     Some("stream_ended_without_terminal_event"),
                 ),
@@ -222,6 +261,8 @@ impl Drop for OpenAiResponsesObserver {
         }
     }
 }
+
+const MAX_USAGE_JSON_BYTES: usize = 1024 * 1024;
 
 fn normalize_openai_usage(raw: OpenAiUsageRaw) -> TokenUsage {
     let input_tokens_total = raw.input_tokens.or(raw.prompt_tokens);

@@ -32,6 +32,9 @@ pub(super) async fn resolve_tool_launch(
         .ok_or_else(|| AixError::ChatGptToolNotConfigured {
             tool: tool_name.to_string(),
         })?;
+    if tool.local_gateway {
+        return Err(AixError::ChatGptAuthUnsupported.into());
+    }
     let binding = tool
         .chatgpt
         .as_ref()

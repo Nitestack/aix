@@ -68,11 +68,23 @@ pub enum ApiFormat {
     Both,
 }
 
+impl ApiFormat {
+    pub(crate) fn supports_openai(self) -> bool {
+        matches!(self, Self::OpenAi | Self::Both)
+    }
+
+    pub(crate) fn supports_anthropic(self) -> bool {
+        matches!(self, Self::Anthropic | Self::Both)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tool {
     pub command: Option<String>,
     pub api_format: ApiFormat,
+    #[serde(default)]
+    pub local_gateway: bool,
     #[serde(default)]
     pub env: HashMap<String, SecretSource>,
     #[serde(default)]

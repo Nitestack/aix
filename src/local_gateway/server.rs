@@ -148,21 +148,29 @@ async fn authorize_request(
 }
 
 fn has_valid_child_token(headers: &HeaderMap, expected: &SecretString) -> bool {
-    let mut values = headers.get_all(AUTHORIZATION).iter();
-    let Some(value) = values.next() else {
-        return false;
-    };
-    if values.next().is_some() {
+    let mut authorization_values = headers.get_all(AUTHORIZATION).iter();
+    let authorization = authorization_values.next();
+    if authorization_values.next().is_some() {
         return false;
     }
-    let Some(value) = value
-        .to_str()
-        .ok()
-        .and_then(|value| value.strip_prefix("Bearer "))
-    else {
+
+    let mut api_key_values = headers.get_all("x-api-key").iter();
+    let api_key = api_key_values.next();
+    if api_key_values.next().is_some() || (authorization.is_some() && api_key.is_some()) {
         return false;
+    }
+
+    let provided = match (authorization, api_key) {
+        (Some(value), None) => value
+            .to_str()
+            .ok()
+            .and_then(|value| value.strip_prefix("Bearer ")),
+        (None, Some(value)) => value.to_str().ok(),
+        _ => None,
     };
-    constant_time_equal(expected.expose_secret().as_bytes(), value.as_bytes())
+    provided.is_some_and(|provided| {
+        constant_time_equal(expected.expose_secret().as_bytes(), provided.as_bytes())
+    })
 }
 
 fn constant_time_equal(expected: &[u8], provided: &[u8]) -> bool {
@@ -270,6 +278,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let anthropic_auth = client
+            .get(format!("http://{address}/context"))
+            .header("x-api-key", first.child_token().expose_secret())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(anthropic_auth.status(), StatusCode::OK);
 
         let mut excessive_headers = client
             .get(format!("http://{address}/context"))

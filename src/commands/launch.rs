@@ -1,8 +1,10 @@
-use crate::commands::env::{collect_profile_vars, resolve_profile};
+use crate::commands::env::{collect_profile_vars, collect_vars, resolve_profile};
 use crate::commands::ProfileSelection;
 use crate::config;
 use crate::error::AixError;
-use crate::local_gateway::{LaunchContext as LocalGatewayContext, ServerHandle};
+use crate::local_gateway::{
+    ApiKeyGatewayHandle, LaunchContext as LocalGatewayContext, ServerHandle,
+};
 use crate::secrets::SecretString;
 use color_eyre::Result;
 use std::path::{Path, PathBuf};
@@ -53,6 +55,7 @@ pub struct ResolvedRunLaunch {
 
 enum LaunchSidecarPlan {
     OpenCodeSiwc,
+    ApiKey { api_format: config::ApiFormat },
 }
 
 pub(crate) struct StartedLaunchSidecar(ServerHandle);
@@ -307,13 +310,53 @@ fn resolve_api_key_launch(
         cfg,
         profile_entry,
     )?;
-    let api_key = profile_entry.resolve_api_key()?;
-    let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
     let configured_tool = configured_tool_name.and_then(|name| cfg.tools.get(name));
     let api_format = configured_tool
         .map(|tool| tool.api_format)
         .or(format_override)
         .unwrap_or(config::ApiFormat::Both);
+    let local_gateway = configured_tool.is_some_and(|tool| tool.local_gateway);
+    let effective_program = configured_tool
+        .and_then(|tool| tool.command.as_deref())
+        .or(configured_tool_name)
+        .unwrap_or_default()
+        .to_string();
+    if local_gateway {
+        validate_executable(&effective_program)?;
+    }
+
+    let local_gateway_dry_run = local_gateway && matches!(tool_env_mode, ToolEnvMode::NamesOnly);
+    let (mut vars, mut display_only_vars, parent_gateway) = if local_gateway_dry_run {
+        let mut vars: Vec<_> = collect_vars(profile_name, "", "", &api_format)
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect();
+        vars.retain(|(name, _)| !is_gateway_managed_env_var(name));
+        let mut display_only_vars = Vec::new();
+        append_configured_env(
+            &profile_entry.env,
+            ToolEnvMode::NamesOnly,
+            &mut vars,
+            &mut display_only_vars,
+        )?;
+        display_only_vars.extend(ApiKeyGatewayHandle::dry_run_variable_names(api_format));
+        (vars, display_only_vars, None)
+    } else {
+        let api_key = profile_entry.resolve_api_key()?;
+        let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
+        let vars = collect_profile_vars(
+            profile_name,
+            api_key.expose_secret(),
+            base_url.expose_secret(),
+            &api_format,
+            profile_entry,
+        )?;
+        (
+            vars,
+            Vec::new(),
+            Some(ParentGatewayCredentials { base_url, api_key }),
+        )
+    };
     let clear_vars = if configured_tool.is_some() {
         match api_format {
             config::ApiFormat::Anthropic => {
@@ -328,25 +371,12 @@ fn resolve_api_key_launch(
     } else {
         Vec::new()
     };
-
-    let mut vars = collect_profile_vars(
-        profile_name,
-        api_key.expose_secret(),
-        base_url.expose_secret(),
-        &api_format,
-        profile_entry,
-    )?;
-    let mut display_only_vars = Vec::new();
     if let Some(tool) = configured_tool {
         append_configured_env(&tool.env, tool_env_mode, &mut vars, &mut display_only_vars)?;
     }
 
     let logical_tool_name = configured_tool.map(|_| configured_tool_name.unwrap().to_string());
-    let effective_program = configured_tool
-        .and_then(|tool| tool.command.as_deref())
-        .or(configured_tool_name)
-        .unwrap_or_default()
-        .to_string();
+    let sidecar_plan = local_gateway.then_some(LaunchSidecarPlan::ApiKey { api_format });
 
     Ok(LaunchResolution {
         env: LaunchEnv {
@@ -359,7 +389,7 @@ fn resolve_api_key_launch(
         },
         program: effective_program,
         logical_tool_name,
-        parent_gateway: Some(ParentGatewayCredentials { base_url, api_key }),
+        parent_gateway,
         allowed_models: resolved_allowed_models,
         policy: policy.map(|policy| ResolvedRunPolicy {
             name: policy_name.unwrap_or_default().to_string(),
@@ -368,8 +398,20 @@ fn resolve_api_key_launch(
             tags: policy.tags.clone(),
         }),
         prepend_args: Vec::new(),
-        sidecar_plan: None,
+        sidecar_plan,
     })
+}
+
+fn is_gateway_managed_env_var(name: &str) -> bool {
+    matches!(
+        name,
+        "ANTHROPIC_API_KEY"
+            | "ANTHROPIC_BASE_URL"
+            | "OPENAI_API_KEY"
+            | "OPENAI_BASE_URL"
+            | "LITELLM_API_KEY"
+            | "LITELLM_BASE_URL"
+    )
 }
 
 fn append_configured_env(
@@ -514,7 +556,7 @@ pub async fn run_named_tool(
         return run_command(&resolved.program, &args, &resolved.env, true);
     }
 
-    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None).await? else {
+    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None, None).await? else {
         return run_command(&resolved.program, &args, &resolved.env, false);
     };
     let (interrupt_requested, terminated) = install_interrupt_handlers()?;
@@ -543,6 +585,7 @@ pub(crate) async fn start_launch_sidecar(
     resolved: &mut ResolvedRunLaunch,
     timeout: Duration,
     run_id: Option<Uuid>,
+    upstream_api_key_override: Option<&SecretString>,
 ) -> Result<Option<StartedLaunchSidecar>> {
     let Some(plan) = resolved.sidecar_plan.take() else {
         return Ok(None);
@@ -553,6 +596,24 @@ pub(crate) async fn start_launch_sidecar(
             let bridge = opencode::BridgeHandle::start(context, timeout).await?;
             bridge.configure_env(&mut resolved.env);
             bridge.into_server()
+        }
+        LaunchSidecarPlan::ApiKey { api_format } => {
+            let parent_gateway = resolved
+                .parent_gateway
+                .as_ref()
+                .ok_or(AixError::ChatGptAuthUnsupported)?;
+            let upstream_api_key = upstream_api_key_override
+                .unwrap_or(&parent_gateway.api_key)
+                .expose_secret();
+            let gateway = ApiKeyGatewayHandle::start(
+                context,
+                api_format,
+                parent_gateway.base_url.expose_secret(),
+                upstream_api_key,
+            )
+            .await?;
+            gateway.configure_env(&mut resolved.env);
+            gateway.into_server()
         }
     };
     Ok(Some(StartedLaunchSidecar(server)))
@@ -574,6 +635,9 @@ pub(crate) fn print_sidecar_dry_run(resolved: &ResolvedRunLaunch) {
     if let Some(plan) = &resolved.sidecar_plan {
         match plan {
             LaunchSidecarPlan::OpenCodeSiwc => opencode::print_dry_run(),
+            LaunchSidecarPlan::ApiKey { api_format } => {
+                ApiKeyGatewayHandle::print_dry_run(*api_format)
+            }
         }
     }
 }

@@ -1,11 +1,14 @@
+mod api_key;
 mod context;
 mod server;
 mod stream;
 
+pub(crate) use api_key::ApiKeyGatewayHandle;
 pub(crate) use context::LaunchContext;
 pub(crate) use server::ServerHandle;
 pub(crate) use stream::{
-    forward_response, forward_response_observed, ResponseBodyObserver, ResponseStreamEnd,
+    forward_response, forward_response_observed, forward_response_passthrough_observed,
+    ResponseBodyObserver, ResponseStreamEnd,
 };
 
 use axum::body::{to_bytes, Body, Bytes};

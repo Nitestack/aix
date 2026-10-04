@@ -113,6 +113,7 @@
             grep -Fxq '[tools.review]' ${homeManagerConfigs.configured}
             grep -Fxq 'command = "review-agent"' ${homeManagerConfigs.configured}
             grep -Fxq 'api_format = "both"' ${homeManagerConfigs.configured}
+            grep -Fxq 'local_gateway = true' ${homeManagerConfigs.configured}
             grep -Fxq '[tools.review.env]' ${homeManagerConfigs.configured}
             grep -Fxq 'REVIEW_MODE = "review"' ${homeManagerConfigs.configured}
             grep -q 'AIX_REVIEW_TOKEN' ${homeManagerConfigs.configured}

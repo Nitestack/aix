@@ -110,15 +110,21 @@ pub(crate) struct AnthropicMessagesObserver {
     stream: AnthropicSseUsage,
     recorder: Option<UsageEventRecorder>,
     status: u16,
+    is_sse: bool,
+    json_body: Vec<u8>,
+    json_body_overflowed: bool,
     finished: bool,
 }
 
 impl AnthropicMessagesObserver {
-    pub(crate) fn new(recorder: UsageEventRecorder, status: u16) -> Self {
+    pub(crate) fn new(recorder: UsageEventRecorder, status: u16, is_sse: bool) -> Self {
         Self {
             stream: AnthropicSseUsage::default(),
             recorder: Some(recorder),
             status,
+            is_sse,
+            json_body: Vec::new(),
+            json_body_overflowed: false,
             finished: false,
         }
     }
@@ -126,26 +132,44 @@ impl AnthropicMessagesObserver {
 
 impl ResponseBodyObserver for AnthropicMessagesObserver {
     fn observe(&mut self, bytes: &[u8]) {
-        self.stream.push(bytes);
+        if self.is_sse {
+            self.stream.push(bytes);
+        } else if self
+            .json_body
+            .len()
+            .checked_add(bytes.len())
+            .is_some_and(|length| length <= MAX_USAGE_JSON_BYTES)
+        {
+            self.json_body.extend_from_slice(bytes);
+        } else {
+            self.json_body.clear();
+            self.json_body_overflowed = true;
+        }
         if let Some(recorder) = &mut self.recorder {
             recorder.set_usage(&self.stream.usage);
         }
     }
 
     fn finish(&mut self, stream_end: ResponseStreamEnd) {
-        self.stream.finish();
+        if self.is_sse {
+            self.stream.finish();
+        } else if !self.json_body_overflowed {
+            if let Some(usage) = messages_json_usage(&self.json_body) {
+                self.stream.usage.merge(&usage);
+            }
+        }
         let (outcome, category) = if !(200..300).contains(&self.status) {
             (UsageOutcome::Failed, Some("upstream_http"))
+        } else if matches!(self.stream.terminal, Some(TerminalEvent::Failed)) {
+            (UsageOutcome::Failed, Some("upstream_response_error"))
+        } else if matches!(stream_end, ResponseStreamEnd::Error) {
+            (UsageOutcome::Failed, Some("upstream_stream"))
+        } else if !self.is_sse {
+            (UsageOutcome::Succeeded, None)
         } else {
-            match (self.stream.terminal, stream_end) {
-                (Some(TerminalEvent::Failed), _) => {
-                    (UsageOutcome::Failed, Some("upstream_response_error"))
-                }
-                (Some(TerminalEvent::Stopped), ResponseStreamEnd::Complete) => {
-                    (UsageOutcome::Succeeded, None)
-                }
-                (_, ResponseStreamEnd::Error) => (UsageOutcome::Failed, Some("upstream_stream")),
-                (_, ResponseStreamEnd::Complete) => (
+            match self.stream.terminal {
+                Some(TerminalEvent::Stopped) => (UsageOutcome::Succeeded, None),
+                _ => (
                     UsageOutcome::Incomplete,
                     Some("stream_ended_without_message_stop"),
                 ),
@@ -158,6 +182,8 @@ impl ResponseBodyObserver for AnthropicMessagesObserver {
         self.finished = true;
     }
 }
+
+const MAX_USAGE_JSON_BYTES: usize = 1024 * 1024;
 
 impl Drop for AnthropicMessagesObserver {
     fn drop(&mut self) {

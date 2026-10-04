@@ -397,6 +397,7 @@ api_key = "sk-test"
 [tools.review]
 command = "review-agent"
 api_format = "anthropic"
+local_gateway = true
 [tools.review.env]
 AGENT_MODE = "review"
 TOOL_TOKEN = { env = "AIX_REVIEW_TOKEN" }
@@ -414,6 +415,7 @@ tools:
   review:
     command: review-agent
     api_format: anthropic
+    local_gateway: true
     env:
       AGENT_MODE: review
       TOOL_TOKEN:
@@ -429,6 +431,7 @@ tools:
     "review": {
       "command": "review-agent",
       "api_format": "anthropic",
+      "local_gateway": true,
       "env": {
         "AGENT_MODE": "review",
         "TOOL_TOKEN": { "env": "AIX_REVIEW_TOKEN" }
@@ -446,6 +449,7 @@ tools:
     review: {
       command: "review-agent",
       api_format: "anthropic",
+      local_gateway: true,
       env: {
         AGENT_MODE: "review",
         TOOL_TOKEN: { env: "AIX_REVIEW_TOKEN" },

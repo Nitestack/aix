@@ -148,8 +148,11 @@ pub async fn run(options: RunOptions) -> Result<()> {
         return Ok(());
     }
     let run_id = Uuid::new_v4();
-    let mut active_sidecar =
-        launch::start_launch_sidecar(&mut resolved, timeout, Some(run_id)).await?;
+    let mut active_sidecar = if lease {
+        None
+    } else {
+        launch::start_launch_sidecar(&mut resolved, timeout, Some(run_id), None).await?
+    };
     let effective_tags = resolved
         .policy
         .as_ref()
@@ -305,6 +308,42 @@ pub async fn run(options: RunOptions) -> Result<()> {
         resolved.policy.as_ref(),
         policy_record.as_ref(),
     );
+
+    if active_sidecar.is_none() {
+        let sidecar_result = launch::start_launch_sidecar(
+            &mut resolved,
+            timeout,
+            Some(run_id),
+            active_lease.as_ref().map(|active| &active.key),
+        )
+        .await;
+        match sidecar_result {
+            Ok(sidecar) => active_sidecar = sidecar,
+            Err(error) => {
+                let mut cleanup_confirmed = true;
+                if let Some(active) = active_lease.as_mut() {
+                    active.record.cleanup_status =
+                        run_lease::revoke_lease(&active.client, &active.key).await;
+                    cleanup_confirmed = active.record.cleanup_status == LeaseCleanupStatus::Revoked;
+                    if !cleanup_confirmed {
+                        run_lease::warn_unconfirmed_cleanup(
+                            &active.record.key_alias,
+                            &active.record.cleanup_status,
+                        );
+                    }
+                    record.lease = Some(active.record.clone());
+                }
+                finish_prelaunch_failure(&mut record);
+                if let Err(write_error) = store.write(&mut handle, &record) {
+                    eprintln!("{write_error:?}");
+                }
+                if !cleanup_confirmed {
+                    return Err(AixError::LeaseCleanupFailed.into());
+                }
+                return Err(error);
+            }
+        }
+    }
 
     let started = Instant::now();
     let run_child = || {

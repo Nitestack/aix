@@ -207,6 +207,60 @@ RUN_LAYER = "tool"
 
 #[test]
 #[cfg(unix)]
+fn run_routes_configured_tool_credentials_through_the_local_gateway() {
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://gateway.invalid"
+
+[profiles.work]
+api_key = "sk-parent-profile-secret"
+
+[tools.review]
+command = "sh"
+api_format = "both"
+local_gateway = true
+"#,
+        )
+        .unwrap();
+    let state = assert_fs::TempDir::new().unwrap();
+
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .env("AIX_STATE_DIR", state.path())
+        .args([
+            "run",
+            "--profile",
+            "work",
+            "--",
+            "review",
+            "-c",
+            "test \"$OPENAI_API_KEY\" = \"$ANTHROPIC_API_KEY\" && test \"$OPENAI_API_KEY\" = \"$LITELLM_API_KEY\" && test \"$OPENAI_API_KEY\" != sk-parent-profile-secret && case \"$OPENAI_BASE_URL\" in http://127.0.0.1:*/v1) ;; *) exit 1 ;; esac && test \"$ANTHROPIC_BASE_URL/v1\" = \"$OPENAI_BASE_URL\" && printf '%s\\n' \"$AIX_RUN_ID\"",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let run_id = String::from_utf8(output).unwrap().trim().to_string();
+    assert!(uuid::Uuid::parse_str(&run_id).is_ok());
+
+    let record_output = cmd()
+        .env("AIX_STATE_DIR", state.path())
+        .args(["runs", "show", &run_id, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let envelope: Value = serde_json::from_slice(&record_output).unwrap();
+    assert_eq!(envelope["data"]["logical_tool_name"], "review");
+}
+
+#[test]
+#[cfg(unix)]
 fn nonzero_child_exit_is_recorded_and_command_content_is_not_persisted() {
     let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
     config

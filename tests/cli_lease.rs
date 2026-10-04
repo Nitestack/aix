@@ -11,6 +11,35 @@ fn cmd() -> Command {
     Command::cargo_bin("aix").expect("binary exists")
 }
 
+#[tokio::test]
+async fn local_gateway_child_probe() {
+    if std::env::var("AIX_GATEWAY_CHILD_PROBE").as_deref() != Ok("enabled") {
+        return;
+    }
+    let base_url = std::env::var("OPENAI_BASE_URL").unwrap();
+    let api_key = std::env::var("OPENAI_API_KEY").unwrap();
+    assert_ne!(api_key, PARENT_KEY);
+    assert_ne!(api_key, LEASE_KEY);
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/chat/completions",
+            base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(api_key)
+        .json(&json!({
+            "model": "lease-probe-model",
+            "messages": [{ "role": "user", "content": "probe" }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["choices"][0]["message"]["content"],
+        "ok"
+    );
+}
+
 fn write_config(base_url: &str, gateway: Option<&str>, extra: &str) -> assert_fs::NamedTempFile {
     let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
     let gateway = gateway
@@ -217,6 +246,100 @@ OPENAI_BASE_URL = "https://tool.invalid"
     assert_eq!(
         generate["metadata"]["tags"],
         json!([format!("aix:run:{run_id}"), "issue:123"])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(unix)]
+async fn leased_run_local_gateway_substitutes_the_lease_credential_upstream() {
+    let server = MockServer::start().await;
+    mount_generate(&server, LEASE_KEY, 200).await;
+    mount_info(
+        &server,
+        LEASE_KEY,
+        200,
+        json!({ "info": { "spend": 0.25 } }),
+    )
+    .await;
+    mount_delete(&server, LEASE_KEY, 200).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("Authorization", format!("Bearer {LEASE_KEY}")))
+        .and(body_partial_json(json!({ "model": "lease-probe-model" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{ "message": { "content": "ok" } }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let child_command = serde_json::to_string(
+        &std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+    )
+    .unwrap();
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(&format!(
+            r#"
+[endpoint]
+base_url = "{}"
+gateway = "litellm"
+
+[profiles.work]
+api_key = {{ env = "AIX_PARENT_KEY" }}
+
+[tools.review]
+command = {child_command}
+api_format = "openai"
+local_gateway = true
+"#,
+            server.uri()
+        ))
+        .unwrap();
+    let state = assert_fs::TempDir::new().unwrap();
+
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .env("AIX_STATE_DIR", state.path())
+        .env("AIX_PARENT_KEY", PARENT_KEY)
+        .env("AIX_GATEWAY_CHILD_PROBE", "enabled")
+        .args([
+            "run",
+            "--profile",
+            "work",
+            "--lease",
+            "--budget",
+            "1.00",
+            "--",
+            "review",
+            "--exact",
+            "local_gateway_child_probe",
+            "--nocapture",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let output_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output_text.contains(PARENT_KEY));
+    assert!(!output_text.contains(LEASE_KEY));
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[0].url.path(), "/key/generate");
+    assert_eq!(requests[1].url.path(), "/v1/chat/completions");
+    assert_eq!(requests[2].url.path(), "/key/info");
+    assert_eq!(requests[3].url.path(), "/key/delete");
+    assert_eq!(
+        requests[1].headers["authorization"],
+        format!("Bearer {LEASE_KEY}")
     );
 }
 

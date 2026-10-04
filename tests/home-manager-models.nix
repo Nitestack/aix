@@ -86,6 +86,7 @@ in
       review = {
         command = "review-agent";
         apiFormat = "both";
+        localGateway = true;
         env = {
           REVIEW_MODE = "review";
           REVIEW_TOKEN = {
