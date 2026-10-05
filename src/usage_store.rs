@@ -19,6 +19,7 @@ pub(crate) struct UsageEventFilter {
     pub profile: Option<String>,
     pub logical_tool_name: Option<String>,
     pub model: Option<String>,
+    pub protocol: Option<String>,
     pub run_id: Option<String>,
 }
 
@@ -40,6 +41,12 @@ pub(crate) struct UsageSummary {
     pub total_tokens: Option<u64>,
     pub models: Vec<String>,
     pub protocols: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct UsageEventScan {
+    pub events: Vec<LocalUsageEvent>,
+    pub incomplete: bool,
 }
 
 #[derive(Default)]
@@ -126,6 +133,14 @@ impl UsageStore {
         filter: &UsageEventFilter,
     ) -> std::io::Result<Vec<LocalUsageEvent>> {
         Ok(self.read_events(filter)?.events)
+    }
+
+    pub(crate) fn scan_events(&self, filter: &UsageEventFilter) -> std::io::Result<UsageEventScan> {
+        let read = self.read_events(filter)?;
+        Ok(UsageEventScan {
+            events: read.events,
+            incomplete: read.read_incomplete,
+        })
     }
 
     fn read_events(&self, filter: &UsageEventFilter) -> std::io::Result<EventRead> {
@@ -221,6 +236,10 @@ impl UsageStore {
                         .model
                         .as_ref()
                         .is_some_and(|value| event.model.as_ref() != Some(value))
+                    || filter
+                        .protocol
+                        .as_ref()
+                        .is_some_and(|value| &event.protocol != value)
                     || filter
                         .run_id
                         .as_ref()
@@ -525,6 +544,7 @@ mod tests {
             profile: Some("work".into()),
             logical_tool_name: Some("opencode".into()),
             model: Some("model-a".into()),
+            protocol: None,
             run_id: Some("run-123".into()),
         };
         let summary = store.summarize(&filter).unwrap();

@@ -378,8 +378,16 @@ pub enum AixError {
     #[error("invalid usage date range: {reason}")]
     InvalidUsageRange { reason: String },
 
-    #[error("`aix usage` requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
+    #[error("`aix usage --source litellm` requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
     UsageNotLiteLlm,
+
+    #[error("local usage filters (--protocol, --tool, --run) are not available from LiteLLM; use `--source local` or `--source all`")]
+    UsageLocalFilterWithLiteLlm,
+
+    #[error(
+        "LiteLLM usage requires an API-key profile; use `--source local` for ChatGPT plan activity"
+    )]
+    UsageLiteLlmRequiresApiKey,
 
     #[error("usage history is unavailable on this gateway or LiteLLM version (the daily activity endpoint is unsupported)")]
     UsageUnavailable,
@@ -542,7 +550,9 @@ impl AixError {
             | Self::ExecutableNotFound { .. }
             | Self::NotLiteLlm
             | Self::LeaseNotLiteLlm
-            | Self::UsageNotLiteLlm => 2,
+            | Self::UsageNotLiteLlm
+            | Self::UsageLocalFilterWithLiteLlm
+            | Self::UsageLiteLlmRequiresApiKey => 2,
             Self::SecretMissingEnvVar { .. }
             | Self::SecretFileRead { .. }
             | Self::SecretCommandFailed { .. }

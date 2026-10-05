@@ -144,14 +144,22 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             profile,
             date_range,
             model,
+            source,
+            protocol,
+            tool,
+            run_id,
         } => {
-            crate::commands::usage::run(
-                request_options_for(profile),
+            crate::commands::usage::run(crate::commands::usage::UsageOptions {
+                request: request_options_for(profile),
                 config_path,
                 json,
                 date_range,
-                model,
-            )
+                model_filter: model,
+                source,
+                protocol_filter: protocol,
+                tool_filter: tool,
+                run_filter: run_id,
+            })
             .await
         }
         Command::Ask {

@@ -1,6 +1,6 @@
 use crate::cli::UsageRangeArgs;
 use crate::error::AixError;
-use chrono::{Days, NaiveDate};
+use chrono::{Days, Local, NaiveDate};
 
 #[derive(Clone, Copy)]
 pub(super) struct UsageRange {
@@ -61,6 +61,32 @@ impl UsageRange {
             )),
         }
     }
+
+    pub(super) fn local_unix_millis_bounds(self) -> Result<(u64, u64), AixError> {
+        let start = local_midnight(self.start)?.timestamp_millis();
+        let next_day = self
+            .end
+            .checked_add_days(Days::new(1))
+            .ok_or_else(|| invalid_range("the requested date range is out of bounds"))?;
+        let end_exclusive = local_midnight(next_day)?.timestamp_millis();
+        let end_inclusive = end_exclusive.saturating_sub(1);
+
+        if end_inclusive < 0 {
+            return Ok((1, 0));
+        }
+        Ok((start.max(0) as u64, end_inclusive as u64))
+    }
+}
+
+fn local_midnight(date: NaiveDate) -> Result<chrono::DateTime<Local>, AixError> {
+    date.and_hms_opt(0, 0, 0)
+        .and_then(|datetime| {
+            datetime
+                .and_local_timezone(Local)
+                .earliest()
+                .or_else(|| datetime.and_local_timezone(Local).latest())
+        })
+        .ok_or_else(|| invalid_range("a date boundary cannot be represented in the local timezone"))
 }
 
 fn parse_since(value: &str) -> Result<u64, AixError> {

@@ -170,6 +170,14 @@ impl ProfileAuth {
         matches!(self, Self::ChatGpt)
     }
 
+    pub fn can_query_litellm_usage(&self) -> bool {
+        matches!(self, Self::ApiKey { .. })
+    }
+
+    pub fn local_usage_cost_is_not_applicable(&self) -> bool {
+        matches!(self, Self::ChatGpt)
+    }
+
     pub fn auth_type(&self) -> &'static str {
         match self {
             Self::ApiKey { .. } => "api_key",

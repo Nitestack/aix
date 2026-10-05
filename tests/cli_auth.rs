@@ -144,7 +144,6 @@ fn commands_without_chatgpt_auth_support_fail_with_an_explicit_capability_error(
         vec!["models", "personal"],
         vec!["status", "personal"],
         vec!["spend", "personal"],
-        vec!["usage", "personal", "--since", "7d"],
         vec!["doctor", "personal"],
         vec!["--profile", "personal", "ask", "hello"],
         vec!["--profile", "personal", "prompt", "demo"],

@@ -176,15 +176,27 @@ pub enum Command {
         #[arg(long, value_name = "TEXT")]
         filter: Option<String>,
     },
-    /// Show historical usage from the LiteLLM daily activity endpoint
+    /// Show local observed usage and/or upstream LiteLLM historical usage
     Usage {
         /// Profile name (positional; overrides the global --profile flag)
         profile: Option<String>,
         #[command(flatten)]
         date_range: UsageRangeArgs,
-        /// Filter usage to an exact model ID returned by LiteLLM
+        /// Filter usage to an exact model ID
         #[arg(long)]
         model: Option<String>,
+        /// Usage source: auto selects the best source for the profile
+        #[arg(long, value_enum, default_value = "auto")]
+        source: UsageSource,
+        /// Filter local events to an exact API protocol
+        #[arg(long)]
+        protocol: Option<String>,
+        /// Filter local events to an exact logical tool name
+        #[arg(long)]
+        tool: Option<String>,
+        /// Filter local events to an exact run ID
+        #[arg(long = "run")]
+        run_id: Option<String>,
     },
     /// Send a one-shot text request to the configured AI gateway
     Ask {
@@ -279,6 +291,17 @@ pub enum Command {
     /// Usage: aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]
     #[command(external_subcommand)]
     Tool(Vec<String>),
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum, PartialEq, Eq)]
+pub enum UsageSource {
+    #[default]
+    Auto,
+    #[value(name = "local")]
+    Local,
+    #[value(name = "litellm")]
+    LiteLlm,
+    All,
 }
 
 #[derive(Args, Default)]

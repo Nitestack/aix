@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Default, Serialize)]
 struct UsageMetrics {
     spend: f64,
+    #[serde(skip)]
+    spend_available: Option<bool>,
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
@@ -15,6 +17,10 @@ struct UsageMetrics {
 impl UsageMetrics {
     fn add_assign(&mut self, other: Self) {
         self.spend += other.spend;
+        self.spend_available = match (self.spend_available, other.spend_available) {
+            (Some(left), Some(right)) => Some(left && right),
+            (None, value) | (value, None) => value,
+        };
         self.prompt_tokens = self.prompt_tokens.saturating_add(other.prompt_tokens);
         self.completion_tokens = self
             .completion_tokens
@@ -26,14 +32,25 @@ impl UsageMetrics {
 
 #[derive(Serialize)]
 pub(super) struct UsageReport {
+    source: &'static str,
+    status: &'static str,
     start_date: String,
     end_date: String,
+    profile: String,
     #[serde(flatten)]
     metrics: UsageMetrics,
+    billing: LiteLlmBilling,
     daily: Vec<DailyUsage>,
     models: Vec<ModelUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model_filter: Option<String>,
+}
+
+#[derive(Serialize)]
+struct LiteLlmBilling {
+    status: &'static str,
+    actual_spend: Option<f64>,
+    source: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -56,6 +73,7 @@ impl UsageReport {
         start_date: NaiveDate,
         end_date: NaiveDate,
         model_filter: Option<String>,
+        profile: String,
     ) -> Self {
         let mut daily_metrics = BTreeMap::<NaiveDate, UsageMetrics>::new();
         let mut daily_model_totals = BTreeMap::<String, UsageMetrics>::new();
@@ -136,10 +154,23 @@ impl UsageReport {
             })
         };
 
+        let billing_available = metrics.spend_available == Some(true);
         Self {
+            source: "litellm",
+            status: "available",
             start_date: start_date.format("%Y-%m-%d").to_string(),
             end_date: end_date.format("%Y-%m-%d").to_string(),
+            profile,
             metrics,
+            billing: LiteLlmBilling {
+                status: if billing_available {
+                    "available"
+                } else {
+                    "unavailable"
+                },
+                actual_spend: billing_available.then_some(metrics.spend),
+                source: billing_available.then_some("litellm"),
+            },
             daily,
             models: model_rows,
             model_filter,
@@ -156,11 +187,10 @@ fn metric<'a>(value: &'a Value, names: &[&str]) -> Option<&'a Value> {
     names.iter().find_map(|name| value.get(*name))
 }
 
-fn as_spend(value: Option<&Value>) -> f64 {
+fn as_spend_optional(value: Option<&Value>) -> Option<f64> {
     value
         .and_then(Value::as_f64)
         .filter(|spend| spend.is_finite())
-        .unwrap_or_default()
 }
 
 fn as_count(value: Option<&Value>) -> u64 {
@@ -185,8 +215,10 @@ fn metrics_from_value(value: &Value) -> UsageMetrics {
         value,
         &["completion_tokens", "total_completion_tokens"],
     ));
+    let spend = as_spend_optional(metric(value, &["spend", "total_spend"]));
     UsageMetrics {
-        spend: as_spend(metric(value, &["spend", "total_spend"])),
+        spend: spend.unwrap_or_default(),
+        spend_available: Some(spend.is_some()),
         prompt_tokens,
         completion_tokens,
         total_tokens: metric(value, &["total_tokens"])
@@ -271,13 +303,24 @@ fn model_rows(
     rows
 }
 
-fn sum_daily_spend(report: &UsageReport, start_date: &str, end_date: &str) -> f64 {
-    report
+fn sum_daily_spend(report: &UsageReport, start_date: &str, end_date: &str) -> Option<f64> {
+    let days: Vec<_> = report
         .daily
         .iter()
         .filter(|day| day.date.as_str() >= start_date && day.date.as_str() <= end_date)
-        .map(|day| day.metrics.spend)
-        .sum()
+        .collect();
+    if days.is_empty()
+        || days
+            .iter()
+            .any(|day| day.metrics.spend_available != Some(true))
+    {
+        return None;
+    }
+    Some(days.iter().map(|day| day.metrics.spend).sum())
+}
+
+fn display_spend(spend: Option<f64>) -> String {
+    spend.map_or_else(|| "unavailable".to_string(), |spend| format!("${spend:.6}"))
 }
 
 pub(super) fn print_human(report: &UsageReport, is_default_range: bool) {
@@ -292,24 +335,26 @@ pub(super) fn print_human(report: &UsageReport, is_default_range: bool) {
             .map(|date| date.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| report.start_date.clone());
         println!(
-            "Spend today: ${:.6}",
-            sum_daily_spend(report, &report.end_date, &report.end_date)
+            "Spend today: {}",
+            display_spend(sum_daily_spend(report, &report.end_date, &report.end_date))
         );
         println!(
-            "Spend last 7 days ({start_7d} through {}): ${:.6}",
+            "Spend last 7 days ({start_7d} through {}): {}",
             report.end_date,
-            sum_daily_spend(report, &start_7d, &report.end_date)
+            display_spend(sum_daily_spend(report, &start_7d, &report.end_date))
         );
         println!(
-            "Spend last 30 days ({} through {}): ${:.6}",
-            report.start_date, report.end_date, report.metrics.spend
+            "Spend last 30 days ({} through {}): {}",
+            report.start_date,
+            report.end_date,
+            display_spend(report.billing.actual_spend)
         );
     } else {
         println!(
             "Usage for {} through {} (inclusive)",
             report.start_date, report.end_date
         );
-        println!("Spend: ${:.6}", report.metrics.spend);
+        println!("Spend: {}", display_spend(report.billing.actual_spend));
     }
 
     println!("Prompt tokens: {}", report.metrics.prompt_tokens);
@@ -321,9 +366,14 @@ pub(super) fn print_human(report: &UsageReport, is_default_range: bool) {
         println!("  (no model usage in range)");
     } else {
         for model in &report.models {
+            let spend = if model.metrics.spend_available == Some(true) {
+                display_spend(Some(model.metrics.spend))
+            } else {
+                "unavailable".to_string()
+            };
             println!(
-                "  {}  ${:.6}  {} requests",
-                model.model, model.metrics.spend, model.metrics.request_count
+                "  {}  {}  {} requests",
+                model.model, spend, model.metrics.request_count
             );
         }
     }
@@ -353,6 +403,7 @@ mod tests {
             start_date,
             start_date,
             None,
+            "test-profile".to_string(),
         );
 
         assert_eq!(report.metrics.spend, 1.0);
