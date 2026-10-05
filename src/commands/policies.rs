@@ -88,7 +88,8 @@ fn summary<'a>(
 struct PolicySummary<'a> {
     name: &'a str,
     profile: Option<&'a str>,
-    max_budget: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_budget: Option<f64>,
     max_duration: &'a str,
     allowed_models: Option<&'a [String]>,
     resolved_models: Option<Vec<String>>,
@@ -103,7 +104,10 @@ fn print_summary(policy: &PolicySummary<'_>) {
             .profile
             .map_or("normal resolution", |profile| profile)
     );
-    println!("  Max budget: ${:.2}", policy.max_budget);
+    match policy.max_budget {
+        Some(budget) => println!("  Max budget: ${budget:.2}"),
+        None => println!("  Max budget: (none)"),
+    }
     println!("  Max duration: {}", policy.max_duration);
     match (&policy.allowed_models, &policy.resolved_models) {
         (Some(aliases), Some(resolved)) => {

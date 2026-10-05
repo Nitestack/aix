@@ -76,7 +76,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         program: requested_program,
         allowed_models: &requested_models,
         policy_name: policy.as_deref(),
-        require_litellm: lease || policy.is_some(),
+        require_litellm: lease,
         dry_run,
         timeout,
     })
@@ -84,36 +84,59 @@ pub async fn run(options: RunOptions) -> Result<()> {
     if let Some(run_policy) = &resolved.policy {
         metadata.tags = merge_tags(&run_policy.tags, &metadata.tags);
     }
-    let lease = lease || resolved.policy.is_some();
-    let default_budget = resolved.policy.as_ref().map(|policy| policy.max_budget);
+    let lease = lease
+        || resolved
+            .policy
+            .as_ref()
+            .is_some_and(|policy| policy.max_budget.is_some())
+        || budget.is_some();
+    let default_budget = resolved
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.max_budget);
     let default_duration = resolved
         .policy
         .as_ref()
         .map(|policy| policy.max_duration.clone());
-    let (budget, duration) = if resolved.policy.is_some() {
-        run_lease::validate_options(
-            true,
-            budget.or(default_budget),
-            duration.or(default_duration),
-            &requested_models,
-            dry_run,
-        )?
+    let (budget, duration) = if let Some(run_policy) = &resolved.policy {
+        let duration = duration.or(default_duration);
+        if lease {
+            run_lease::validate_options(
+                true,
+                budget.or(default_budget),
+                duration,
+                &requested_models,
+                dry_run,
+            )?
+        } else {
+            if requested_models.iter().any(|model| model.trim().is_empty()) {
+                return Err(AixError::EmptyLeaseModel.into());
+            }
+            let duration = duration.ok_or_else(|| AixError::InvalidRunPolicyDuration {
+                name: run_policy.name.clone(),
+            })?;
+            if !run_lease::is_positive_litellm_duration(&duration) {
+                return Err(AixError::InvalidLeaseDuration.into());
+            }
+            (None, Some(duration))
+        }
     } else {
         unscoped_lease_options.expect("non-policy lease options were validated")
     };
     if let Some(run_policy) = &resolved.policy {
-        let effective_budget = budget.expect("a policy run always uses a lease");
+        if let (Some(effective_budget), Some(max_budget)) = (budget, run_policy.max_budget) {
+            if effective_budget > max_budget {
+                return Err(AixError::RunPolicyBudgetExceeded {
+                    policy: run_policy.name.clone(),
+                    budget: effective_budget,
+                    max_budget,
+                }
+                .into());
+            }
+        }
         let effective_duration = duration
             .as_deref()
             .expect("a policy run always has a duration");
-        if effective_budget > run_policy.max_budget {
-            return Err(AixError::RunPolicyBudgetExceeded {
-                policy: run_policy.name.clone(),
-                budget: effective_budget,
-                max_budget: run_policy.max_budget,
-            }
-            .into());
-        }
         if !crate::duration::is_no_longer_than(effective_duration, &run_policy.max_duration) {
             return Err(AixError::RunPolicyDurationExceeded {
                 policy: run_policy.name.clone(),
@@ -142,17 +165,32 @@ pub async fn run(options: RunOptions) -> Result<()> {
         launch::print_sidecar_dry_run(&resolved);
         run_lease::print_dry_run(
             &resolved,
-            budget.expect("validated lease budget"),
-            duration.as_deref().expect("validated lease duration"),
+            budget,
+            duration.as_deref().expect("validated run duration"),
             &metadata,
         );
         return Ok(());
     }
+    let run_deadline = resolved
+        .policy
+        .as_ref()
+        .map(|policy| {
+            let duration = duration
+                .as_deref()
+                .expect("a policy run always has a duration");
+            crate::duration::to_std_duration(duration)
+                .and_then(|duration| Instant::now().checked_add(duration))
+                .ok_or_else(|| AixError::InvalidRunPolicyDuration {
+                    name: policy.name.clone(),
+                })
+        })
+        .transpose()?;
     let run_id = Uuid::new_v4();
     let mut active_sidecar = if lease {
         None
     } else {
-        launch::start_launch_sidecar(&mut resolved, timeout, Some(run_id), None).await?
+        launch::start_launch_sidecar(&mut resolved, timeout, Some(run_id), None, run_deadline)
+            .await?
     };
     let effective_tags = resolved
         .policy
@@ -160,7 +198,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         .map(|_| append_run_id_tag(&metadata.tags, run_id));
     let policy_record = resolved.policy.as_ref().map(|policy| RunPolicyRecord {
         name: policy.name.clone(),
-        effective_budget: budget.expect("a policy run always has a budget"),
+        effective_budget: budget,
         effective_duration: duration
             .as_deref()
             .expect("a policy run always has a duration")
@@ -313,6 +351,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
             timeout,
             Some(run_id),
             active_lease.as_ref().map(|active| &active.key),
+            run_deadline,
         )
         .await;
         match sidecar_result {
@@ -346,12 +385,13 @@ pub async fn run(options: RunOptions) -> Result<()> {
     let gateway_managed = active_sidecar.is_some();
     let started = Instant::now();
     let run_child = || {
-        launch::run_command_status_interruptible(
+        launch::run_command_status_interruptible_with_deadline(
             &resolved.program,
             &child_args,
             &resolved.env,
             &interrupt_requested,
             &terminated,
+            run_deadline,
         )
     };
     let child_result = match active_sidecar.take() {
@@ -360,18 +400,24 @@ pub async fn run(options: RunOptions) -> Result<()> {
     };
     record.finished_at_unix_ms = Some(RunRecord::now_unix_ms());
     record.duration_ms = Some(started.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
-    let (child_status, child_error) = match child_result {
-        Ok(status) => (Some(status), None),
+    let (child_status, child_error, duration_expired) = match child_result {
+        Ok(outcome) => (Some(outcome.status), None, outcome.duration_expired),
         Err(error) => {
             record.status = RunStatus::Failed;
-            (None, Some(error))
+            (None, Some(error), false)
         }
     };
 
-    let interruption = child_status
-        .as_ref()
-        .and_then(|_| launch::interruption_reason(&interrupt_requested, &terminated));
-    if let Some(status) = child_status.as_ref() {
+    let interruption = if duration_expired {
+        None
+    } else {
+        child_status
+            .as_ref()
+            .and_then(|_| launch::interruption_reason(&interrupt_requested, &terminated))
+    };
+    if duration_expired {
+        record.status = RunStatus::TimedOut;
+    } else if let Some(status) = child_status.as_ref() {
         record.process_exit_code = status.code();
         record.status = if interruption.is_some() || status.code().is_none() {
             RunStatus::Interrupted
@@ -425,6 +471,19 @@ pub async fn run(options: RunOptions) -> Result<()> {
 
     if let Some(interruption) = interruption {
         std::process::exit(interruption.exit_code());
+    }
+    if duration_expired {
+        let policy = resolved
+            .policy
+            .as_ref()
+            .expect("only policy runs have a local process deadline");
+        return Err(AixError::RunPolicyDurationReached {
+            policy: policy.name.clone(),
+            duration: duration
+                .clone()
+                .expect("a policy run always has a duration"),
+        }
+        .into());
     }
     if let Some(status) = child_status {
         if let Some(exit_code) = status.code() {

@@ -16,7 +16,7 @@ use axum::Router;
 use color_eyre::Result;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 // OpenAI's current OSS SIWC preview contract: https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
@@ -65,7 +65,7 @@ const PROVIDER_ID: &str = "aix-chatgpt";
 // Mirror the ChatGPT-eligible models in OpenCode's v2 OpenAI catalog. The
 // canonical provider supplies their labels and capabilities; this distinct
 // provider ID prevents saved OpenCode credentials from overriding the bridge.
-const CHATGPT_MODEL_IDS: &[&str] = &[
+pub(super) const CHATGPT_MODEL_IDS: &[&str] = &[
     "gpt-5.3-codex-spark",
     "gpt-5.5",
     "gpt-5.5-fast",
@@ -263,6 +263,13 @@ async fn handle_request(
     let is_inference = parts.uri.path() == "/v1/responses";
     let mut usage = is_inference
         .then(|| UsageEventRecorder::new(state.usage_store.clone(), &context, "openai_responses"));
+    if is_inference {
+        if let Err(rejection) = context.enforcement.check_deadline(Instant::now()) {
+            let (status, category, message) = local_gateway::policy_rejection_details(rejection);
+            reject_inference_request(&mut usage, status, category);
+            return error_response(status, message);
+        }
+    }
     if parts.uri.query().is_some() {
         reject_inference_request(&mut usage, StatusCode::NOT_FOUND, "local_compatibility");
         return error_response(StatusCode::NOT_FOUND, "Route not found");
@@ -301,8 +308,15 @@ async fn handle_request(
                     return error_response(StatusCode::BAD_REQUEST, "Invalid JSON request");
                 }
             };
+            let model = request.get("model").and_then(Value::as_str);
             if let Some(recorder) = &mut usage {
-                recorder.set_model(request.get("model").and_then(Value::as_str));
+                recorder.set_model(model);
+            }
+            if let Err(rejection) = context.enforcement.check_model(model) {
+                let (status, category, message) =
+                    local_gateway::policy_rejection_details(rejection);
+                reject_inference_request(&mut usage, status, category);
+                return error_response(status, message);
             }
             let normalized = match normalize_response_request(&mut request) {
                 Ok(request) => request,
@@ -338,6 +352,14 @@ async fn handle_request(
         }
         _ => return error_response(StatusCode::NOT_FOUND, "Route not found"),
     };
+
+    if is_inference {
+        if let Err(rejection) = context.enforcement.check_deadline(Instant::now()) {
+            let (status, category, message) = local_gateway::policy_rejection_details(rejection);
+            reject_inference_request(&mut usage, status, category);
+            return error_response(status, message);
+        }
+    }
 
     proxy_upstream(
         state,
@@ -767,6 +789,19 @@ mod tests {
             "opencode".to_string(),
             Some("run-25-test".to_string()),
             Some("bounded".to_string()),
+        )
+    }
+
+    fn restricted_run_launch_context(deadline: Option<Instant>) -> LaunchContext {
+        LaunchContext::with_enforcement(
+            "personal".to_string(),
+            "opencode".to_string(),
+            Some("run-policy-test".to_string()),
+            Some("bounded".to_string()),
+            local_gateway::RequestEnforcement {
+                allowed_models: vec!["gpt-6-luna".to_string()],
+                deadline,
+            },
         )
     }
 
@@ -1248,6 +1283,86 @@ mod tests {
             );
         }
 
+        bridge.stop().await;
+        upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn bridge_enforces_the_shared_model_allowlist_for_each_responses_request() {
+        let directory = TempDir::new().unwrap();
+        let auth = auth_service(
+            &directory,
+            Url::parse("https://auth.openai.com/api/accounts/oauth/token").unwrap(),
+            "allowed-access-token",
+        );
+        let (upstream, capture, upstream_task) = fake_api_server().await;
+        let bridge =
+            BridgeHandle::start_for_test(restricted_run_launch_context(None), auth, upstream)
+                .await
+                .unwrap();
+        let client = reqwest::Client::new();
+        let endpoint = format!("http://{}/v1/responses", bridge.address());
+        let token = bridge.child_token();
+
+        let allowed = client
+            .post(&endpoint)
+            .bearer_auth(token.expose_secret())
+            .json(&json!({ "model": "gpt-6-luna", "input": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+        capture.release_second_chunk.notify_one();
+        let _ = allowed.bytes().await.unwrap();
+
+        let switched = client
+            .post(&endpoint)
+            .bearer_auth(token.expose_secret())
+            .json(&json!({ "model": "gpt-6-sol", "input": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(switched.status(), StatusCode::FORBIDDEN);
+
+        let missing = client
+            .post(&endpoint)
+            .bearer_auth(token.expose_secret())
+            .json(&json!({ "input": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+
+        assert_eq!(capture.requests.lock().await.len(), 1);
+        bridge.stop().await;
+        upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn bridge_rejects_inference_after_the_shared_deadline() {
+        let directory = TempDir::new().unwrap();
+        let auth = auth_service(
+            &directory,
+            Url::parse("https://auth.openai.com/api/accounts/oauth/token").unwrap(),
+            "allowed-access-token",
+        );
+        let (upstream, capture, upstream_task) = fake_api_server().await;
+        let bridge = BridgeHandle::start_for_test(
+            restricted_run_launch_context(Some(Instant::now() - Duration::from_secs(1))),
+            auth,
+            upstream,
+        )
+        .await
+        .unwrap();
+        let response = reqwest::Client::new()
+            .post(format!("http://{}/v1/responses", bridge.address()))
+            .bearer_auth(bridge.child_token().expose_secret())
+            .json(&json!({ "model": "gpt-6-luna", "input": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(capture.requests.lock().await.len(), 0);
         bridge.stop().await;
         upstream_task.abort();
     }

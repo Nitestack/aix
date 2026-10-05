@@ -208,7 +208,10 @@ fn compact_count(count: u64) -> String {
 
 fn print_policy(policy: &RunPolicyRecord) {
     println!("Policy: {:?}", policy.name);
-    println!("Effective budget: ${:.2}", policy.effective_budget);
+    match policy.effective_budget {
+        Some(budget) => println!("Effective budget: ${budget:.2}"),
+        None => println!("Effective budget: (none)"),
+    }
     println!("Effective duration: {:?}", policy.effective_duration);
     println!(
         "Effective allowed models: {:?}",
@@ -227,6 +230,7 @@ fn status_name(status: crate::run_history::RunStatus) -> &'static str {
         crate::run_history::RunStatus::Succeeded => "succeeded",
         crate::run_history::RunStatus::Failed => "failed",
         crate::run_history::RunStatus::Interrupted => "interrupted",
+        crate::run_history::RunStatus::TimedOut => "timed out",
     }
 }
 

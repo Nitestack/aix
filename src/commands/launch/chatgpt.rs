@@ -18,13 +18,19 @@ pub(super) async fn resolve_tool_launch(
         tool_env_mode,
         policy_name,
         require_litellm,
+        allowed_models,
         ..
     } = request;
-    if require_litellm || policy_name.is_some() {
+
+    let LaunchContext { cfg, profile_name } = context;
+    let policy = super::resolve_run_policy(cfg, policy_name)?;
+    if policy.is_some_and(|policy| policy.max_budget.is_some()) {
+        return Err(AixError::RunPolicyBudgetUnavailable.into());
+    }
+    if require_litellm {
         return Err(AixError::ChatGptRunLeaseUnsupported.into());
     }
 
-    let LaunchContext { cfg, profile_name } = context;
     let tool_name = configured_tool_name.unwrap_or_default();
     let tool = cfg
         .tools
@@ -32,7 +38,8 @@ pub(super) async fn resolve_tool_launch(
         .ok_or_else(|| AixError::ChatGptToolNotConfigured {
             tool: tool_name.to_string(),
         })?;
-    if tool.local_gateway {
+    let uses_opencode_bridge = tool_name == "opencode";
+    if tool.local_gateway && !uses_opencode_bridge {
         return Err(AixError::ChatGptAuthUnsupported.into());
     }
     let binding = tool
@@ -42,7 +49,19 @@ pub(super) async fn resolve_tool_launch(
             tool: tool_name.to_string(),
         })?;
     let program = tool.command.as_deref().unwrap_or(tool_name).to_string();
-    let uses_opencode_bridge = tool_name == "opencode";
+    let resolved_allowed_models = super::resolve_allowed_models(
+        policy.and_then(|policy| policy.allowed_models.as_ref()),
+        allowed_models.to_vec(),
+        cfg,
+        profile,
+    )?;
+    if !resolved_allowed_models.is_empty() && !uses_opencode_bridge {
+        return Err(AixError::RunPolicyEnforcementUnavailable {
+            policy: policy_name.unwrap_or_default().to_string(),
+            constraint: "allowed_models",
+        }
+        .into());
+    }
 
     let mut auth_vars = Vec::new();
     let mut display_only_vars = Vec::new();
@@ -107,8 +126,13 @@ pub(super) async fn resolve_tool_launch(
         program,
         logical_tool_name: Some(tool_name.to_string()),
         parent_gateway: None,
-        allowed_models: Vec::new(),
-        policy: None,
+        allowed_models: resolved_allowed_models,
+        policy: policy.map(|policy| super::ResolvedRunPolicy {
+            name: policy_name.unwrap_or_default().to_string(),
+            max_budget: policy.max_budget,
+            max_duration: policy.max_duration.clone(),
+            tags: policy.tags.clone(),
+        }),
         prepend_args: binding.prepend_args.clone(),
         sidecar_plan,
     })

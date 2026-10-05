@@ -51,6 +51,13 @@ let
     assert lib.all (assertion: assertion.assertion) evaluated.config.assertions;
     evaluated.config.xdg.configFile."aix/aix.toml".source;
 in
+assert
+  !(builtins.tryEval (render {
+    runPolicies.invalid = {
+      maxBudget = 0;
+      maxDuration = "1h";
+    };
+  })).success;
 {
   configured = render {
     runPolicies = {
@@ -65,7 +72,6 @@ in
         tags = [ "phase:implement" ];
       };
       research = {
-        maxBudget = 1.5;
         maxDuration = "1h";
       };
     };

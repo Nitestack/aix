@@ -32,6 +32,9 @@ pub enum AixError {
     #[error("LiteLLM lease and run-policy flows require an API-key profile; ChatGPT plan usage is not a LiteLLM lease")]
     ChatGptRunLeaseUnsupported,
 
+    #[error("monetary budget enforcement unavailable for this transport; ChatGPT subscription traffic has no authoritative incurred-dollar meter")]
+    RunPolicyBudgetUnavailable,
+
     #[error(
         "`aix auth login` requires interactive browser authorization; remove --non-interactive"
     )]
@@ -248,6 +251,15 @@ pub enum AixError {
 
     #[error("a requested model is not allowed by the selected run policy")]
     RunPolicyModelNotAllowed,
+
+    #[error("run policy {policy:?} requests {constraint} enforcement, but this transport has no authoritative enforcement mechanism")]
+    RunPolicyEnforcementUnavailable {
+        policy: String,
+        constraint: &'static str,
+    },
+
+    #[error("run policy {policy:?} reached its effective duration of {duration:?}; child process was terminated")]
+    RunPolicyDurationReached { policy: String, duration: String },
 
     #[error("invalid environment variable name {name:?} in tool {tool:?}")]
     InvalidToolEnvironmentVariableName { tool: String, name: String },
@@ -466,6 +478,7 @@ impl AixError {
             | Self::ChatGptAuthUnsupported
             | Self::ChatGptToolNotConfigured { .. }
             | Self::ChatGptRunLeaseUnsupported
+            | Self::RunPolicyBudgetUnavailable
             | Self::AuthLoginRequiresInteractive
             | Self::AuthProfileNotChatGpt
             | Self::NoModelConfigured
@@ -501,6 +514,7 @@ impl AixError {
             | Self::RunPolicyBudgetExceeded { .. }
             | Self::RunPolicyDurationExceeded { .. }
             | Self::RunPolicyModelNotAllowed
+            | Self::RunPolicyEnforcementUnavailable { .. }
             | Self::InvalidToolEnvironmentVariableName { .. }
             | Self::ChatGptAccessTokenEnvCleared { .. }
             | Self::SelectionCancelled
@@ -558,6 +572,7 @@ impl AixError {
             | Self::AuthNetwork { .. }
             | Self::AuthProtocol => 5,
             Self::BudgetExceeded { .. } => 6,
+            Self::RunPolicyDurationReached { .. } => 124,
             Self::DoctorChecksFailed { category } => category.exit_code(),
             Self::GateChecksFailed { category } => category.exit_code(),
             Self::NotImplemented(_)

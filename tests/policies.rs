@@ -72,13 +72,6 @@ max_duration = "1h"
             "max_budget greater than zero",
         ),
         (
-            "missing budget",
-            r#"[run_policies.implement]
-max_duration = "1h"
-"#,
-            "max_budget",
-        ),
-        (
             "missing duration",
             r#"[run_policies.implement]
 max_budget = 1
@@ -158,6 +151,76 @@ max_duration = "1h"
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(expected_error), "{label}: {stderr}");
     }
+}
+
+#[test]
+fn run_policy_without_budget_validates_and_lists_budget_as_absent() {
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://gateway.example"
+
+[profiles.work]
+api_key = "test-key"
+
+[tools.review]
+command = "true"
+api_format = "openai"
+local_gateway = true
+
+[run_policies.local]
+profile = "work"
+max_duration = "2h"
+allowed_models = ["gpt-5-codex"]
+tags = ["workflow:implement"]
+"#,
+        )
+        .unwrap();
+
+    cmd()
+        .env("AIX_CONFIG", config.path())
+        .args(["config", "validate"])
+        .assert()
+        .success();
+
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .args(["run", "--policy", "local", "--dry-run", "--", "review"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let dry_run = String::from_utf8_lossy(&output.stderr);
+    assert!(dry_run.contains("Would enforce the local run policy"));
+    assert!(dry_run.contains("budget: not configured"));
+    assert!(!dry_run.contains("key alias:"));
+    assert!(!dry_run.contains("$0.00"));
+
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .args(["policy", "show", "local", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let policy: Value = serde_json::from_slice(&output).unwrap();
+    assert!(policy["data"].get("max_budget").is_none_or(Value::is_null));
+    assert_ne!(policy["data"]["max_budget"], 0);
+
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .args(["policy", "show", "local"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(String::from_utf8(output)
+        .unwrap()
+        .contains("Max budget: (none)"));
 }
 
 #[test]
@@ -416,6 +479,151 @@ max_duration = "1h"
         .get_output()
         .clone();
     assert!(String::from_utf8_lossy(&flexible.stderr).contains("profile: personal"));
+}
+
+#[test]
+#[cfg(unix)]
+fn api_key_anthropic_local_gateway_policy_launches_without_a_budget() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let config = dir.child("aix.toml");
+    let state_dir = dir.path().join("state");
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "http://127.0.0.1:1"
+
+[profiles.work]
+api_key = "profile-secret"
+
+[tools.claude]
+command = "sh"
+api_format = "anthropic"
+local_gateway = true
+
+[run_policies.local]
+profile = "work"
+max_duration = "2h"
+allowed_models = ["claude-sonnet"]
+tags = ["workflow:review"]
+"#,
+        )
+        .unwrap();
+    let script = r#"case "$ANTHROPIC_BASE_URL" in http://127.0.0.1:*) ;; *) exit 1 ;; esac; test "$AIX_RUN_POLICY" = local && test -n "$AIX_RUN_TAGS" && test -z "${OPENAI_API_KEY+x}" && test "$ANTHROPIC_API_KEY" != profile-secret"#;
+
+    cmd()
+        .env("AIX_STATE_DIR", &state_dir)
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "run",
+            "--policy",
+            "local",
+            "--",
+            "claude",
+            "-c",
+            script,
+        ])
+        .assert()
+        .success();
+
+    let output = cmd()
+        .env("AIX_STATE_DIR", &state_dir)
+        .args(["runs", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let runs: Value = serde_json::from_slice(&output).unwrap();
+    let run = &runs["data"][0];
+    assert_eq!(run["policy"]["name"], "local");
+    assert!(run["policy"].get("effective_budget").is_none());
+    assert!(run["lease"].is_null());
+}
+
+#[test]
+fn run_rejects_model_restrictions_without_an_authoritative_gateway_path() {
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://gateway.example"
+
+[profiles.work]
+api_key = "test-key"
+
+[run_policies.local]
+profile = "work"
+max_duration = "1h"
+allowed_models = ["model-a"]
+"#,
+        )
+        .unwrap();
+
+    cmd()
+        .env("AIX_CONFIG", config.path())
+        .args(["run", "--policy", "local", "--dry-run", "--", "true"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "no authoritative enforcement mechanism",
+        ));
+}
+
+#[test]
+#[cfg(unix)]
+fn policy_max_duration_terminates_managed_child_and_records_timeout() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let config = dir.child("aix.toml");
+    let state_dir = dir.path().join("state");
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://gateway.example"
+
+[profiles.work]
+api_key = "test-key"
+
+[run_policies.short]
+profile = "work"
+max_duration = "1s"
+"#,
+        )
+        .unwrap();
+
+    let output = cmd()
+        .env("AIX_STATE_DIR", &state_dir)
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "run",
+            "--policy",
+            "short",
+            "--",
+            "sleep",
+            "5",
+        ])
+        .assert()
+        .code(124)
+        .get_output()
+        .clone();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reached its effective duration"));
+
+    let output = cmd()
+        .env("AIX_STATE_DIR", &state_dir)
+        .args(["runs", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let runs: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(runs["data"][0]["status"], "timed_out");
+    assert_eq!(runs["data"][0]["policy"]["effective_duration"], "1s");
+    assert!(runs["data"][0]["policy"].get("effective_budget").is_none());
 }
 
 #[test]
@@ -686,7 +894,6 @@ api_key = "test-key"
 [models.aliases]
 quick = "provider/model-quick"
 [run_policies.research]
-max_budget = 1.5
 max_duration = "1h"
 allowed_models = ["quick"]
 tags = ["phase:research"]
@@ -706,7 +913,6 @@ models:
     quick: provider/model-quick
 run_policies:
   research:
-    max_budget: 1.5
     max_duration: 1h
     allowed_models: [quick]
     tags: [phase:research]
@@ -721,7 +927,6 @@ run_policies:
   "models": { "aliases": { "quick": "provider/model-quick" } },
   "run_policies": {
     "research": {
-      "max_budget": 1.5,
       "max_duration": "1h",
       "allowed_models": ["quick"],
       "tags": ["phase:research"]
@@ -738,7 +943,6 @@ run_policies:
   models: { aliases: { quick: "provider/model-quick" } },
   run_policies: {
     research: {
-      max_budget: 1.5,
       max_duration: "1h",
       allowed_models: ["quick"],
       tags: ["phase:research"],
@@ -768,6 +972,7 @@ run_policies:
                 policy["data"]["resolved_models"],
                 json!(["provider/model-quick"])
             );
+            assert!(policy["data"].get("max_budget").is_none());
             baseline = Some(policy);
         }
     }

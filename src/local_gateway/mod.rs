@@ -4,7 +4,7 @@ mod server;
 mod stream;
 
 pub(crate) use api_key::ApiKeyGatewayHandle;
-pub(crate) use context::LaunchContext;
+pub(crate) use context::{LaunchContext, PolicyRejection, RequestEnforcement};
 pub(crate) use server::ServerHandle;
 pub(crate) use stream::{
     forward_response, forward_response_observed, forward_response_passthrough_observed,
@@ -26,6 +26,28 @@ impl AuthFailureResponse {
             error_type,
             message,
         }
+    }
+}
+
+pub(crate) fn policy_rejection_details(
+    rejection: PolicyRejection,
+) -> (StatusCode, &'static str, &'static str) {
+    match rejection {
+        PolicyRejection::DeadlineExceeded => (
+            StatusCode::REQUEST_TIMEOUT,
+            "policy_deadline",
+            "Run policy duration limit has been reached",
+        ),
+        PolicyRejection::MissingModel => (
+            StatusCode::BAD_REQUEST,
+            "policy_model",
+            "A request model is required by the selected run policy",
+        ),
+        PolicyRejection::ModelNotAllowed => (
+            StatusCode::FORBIDDEN,
+            "policy_model",
+            "The requested model is not allowed by the selected run policy",
+        ),
     }
 }
 

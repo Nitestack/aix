@@ -33,6 +33,11 @@ pub enum Interruption {
     Termination,
 }
 
+pub(crate) struct ChildRunOutcome {
+    pub(crate) status: std::process::ExitStatus,
+    pub(crate) duration_expired: bool,
+}
+
 impl Interruption {
     pub fn exit_code(self) -> i32 {
         match self {
@@ -80,7 +85,7 @@ pub(crate) struct ParentGatewayCredentials {
 #[derive(Clone, Debug)]
 pub struct ResolvedRunPolicy {
     pub name: String,
-    pub max_budget: f64,
+    pub max_budget: Option<f64>,
     pub max_duration: String,
     pub tags: Vec<String>,
 }
@@ -247,10 +252,6 @@ fn load_launch_context(request: &LaunchRequest<'_>) -> Result<LaunchContext> {
         cfg.endpoint.gateway.as_ref(),
         Some(config::Gateway::Custom(_))
     );
-    if request.require_litellm && explicit_non_litellm_gateway {
-        return Err(AixError::LeaseNotLiteLlm.into());
-    }
-
     let profile_name = resolve_profile(
         ProfileSelection {
             profile: policy
@@ -261,10 +262,25 @@ fn load_launch_context(request: &LaunchRequest<'_>) -> Result<LaunchContext> {
         &cfg,
     )?;
 
+    let profile = cfg
+        .profiles
+        .get(&profile_name)
+        .ok_or_else(|| AixError::ProfileNotFound {
+            name: profile_name.clone(),
+            available_hint: config::format_available_profiles(&cfg),
+        })?;
+    let budget_requested = policy.is_some_and(|policy| policy.max_budget.is_some());
+    if budget_requested && profile.auth.is_chatgpt() {
+        return Err(AixError::RunPolicyBudgetUnavailable.into());
+    }
+    if (request.require_litellm || budget_requested) && explicit_non_litellm_gateway {
+        return Err(AixError::LeaseNotLiteLlm.into());
+    }
+
     Ok(LaunchContext { cfg, profile_name })
 }
 
-fn resolve_run_policy<'a>(
+pub(super) fn resolve_run_policy<'a>(
     cfg: &'a config::Config,
     policy_name: Option<&str>,
 ) -> Result<Option<&'a config::RunPolicy>> {
@@ -316,6 +332,16 @@ fn resolve_api_key_launch(
         .or(format_override)
         .unwrap_or(config::ApiFormat::Both);
     let local_gateway = configured_tool.is_some_and(|tool| tool.local_gateway);
+    if policy.is_some_and(|policy| policy.max_budget.is_none())
+        && !resolved_allowed_models.is_empty()
+        && !local_gateway
+    {
+        return Err(AixError::RunPolicyEnforcementUnavailable {
+            policy: policy_name.unwrap_or_default().to_string(),
+            constraint: "allowed_models",
+        }
+        .into());
+    }
     let effective_program = configured_tool
         .and_then(|tool| tool.command.as_deref())
         .or(configured_tool_name)
@@ -433,7 +459,7 @@ fn append_configured_env(
     Ok(())
 }
 
-fn resolve_allowed_models(
+pub(super) fn resolve_allowed_models(
     policy_models: Option<&Vec<String>>,
     requested_models: Vec<String>,
     cfg: &config::Config,
@@ -556,7 +582,8 @@ pub async fn run_named_tool(
         return run_command(&resolved.program, &args, &resolved.env, true);
     }
 
-    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None, None).await? else {
+    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None, None, None).await?
+    else {
         return run_command(&resolved.program, &args, &resolved.env, false);
     };
     let (interrupt_requested, terminated) = install_interrupt_handlers()?;
@@ -586,11 +613,12 @@ pub(crate) async fn start_launch_sidecar(
     timeout: Duration,
     run_id: Option<Uuid>,
     upstream_api_key_override: Option<&SecretString>,
+    deadline: Option<Instant>,
 ) -> Result<Option<StartedLaunchSidecar>> {
     let Some(plan) = resolved.sidecar_plan.take() else {
         return Ok(None);
     };
-    let context = sidecar_context(resolved, run_id);
+    let context = sidecar_context(resolved, run_id, deadline);
     let server = match plan {
         LaunchSidecarPlan::OpenCodeSiwc => {
             let bridge = opencode::BridgeHandle::start(context, timeout).await?;
@@ -619,8 +647,12 @@ pub(crate) async fn start_launch_sidecar(
     Ok(Some(StartedLaunchSidecar(server)))
 }
 
-fn sidecar_context(resolved: &ResolvedRunLaunch, run_id: Option<Uuid>) -> LocalGatewayContext {
-    LocalGatewayContext::new(
+fn sidecar_context(
+    resolved: &ResolvedRunLaunch,
+    run_id: Option<Uuid>,
+    deadline: Option<Instant>,
+) -> LocalGatewayContext {
+    LocalGatewayContext::with_enforcement(
         resolved.env.profile_name.clone(),
         resolved
             .logical_tool_name
@@ -628,6 +660,10 @@ fn sidecar_context(resolved: &ResolvedRunLaunch, run_id: Option<Uuid>) -> LocalG
             .expect("a sidecar launch has a logical tool name"),
         run_id.map(|run_id| run_id.to_string()),
         resolved.policy.as_ref().map(|policy| policy.name.clone()),
+        crate::local_gateway::RequestEnforcement {
+            allowed_models: resolved.allowed_models.clone(),
+            deadline,
+        },
     )
 }
 
@@ -661,6 +697,10 @@ fn install_interrupt_handlers() -> Result<(Arc<AtomicBool>, Arc<AtomicBool>), Ai
 
 pub fn detect_shell() -> String {
     detect_shell_impl()
+}
+
+pub(crate) fn chatgpt_model_ids() -> &'static [&'static str] {
+    opencode::CHATGPT_MODEL_IDS
 }
 
 pub fn run_command(program: &str, args: &[String], env: &LaunchEnv, dry_run: bool) -> Result<()> {
@@ -709,6 +749,25 @@ pub fn run_command_status_interruptible(
     interrupt_requested: &AtomicBool,
     terminated: &AtomicBool,
 ) -> Result<std::process::ExitStatus, AixError> {
+    run_command_status_interruptible_with_deadline(
+        program,
+        args,
+        env,
+        interrupt_requested,
+        terminated,
+        None,
+    )
+    .map(|outcome| outcome.status)
+}
+
+pub(crate) fn run_command_status_interruptible_with_deadline(
+    program: &str,
+    args: &[String],
+    env: &LaunchEnv,
+    interrupt_requested: &AtomicBool,
+    terminated: &AtomicBool,
+    deadline: Option<Instant>,
+) -> Result<ChildRunOutcome, AixError> {
     let mut command = command_with_env(program, args, env)?;
     command
         .stdin(std::process::Stdio::inherit())
@@ -722,25 +781,58 @@ pub fn run_command_status_interruptible(
         program: program.to_string(),
         source,
     })?;
+    supervise_child(
+        &mut child,
+        program,
+        interrupt_requested,
+        terminated,
+        deadline,
+    )
+}
+
+fn supervise_child(
+    child: &mut std::process::Child,
+    program: &str,
+    interrupt_requested: &AtomicBool,
+    terminated: &AtomicBool,
+    deadline: Option<Instant>,
+) -> Result<ChildRunOutcome, AixError> {
     loop {
         if let Some(status) = child.try_wait().map_err(|source| AixError::ProcessWait {
             program: program.to_string(),
             source,
         })? {
-            return Ok(status);
+            return Ok(ChildRunOutcome {
+                status,
+                duration_expired: false,
+            });
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Ok(ChildRunOutcome {
+                status: terminate_child(child, program, None)?,
+                duration_expired: true,
+            });
         }
 
         if let Some(interruption) = interruption_reason(interrupt_requested, terminated) {
-            return terminate_child(&mut child, program, interruption);
+            return Ok(ChildRunOutcome {
+                status: terminate_child(child, program, Some(interruption))?,
+                duration_expired: false,
+            });
         }
-        std::thread::sleep(Duration::from_millis(20));
+        let poll_interval = deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .map_or(Duration::from_millis(20), |remaining| {
+                remaining.min(Duration::from_millis(20))
+            });
+        std::thread::sleep(poll_interval);
     }
 }
 
 fn terminate_child(
     child: &mut std::process::Child,
     program: &str,
-    interruption: Interruption,
+    interruption: Option<Interruption>,
 ) -> Result<std::process::ExitStatus, AixError> {
     #[cfg(unix)]
     {
@@ -748,10 +840,9 @@ fn terminate_child(
         use nix::unistd::Pid;
 
         let child_pid = Pid::from_raw(child.id() as i32);
-        let signal = if interruption == Interruption::Termination {
-            Signal::SIGTERM
-        } else {
-            Signal::SIGINT
+        let signal = match interruption {
+            Some(Interruption::CtrlC) => Signal::SIGINT,
+            Some(Interruption::Termination) | None => Signal::SIGTERM,
         };
         let _ = kill(child_pid, signal);
 
@@ -1100,7 +1191,7 @@ access_token_env = "ACCESS_TOKEN"
             allowed_models: Vec::new(),
             policy: Some(ResolvedRunPolicy {
                 name: "bounded".to_string(),
-                max_budget: 10.0,
+                max_budget: Some(10.0),
                 max_duration: "1h".to_string(),
                 tags: Vec::new(),
             }),
@@ -1110,16 +1201,39 @@ access_token_env = "ACCESS_TOKEN"
         let run_id = Uuid::parse_str("4b9a85df-51d9-49a4-9a17-69d7f0dc91f1").unwrap();
         let run_id_string = run_id.to_string();
 
-        let run_context = sidecar_context(&resolved, Some(run_id));
+        let run_context = sidecar_context(&resolved, Some(run_id), None);
         assert_eq!(run_context.profile, "personal");
         assert_eq!(run_context.logical_tool_name, "opencode");
         assert_eq!(run_context.run_id.as_deref(), Some(run_id_string.as_str()));
         assert_eq!(run_context.run_policy.as_deref(), Some("bounded"));
 
         resolved.policy = None;
-        let named_tool_context = sidecar_context(&resolved, None);
+        let named_tool_context = sidecar_context(&resolved, None, None);
         assert_eq!(named_tool_context.run_id, None);
         assert_eq!(named_tool_context.run_policy, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_exit_is_observed_before_an_expired_deadline_is_classified() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .unwrap();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(7));
+
+        let outcome = supervise_child(
+            &mut child,
+            "sh",
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+            Some(Instant::now() - Duration::from_millis(1)),
+        )
+        .unwrap();
+
+        assert!(!outcome.duration_expired);
+        assert_eq!(outcome.status.code(), Some(7));
     }
 
     #[tokio::test]

@@ -148,7 +148,6 @@ fn commands_without_chatgpt_auth_support_fail_with_an_explicit_capability_error(
         vec!["doctor", "personal"],
         vec!["--profile", "personal", "ask", "hello"],
         vec!["--profile", "personal", "prompt", "demo"],
-        vec!["--profile", "personal", "gate", "--policy", "unknown"],
     ] {
         command(&config, &auth_dir)
             .args(args.clone())

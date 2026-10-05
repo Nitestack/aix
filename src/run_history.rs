@@ -16,6 +16,8 @@ pub enum RunStatus {
     Succeeded,
     Failed,
     Interrupted,
+    #[serde(rename = "timed_out")]
+    TimedOut,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,7 +42,8 @@ pub struct RunLeaseRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunPolicyRecord {
     pub name: String,
-    pub effective_budget: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_budget: Option<f64>,
     pub effective_duration: String,
     pub effective_allowed_models: Vec<String>,
     pub effective_tags: Vec<String>,

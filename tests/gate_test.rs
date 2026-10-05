@@ -44,6 +44,34 @@ fn check<'a>(report: &'a Value, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing {name} check in {report}"))
 }
 
+fn write_chatgpt_credentials(auth_dir: &std::path::Path) {
+    std::fs::create_dir_all(auth_dir).unwrap();
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    std::fs::write(
+        auth_dir.join("profile-706572736f6e616c.json"),
+        format!(
+            r#"{{
+  "version": 1,
+  "profile": "personal",
+  "client_id": "gate-test-client",
+  "subject": "gate-test-subject",
+  "email": null,
+  "scopes": ["openid", "chatgpt.tokens.use.direct"],
+  "id_token": null,
+  "access_token": "gate-test-access-token",
+  "refresh_token": "gate-test-refresh-token",
+  "expires_at": {expires_at},
+  "earliest_refresh_at": null
+}}"#
+        ),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn a_satisfiable_policy_returns_a_stable_json_report_without_mutating_the_gateway() {
     let server = MockServer::start().await;
@@ -105,6 +133,8 @@ async fn a_satisfiable_policy_returns_a_stable_json_report_without_mutating_the_
             "credentials",
             "gateway",
             "models",
+            "duration",
+            "local_gateway",
             "litellm",
             "budget_info",
             "budget"
@@ -142,6 +172,195 @@ async fn a_satisfiable_policy_returns_a_stable_json_report_without_mutating_the_
     assert!(requests.iter().all(|request| {
         request.url.path() == "/v1/models" || request.url.path() == "/key/info"
     }));
+}
+
+#[tokio::test]
+async fn no_budget_policy_on_custom_gateway_skips_litellm_and_checks_local_model_enforcement() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": "provider/model-smart" }]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let file = dir.child("custom-gateway-policy.toml");
+    file.write_str(&format!(
+        r#"
+default_profile = "work"
+[endpoint]
+base_url = "{}"
+gateway = "custom-gateway"
+[profiles.work]
+api_key = "{}"
+[models.aliases]
+smart = "provider/model-smart"
+[tools.review]
+api_format = "openai"
+local_gateway = true
+[run_policies.implement]
+max_duration = "2h"
+allowed_models = ["smart"]
+"#,
+        server.uri(),
+        API_KEY
+    ))
+    .unwrap();
+
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .env_remove("AIX_PROFILE")
+        .args([
+            "--config",
+            file.path().to_str().unwrap(),
+            "gate",
+            "--policy",
+            "implement",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(check(&report, "gateway")["status"], "pass");
+    assert_eq!(check(&report, "models")["status"], "pass");
+    assert_eq!(check(&report, "duration")["status"], "pass");
+    assert_eq!(check(&report, "local_gateway")["status"], "pass");
+    assert_eq!(check(&report, "litellm")["status"], "not_applicable");
+    assert_eq!(check(&report, "budget_info")["status"], "not_applicable");
+    assert_eq!(check(&report, "budget")["status"], "not_applicable");
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests.is_empty());
+}
+
+#[test]
+fn gate_fails_closed_when_allowed_models_have_no_local_enforcement_path() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.child("unsupported-local-policy.toml");
+    config
+        .write_str(&format!(
+            r#"
+default_profile = "work"
+[endpoint]
+base_url = "http://127.0.0.1:1"
+gateway = "custom-gateway"
+[profiles.work]
+api_key = "{}"
+[run_policies.local]
+max_duration = "1h"
+allowed_models = ["model-a"]
+"#,
+            API_KEY
+        ))
+        .unwrap();
+
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .env_remove("AIX_PROFILE")
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "gate",
+            "--policy",
+            "local",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    let report: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(check(&report, "models")["status"], "pass");
+    assert_eq!(check(&report, "local_gateway")["status"], "fail");
+    assert!(check(&report, "local_gateway")["message"]
+        .as_str()
+        .unwrap()
+        .contains("requires a configured local-gateway tool"));
+    assert_eq!(check(&report, "litellm")["status"], "not_applicable");
+}
+
+#[test]
+fn chatgpt_policy_gate_checks_local_readiness_without_litellm_and_rejects_budget() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.child("chatgpt-policy.toml");
+    let auth_dir = dir.path().join("auth");
+    write_chatgpt_credentials(&auth_dir);
+    let base_config = r#"
+default_profile = "personal"
+[profiles.personal]
+auth = { type = "chatgpt" }
+[tools.opencode]
+command = "opencode"
+api_format = "openai"
+[tools.opencode.chatgpt]
+access_token_env = "ACCESS_TOKEN"
+[run_policies.local]
+profile = "personal"
+max_duration = "2h"
+allowed_models = ["gpt-6-luna"]
+"#;
+    file.write_str(base_config).unwrap();
+
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_AUTH_DIR", &auth_dir)
+        .args([
+            "--config",
+            file.path().to_str().unwrap(),
+            "gate",
+            "--policy",
+            "local",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(check(&report, "credentials")["status"], "pass");
+    assert_eq!(check(&report, "gateway")["status"], "pass");
+    assert_eq!(check(&report, "models")["status"], "pass");
+    assert_eq!(check(&report, "local_gateway")["status"], "pass");
+    assert_eq!(check(&report, "litellm")["status"], "not_applicable");
+    assert_eq!(check(&report, "budget")["status"], "not_applicable");
+
+    file.write_str(&base_config.replace(
+        "max_duration = \"2h\"",
+        "max_budget = 2.0\nmax_duration = \"2h\"",
+    ))
+    .unwrap();
+    let output = Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_AUTH_DIR", &auth_dir)
+        .args([
+            "--config",
+            file.path().to_str().unwrap(),
+            "gate",
+            "--policy",
+            "local",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(6));
+    let report: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(check(&report, "budget")["status"], "fail");
+    assert!(check(&report, "budget")["message"]
+        .as_str()
+        .unwrap()
+        .contains("monetary budget enforcement unavailable for this transport"));
 }
 
 #[test]

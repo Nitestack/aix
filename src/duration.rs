@@ -39,6 +39,17 @@ pub(crate) fn parse_litellm_duration(value: &str) -> Option<LiteLlmDuration> {
     Some(duration)
 }
 
+pub(crate) fn to_std_duration(value: &str) -> Option<std::time::Duration> {
+    match parse_litellm_duration(value)? {
+        LiteLlmDuration::FixedSeconds(seconds) => Some(std::time::Duration::from_secs(seconds)),
+        // Treat calendar months as their shortest possible length so local
+        // enforcement never extends beyond the configured LiteLLM maximum.
+        LiteLlmDuration::CalendarMonths(months) => months
+            .checked_mul(28 * 24 * 60 * 60)
+            .map(std::time::Duration::from_secs),
+    }
+}
+
 pub(crate) fn is_no_longer_than(requested: &str, maximum: &str) -> bool {
     let (Some(requested), Some(maximum)) = (
         parse_litellm_duration(requested),

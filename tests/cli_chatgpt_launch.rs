@@ -424,7 +424,7 @@ fn chatgpt_profiles_reject_leased_runs_before_gateway_or_auth_network_access() {
 }
 
 #[test]
-fn chatgpt_profiles_reject_run_policies_before_gateway_or_auth_network_access() {
+fn chatgpt_run_policy_with_budget_fails_with_explicit_unavailable_capability() {
     let dir = assert_fs::TempDir::new().unwrap();
     let config_text = format!(
         "{TOOL_CONFIG}\n[run_policies.bounded]\nprofile = 'personal'\nmax_budget = 3.0\nmax_duration = '1h'\n"
@@ -447,7 +447,69 @@ fn chatgpt_profiles_reject_run_policies_before_gateway_or_auth_network_access() 
         .assert()
         .code(2)
         .stderr(predicates::str::contains(
-            "LiteLLM lease and run-policy flows require an API-key profile",
+            "monetary budget enforcement unavailable for this transport",
         ));
+    assert!(!auth_dir.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn chatgpt_opencode_run_policy_without_budget_launches_and_records_no_budget() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let state_dir = dir.path().join("state");
+    let config_text = format!(
+        r#"{TOOL_CONFIG}
+
+[tools.opencode]
+command = "sh"
+api_format = "openai"
+local_gateway = true
+
+[tools.opencode.chatgpt]
+access_token_env = "ACCESS_TOKEN"
+
+[run_policies.local]
+profile = "personal"
+max_duration = "1h"
+allowed_models = ["gpt-6-luna"]
+tags = ["workflow:implement"]
+"#
+    );
+    let config = write_config(&dir, &config_text);
+    let auth_dir = dir.path().join("auth");
+    let script = r#"test -n "$OPENCODE_CONFIG_CONTENT" && test "$AIX_RUN_POLICY" = local && test -n "$AIX_RUN_TAGS" && test -z "${OPENAI_API_KEY+x}" && test -z "${ANTHROPIC_API_KEY+x}""#;
+
+    cmd()
+        .env("AIX_CONFIG", &config)
+        .env("AIX_AUTH_DIR", &auth_dir)
+        .env("AIX_STATE_DIR", &state_dir)
+        .args([
+            "--profile",
+            "personal",
+            "run",
+            "--policy",
+            "local",
+            "--",
+            "opencode",
+            "-c",
+            script,
+        ])
+        .assert()
+        .success();
+
+    let output = cmd()
+        .env("AIX_STATE_DIR", &state_dir)
+        .args(["runs", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let runs: Value = serde_json::from_slice(&output).unwrap();
+    let run = &runs["data"][0];
+    assert_eq!(run["policy"]["name"], "local");
+    assert_eq!(run["policy"]["effective_duration"], "1h");
+    assert!(run["policy"].get("effective_budget").is_none());
+    assert!(run["lease"].is_null());
     assert!(!auth_dir.exists());
 }

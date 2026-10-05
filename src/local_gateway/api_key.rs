@@ -1,4 +1,7 @@
-use super::{error_response, read_bounded_body, AuthFailureResponse, LaunchContext, ServerHandle};
+use super::{
+    error_response, policy_rejection_details, read_bounded_body, AuthFailureResponse,
+    LaunchContext, ServerHandle,
+};
 use crate::commands::launch::LaunchEnv;
 use crate::config::ApiFormat;
 use crate::local_gateway::{forward_response_passthrough_observed, ResponseBodyObserver};
@@ -15,7 +18,7 @@ use axum::Router;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
@@ -227,6 +230,13 @@ async fn handle_request(
         }
     };
 
+    if route.is_inference() {
+        if let Err(rejection) = context.enforcement.check_deadline(Instant::now()) {
+            let (status, category, message) = policy_rejection_details(rejection);
+            return policy_rejection(&mut usage, status, category, message);
+        }
+    }
+
     let request_body = if route.is_inference() {
         let bytes = match read_bounded_body(body).await {
             Ok(bytes) => bytes,
@@ -239,21 +249,29 @@ async fn handle_request(
                 );
             }
         };
+        let parsed = serde_json::from_slice::<Value>(&bytes).ok();
+        let model = parsed
+            .as_ref()
+            .and_then(|value| value.get("model"))
+            .and_then(Value::as_str);
         if let Some(recorder) = &mut usage {
-            let model = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("model")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                });
-            recorder.set_model(model.as_deref());
+            recorder.set_model(model);
+        }
+        if let Err(rejection) = context.enforcement.check_model(model) {
+            let (status, category, message) = policy_rejection_details(rejection);
+            return policy_rejection(&mut usage, status, category, message);
         }
         Some(bytes)
     } else {
         None
     };
+
+    if route.is_inference() {
+        if let Err(rejection) = context.enforcement.check_deadline(Instant::now()) {
+            let (status, category, message) = policy_rejection_details(rejection);
+            return policy_rejection(&mut usage, status, category, message);
+        }
+    }
 
     let url = match upstream_url(
         &state.upstream_base_url,
@@ -419,6 +437,18 @@ fn finish_local_rejection(recorder: &mut Option<UsageEventRecorder>, status: Sta
     }
 }
 
+fn policy_rejection(
+    recorder: &mut Option<UsageEventRecorder>,
+    status: StatusCode,
+    category: &str,
+    message: &str,
+) -> Response<Body> {
+    if let Some(mut recorder) = recorder.take() {
+        recorder.finish(UsageOutcome::Failed, Some(status.as_u16()), Some(category));
+    }
+    error_response(status, "local_gateway_policy_error", message)
+}
+
 fn finish_transport_failure(recorder: &mut Option<UsageEventRecorder>) {
     if let Some(mut recorder) = recorder.take() {
         recorder.finish(
@@ -530,7 +560,16 @@ mod tests {
         upstream: &str,
         store: Option<UsageStore>,
     ) -> ApiKeyGatewayHandle {
-        ApiKeyGatewayHandle::start_for_test(context(), format, upstream, UPSTREAM_KEY, store)
+        gateway_with_context(context(), format, upstream, store).await
+    }
+
+    async fn gateway_with_context(
+        context: LaunchContext,
+        format: ApiFormat,
+        upstream: &str,
+        store: Option<UsageStore>,
+    ) -> ApiKeyGatewayHandle {
+        ApiKeyGatewayHandle::start_for_test(context, format, upstream, UPSTREAM_KEY, store)
             .await
             .unwrap()
     }
@@ -695,6 +734,114 @@ mod tests {
         ] {
             assert!(!persisted.contains(marker), "persisted {marker}");
         }
+    }
+
+    #[tokio::test]
+    async fn policy_model_allowlist_is_shared_by_openai_and_anthropic_routes() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "response",
+                "choices": [],
+                "usage": { "prompt_tokens": 1, "completion_tokens": 1 }
+            })))
+            .expect(2)
+            .mount(&upstream)
+            .await;
+        let context = LaunchContext::with_enforcement(
+            "work".to_string(),
+            "review".to_string(),
+            Some("run-policy-models".to_string()),
+            Some("bounded".to_string()),
+            super::super::RequestEnforcement {
+                allowed_models: vec!["resolved-model".to_string()],
+                deadline: None,
+            },
+        );
+        let gateway = gateway_with_context(context, ApiFormat::Both, &upstream.uri(), None).await;
+        let client = reqwest::Client::new();
+        let address = gateway.address();
+        let token = gateway.child_token();
+
+        for path in [CHAT_COMPLETIONS_PATH, MESSAGES_PATH] {
+            let allowed = client
+                .post(format!("http://{address}{path}"))
+                .bearer_auth(token.expose_secret())
+                .json(&serde_json::json!({ "model": "resolved-model" }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(allowed.status(), StatusCode::OK, "{path}");
+            let _ = allowed.bytes().await.unwrap();
+
+            let switched = client
+                .post(format!("http://{address}{path}"))
+                .bearer_auth(token.expose_secret())
+                .json(&serde_json::json!({ "model": "other-model" }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(switched.status(), StatusCode::FORBIDDEN, "{path}");
+            assert!(switched
+                .text()
+                .await
+                .unwrap()
+                .contains("not allowed by the selected run policy"));
+
+            let missing = client
+                .post(format!("http://{address}{path}"))
+                .bearer_auth(token.expose_secret())
+                .json(&serde_json::json!({ "messages": [] }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(missing.status(), StatusCode::BAD_REQUEST, "{path}");
+            assert!(missing
+                .text()
+                .await
+                .unwrap()
+                .contains("request model is required"));
+        }
+
+        assert_eq!(upstream.received_requests().await.unwrap().len(), 2);
+        gateway.into_server().stop().await;
+    }
+
+    #[tokio::test]
+    async fn expired_run_deadline_rejects_inference_before_upstream_forwarding() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&upstream)
+            .await;
+        let context = LaunchContext::with_enforcement(
+            "work".to_string(),
+            "review".to_string(),
+            Some("run-expired".to_string()),
+            Some("bounded".to_string()),
+            super::super::RequestEnforcement {
+                allowed_models: Vec::new(),
+                deadline: Some(Instant::now() - Duration::from_secs(1)),
+            },
+        );
+        let gateway =
+            gateway_with_context(context, ApiFormat::Anthropic, &upstream.uri(), None).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", gateway.address()))
+            .header("x-api-key", gateway.child_token().expose_secret())
+            .json(&serde_json::json!({ "model": "any-model" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert!(response
+            .text()
+            .await
+            .unwrap()
+            .contains("duration limit has been reached"));
+        assert!(upstream.received_requests().await.unwrap().is_empty());
+        gateway.into_server().stop().await;
     }
 
     #[tokio::test]

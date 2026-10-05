@@ -227,7 +227,7 @@ pub struct PromptPreset {
 #[serde(deny_unknown_fields)]
 pub struct RunPolicy {
     pub profile: Option<String>,
-    pub max_budget: f64,
+    pub max_budget: Option<f64>,
     pub max_duration: String,
     pub allowed_models: Option<Vec<String>>,
     #[serde(default)]
@@ -424,7 +424,10 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
         if name.trim().is_empty() {
             return Err(AixError::EmptyRunPolicyName);
         }
-        if !policy.max_budget.is_finite() || policy.max_budget <= 0.0 {
+        if policy
+            .max_budget
+            .is_some_and(|budget| !budget.is_finite() || budget <= 0.0)
+        {
             return Err(AixError::InvalidRunPolicyBudget { name: name.clone() });
         }
         if crate::duration::parse_litellm_duration(&policy.max_duration).is_none() {

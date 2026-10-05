@@ -167,15 +167,16 @@ let
       };
 
       maxBudget = lib.mkOption {
-        type = lib.types.number;
+        type = lib.types.nullOr lib.types.number;
+        default = null;
         example = 3.0;
-        description = "Maximum lease spend in USD; must be greater than zero.";
+        description = "Optional maximum lease spend in USD; when set, must be greater than zero.";
       };
 
       maxDuration = lib.mkOption {
         type = lib.types.str;
         example = "2h";
-        description = "Maximum LiteLLM-compatible lease duration.";
+        description = "Maximum managed-run duration in aix/LiteLLM-compatible syntax.";
       };
 
       allowedModels = lib.mkOption {
@@ -245,8 +246,10 @@ let
   mkRunPolicy =
     _name: policy:
     {
-      max_budget = policy.maxBudget;
       max_duration = policy.maxDuration;
+    }
+    // lib.optionalAttrs (policy.maxBudget != null) {
+      max_budget = policy.maxBudget;
     }
     // lib.optionalAttrs (policy.profile != null) {
       profile = policy.profile;
@@ -444,7 +447,7 @@ in
     };
 
     runPolicies = lib.mkOption {
-      description = "Declarative constraints for leased aix runs, independent of any workflow engine.";
+      description = "Declarative constraints for managed aix runs; maxBudget is optional.";
       default = { };
       type = lib.types.attrsOf runPolicyType;
     };
@@ -536,7 +539,11 @@ in
         else
           profile.apiKey != null && (profile.baseUrl != null || cfg.endpoint.baseUrl != null);
       message = "programs.aix.profiles.${name}: API-key profiles require apiKey and an effective base URL; ChatGPT profiles must omit apiKey and baseUrl.";
-    }) cfg.profiles;
+    }) cfg.profiles
+    ++ lib.mapAttrsToList (name: policy: {
+      assertion = policy.maxBudget == null || policy.maxBudget > 0;
+      message = "programs.aix.runPolicies.${name}.maxBudget must be greater than zero when set.";
+    }) cfg.runPolicies;
 
     home.packages = [ cfg.package ];
 

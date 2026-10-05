@@ -44,7 +44,7 @@ pub(crate) fn validate_options(
     Ok((Some(budget), Some(duration)))
 }
 
-fn is_positive_litellm_duration(value: &str) -> bool {
+pub(crate) fn is_positive_litellm_duration(value: &str) -> bool {
     crate::duration::parse_litellm_duration(value).is_some()
 }
 
@@ -91,21 +91,33 @@ pub(crate) fn inputs_contain_parent_key(
 
 pub(crate) fn print_dry_run(
     resolved: &ResolvedRunLaunch,
-    budget: f64,
+    budget: Option<f64>,
     duration: &str,
     metadata: &RunMetadata,
 ) {
     let run_id = Uuid::new_v4();
-    eprintln!("Would create LiteLLM virtual-key lease:");
+    if budget.is_some() {
+        eprintln!("Would create LiteLLM virtual-key lease:");
+    } else {
+        eprintln!("Would enforce the local run policy:");
+    }
     if let Some(policy) = &resolved.policy {
         eprintln!("  policy: {}", policy.name);
     }
     eprintln!("  profile: {}", resolved.env.profile_name);
-    eprintln!("  key alias: aix-run-{run_id}");
-    eprintln!("  budget: ${budget:.2}");
+    if let Some(budget) = budget {
+        eprintln!("  key alias: aix-run-{run_id}");
+        eprintln!("  budget: ${budget:.2}");
+    } else {
+        eprintln!("  budget: not configured");
+    }
     eprintln!("  duration: {duration}");
     if resolved.allowed_models.is_empty() {
-        eprintln!("  allowed models: unrestricted by the lease");
+        if budget.is_some() {
+            eprintln!("  allowed models: unrestricted by the lease");
+        } else {
+            eprintln!("  allowed models: no model restriction configured");
+        }
     } else {
         eprintln!("  allowed models: {}", resolved.allowed_models.join(", "));
     }

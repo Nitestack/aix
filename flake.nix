@@ -152,6 +152,7 @@
             grep -q 'phase:implement' ${homeManagerPolicyConfigs.configured}
             grep -Fxq '[run_policies.research]' ${homeManagerPolicyConfigs.configured}
             grep -Fxq 'max_duration = "1h"' ${homeManagerPolicyConfigs.configured}
+            test "$(grep -A2 -F '[run_policies.research]' ${homeManagerPolicyConfigs.configured} | grep -c '^max_budget =')" -eq 0
             ! grep -q 'run_policies' ${homeManagerPolicyConfigs.legacy}
             touch $out
           '';

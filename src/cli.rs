@@ -221,7 +221,7 @@ pub enum Command {
     },
     /// Run a command with profile credentials and durable run history
     Run {
-        /// Apply a declarative run policy (always uses a scoped lease)
+        /// Apply a declarative run policy with locally enforceable constraints
         #[arg(long)]
         policy: Option<String>,
         /// Optional human-readable run name
@@ -242,13 +242,13 @@ pub enum Command {
         /// Maximum spend in USD (required with --lease)
         #[arg(long)]
         budget: Option<f64>,
-        /// Lease duration, such as 30m or 2h (default: 2h)
+        /// Maximum run or lease duration, such as 30m or 2h
         #[arg(long)]
         duration: Option<String>,
         /// Restrict the lease to a model ID or configured alias (repeatable)
         #[arg(long = "allow-model")]
         allow_models: Vec<String>,
-        /// Validate and describe a lease without creating it or running the child
+        /// Validate and describe enforcement without creating a lease or running the child
         #[arg(long)]
         dry_run: bool,
         /// Command and arguments to run (after --)
