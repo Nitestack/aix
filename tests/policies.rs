@@ -629,7 +629,7 @@ tags = ["phase:implement", "duplicate"]
         .clone();
     let envelope: Value = serde_json::from_slice(&record_output).unwrap();
     let record = &envelope["data"];
-    assert_eq!(record["schema_version"], 2);
+    assert_eq!(record["schema_version"], 3);
     assert_eq!(record["policy"]["name"], "implement");
     assert_eq!(record["policy"]["effective_budget"], 1.5);
     assert_eq!(record["policy"]["effective_duration"], "45m");
@@ -814,4 +814,55 @@ fn run_history_without_policy_metadata_remains_readable() {
     let envelope: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(envelope["data"]["schema_version"], 1);
     assert!(envelope["data"]["policy"].is_null());
+}
+
+#[test]
+fn run_history_schema_v2_records_remain_readable_without_usage() {
+    let state = assert_fs::TempDir::new().unwrap();
+    let run_id = "4b9a85df-51d9-49a4-9a17-69d7f0dc91f2";
+    let run_dir = state.path().join("runs").join(run_id);
+    std::fs::create_dir_all(&run_dir).unwrap();
+    std::fs::write(
+        run_dir.join("00000000000000000001.json"),
+        format!(
+            r#"{{
+  "schema_version": 2,
+  "run_id": "{run_id}",
+  "name": null,
+  "workflow": null,
+  "task_id": null,
+  "tags": [],
+  "profile": "work",
+  "logical_tool_name": "review",
+  "executable_name": "agent",
+  "started_at_unix_ms": 100,
+  "finished_at_unix_ms": 101,
+  "duration_ms": 1,
+  "process_exit_code": 0,
+  "status": "succeeded",
+  "policy": {{
+    "name": "bounded",
+    "effective_budget": 1.0,
+    "effective_duration": "1h",
+    "effective_allowed_models": [],
+    "effective_tags": []
+  }},
+  "lease": null
+}}"#
+        ),
+    )
+    .unwrap();
+
+    let output = cmd()
+        .env("AIX_STATE_DIR", state.path())
+        .args(["runs", "show", run_id, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let envelope: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(envelope["data"]["schema_version"], 2);
+    assert_eq!(envelope["data"]["policy"]["name"], "bounded");
+    assert!(envelope["data"].get("usage").is_none());
 }

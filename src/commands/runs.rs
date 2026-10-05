@@ -1,6 +1,6 @@
 use crate::cli::RunsAction;
 use crate::output;
-use crate::run_history::{RunPolicyRecord, RunRecord, RunStore};
+use crate::run_history::{RunPolicyRecord, RunRecord, RunStore, RunUsageRecord};
 use color_eyre::Result;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -34,7 +34,14 @@ fn print_list(records: &[RunRecord]) {
         return;
     }
 
-    println!("RUN ID  STARTED  PROFILE  EXECUTABLE  WORKFLOW / TASK  STATUS  DURATION");
+    let show_usage = records.iter().any(|record| record.usage.is_some());
+    if show_usage {
+        println!(
+            "RUN ID  STARTED  PROFILE  EXECUTABLE  WORKFLOW / TASK  STATUS  DURATION  REQS  TOKENS"
+        );
+    } else {
+        println!("RUN ID  STARTED  PROFILE  EXECUTABLE  WORKFLOW / TASK  STATUS  DURATION");
+    }
     for record in records {
         let executable = record
             .logical_tool_name
@@ -51,7 +58,7 @@ fn print_list(records: &[RunRecord]) {
             .duration_ms
             .map(|duration| format!("{duration}ms"))
             .unwrap_or_else(|| "-".to_string());
-        println!(
+        let row = format!(
             "{}  {}  {:?}  {}  {}  {}  {}",
             record.run_id,
             format_timestamp(record.started_at_unix_ms),
@@ -61,6 +68,22 @@ fn print_list(records: &[RunRecord]) {
             status_name(record.status),
             duration,
         );
+        if show_usage {
+            let requests = record
+                .usage
+                .as_ref()
+                .map(|usage| usage.request_count.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let tokens = record
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.total_tokens)
+                .map(compact_count)
+                .unwrap_or_else(|| "-".to_string());
+            println!("{row}  {requests}  {tokens}");
+        } else {
+            println!("{row}");
+        }
     }
 }
 
@@ -108,6 +131,9 @@ fn print_record(record: &RunRecord) {
     if let Some(policy) = &record.policy {
         print_policy(policy);
     }
+    if let Some(usage) = &record.usage {
+        print_usage(usage);
+    }
     if let Some(lease) = &record.lease {
         println!("Lease key alias: {:?}", lease.key_alias);
         println!("Lease budget: ${:.2}", lease.budget);
@@ -128,6 +154,55 @@ fn print_record(record: &RunRecord) {
             )
         );
         println!("Lease cleanup: {:?}", lease.cleanup_status);
+    }
+}
+
+fn print_usage(usage: &RunUsageRecord) {
+    println!("Requests: {}", usage.request_count);
+    println!("Successful requests: {}", usage.successful_requests);
+    println!("Failed requests: {}", usage.failed_requests);
+    println!(
+        "Input tokens total: {}",
+        format_token_count(usage.input_tokens_total)
+    );
+    println!(
+        "Input tokens uncached: {}",
+        format_token_count(usage.input_tokens_uncached)
+    );
+    println!(
+        "Cache-read input tokens: {}",
+        format_token_count(usage.cache_read_input_tokens)
+    );
+    println!(
+        "Cache-write input tokens: {}",
+        format_token_count(usage.cache_write_input_tokens)
+    );
+    println!("Output tokens: {}", format_token_count(usage.output_tokens));
+    println!("Total tokens: {}", format_token_count(usage.total_tokens));
+    println!("Models: {:?}", usage.models);
+    println!("Protocols: {:?}", usage.protocols);
+}
+
+fn format_token_count(count: Option<u64>) -> String {
+    count.map_or_else(|| "(unknown)".to_string(), |count| count.to_string())
+}
+
+fn compact_count(count: u64) -> String {
+    let (scale, suffix) = if count >= 1_000_000_000 {
+        (1_000_000_000, "b")
+    } else if count >= 1_000_000 {
+        (1_000_000, "m")
+    } else if count >= 1_000 {
+        (1_000, "k")
+    } else {
+        return count.to_string();
+    };
+    let whole = count / scale;
+    let decimal = (count % scale) * 10 / scale;
+    if decimal == 0 {
+        format!("{whole}{suffix}")
+    } else {
+        format!("{whole}.{decimal}{suffix}")
     }
 }
 

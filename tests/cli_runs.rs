@@ -76,7 +76,7 @@ api_key = "sk-test-key"
     let record = &envelope["data"];
     assert_eq!(envelope["schema_version"], 1);
     assert_eq!(envelope["command"], "runs show");
-    assert_eq!(record["schema_version"], 1);
+    assert_eq!(record["schema_version"], 3);
     assert_eq!(record["run_id"], run_id);
     assert_eq!(record["name"], "nightly check");
     assert_eq!(record["workflow"], "verification");
@@ -88,6 +88,18 @@ api_key = "sk-test-key"
     assert!(record["duration_ms"].is_number());
     assert!(record["finished_at_unix_ms"].is_number());
     assert_eq!(record["process_exit_code"], 0);
+    assert!(record.get("usage").is_none());
+
+    let runs_output = cmd()
+        .env("AIX_STATE_DIR", state.path())
+        .args(["runs", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let runs: Value = serde_json::from_slice(&runs_output).unwrap();
+    assert!(runs["data"][0].get("usage").is_none());
 }
 
 #[test]

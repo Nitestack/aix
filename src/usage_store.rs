@@ -1,6 +1,7 @@
 use crate::usage_event::{LocalUsageEvent, UsageOutcome, USAGE_EVENT_SCHEMA_VERSION};
 use chrono::{DateTime, Utc};
 use directories::BaseDirs;
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,14 @@ pub(crate) struct UsageSummary {
     pub cache_write_input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+    pub models: Vec<String>,
+    pub protocols: Vec<String>,
+}
+
+#[derive(Default)]
+struct EventRead {
+    events: Vec<LocalUsageEvent>,
+    read_incomplete: bool,
 }
 
 #[derive(Clone)]
@@ -116,34 +125,89 @@ impl UsageStore {
         &self,
         filter: &UsageEventFilter,
     ) -> std::io::Result<Vec<LocalUsageEvent>> {
+        Ok(self.read_events(filter)?.events)
+    }
+
+    fn read_events(&self, filter: &UsageEventFilter) -> std::io::Result<EventRead> {
         if filter.start_unix_ms > filter.end_unix_ms || !self.events_dir.exists() {
-            return Ok(Vec::new());
+            return Ok(EventRead::default());
         }
         let entries = fs::read_dir(&self.events_dir)?;
-        let mut events = Vec::new();
-        for entry in entries.flatten() {
-            if !entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+        let start_date = event_date(filter.start_unix_ms);
+        let end_date = event_date(filter.end_unix_ms);
+        let mut result = EventRead::default();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    result.read_incomplete = true;
+                    continue;
+                }
+            };
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => {
+                    result.read_incomplete = true;
+                    continue;
+                }
+            };
+            if !file_type.is_dir() {
                 continue;
             }
-            let Ok(day_entries) = fs::read_dir(entry.path()) else {
-                continue;
+            let directory_name = entry.file_name().to_string_lossy().into_owned();
+            if let (Some(start), Some(end)) = (&start_date, &end_date) {
+                if directory_name.as_str() < start.as_str()
+                    || directory_name.as_str() > end.as_str()
+                {
+                    continue;
+                }
+            }
+            let day_entries = match fs::read_dir(entry.path()) {
+                Ok(entries) => entries,
+                Err(_) => {
+                    result.read_incomplete = true;
+                    continue;
+                }
             };
-            for day_entry in day_entries.flatten() {
-                if !day_entry
-                    .file_type()
-                    .is_ok_and(|file_type| file_type.is_file())
+            for day_entry in day_entries {
+                let day_entry = match day_entry {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        result.read_incomplete = true;
+                        continue;
+                    }
+                };
+                let file_type = match day_entry.file_type() {
+                    Ok(file_type) => file_type,
+                    Err(_) => {
+                        result.read_incomplete = true;
+                        continue;
+                    }
+                };
+                if !file_type.is_file()
                     || day_entry.path().extension().and_then(|ext| ext.to_str()) != Some("json")
                 {
                     continue;
                 }
-                let Ok(bytes) = fs::read(day_entry.path()) else {
-                    continue;
+                let bytes = match fs::read(day_entry.path()) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        result.read_incomplete = true;
+                        continue;
+                    }
                 };
-                let Ok(event) = serde_json::from_slice::<LocalUsageEvent>(&bytes) else {
-                    continue;
+                let event = match serde_json::from_slice::<LocalUsageEvent>(&bytes) {
+                    Ok(event) => event,
+                    Err(_) => {
+                        result.read_incomplete = true;
+                        continue;
+                    }
                 };
-                if event.schema_version != USAGE_EVENT_SCHEMA_VERSION
-                    || event.started_at_unix_ms < filter.start_unix_ms
+                if event.schema_version != USAGE_EVENT_SCHEMA_VERSION {
+                    result.read_incomplete = true;
+                    continue;
+                }
+                if event.started_at_unix_ms < filter.start_unix_ms
                     || event.started_at_unix_ms > filter.end_unix_ms
                     || filter
                         .profile
@@ -164,66 +228,110 @@ impl UsageStore {
                 {
                     continue;
                 }
-                events.push(event);
+                result.events.push(event);
             }
         }
-        events.sort_by(|left, right| {
+        result.events.sort_by(|left, right| {
             left.started_at_unix_ms
                 .cmp(&right.started_at_unix_ms)
                 .then_with(|| left.event_id.cmp(&right.event_id))
         });
-        Ok(events)
+        Ok(result)
     }
 
     #[allow(dead_code)]
     pub(crate) fn summarize(&self, filter: &UsageEventFilter) -> std::io::Result<UsageSummary> {
         let events = self.events(filter)?;
-        if events.is_empty() {
-            return Ok(UsageSummary::default());
-        }
-        let mut summary = UsageSummary {
-            input_tokens_total: Some(0),
-            input_tokens_uncached: Some(0),
-            cache_read_input_tokens: Some(0),
-            cache_write_input_tokens: Some(0),
-            output_tokens: Some(0),
-            total_tokens: Some(0),
-            ..UsageSummary::default()
-        };
-        for event in events {
-            summary.request_count = summary.request_count.saturating_add(event.request_count);
-            match event.outcome {
-                UsageOutcome::Succeeded => summary.succeeded_count += 1,
-                UsageOutcome::Failed => summary.failed_count += 1,
-                UsageOutcome::Incomplete => summary.incomplete_count += 1,
-            }
-            match event.usage_completeness {
-                crate::usage_event::UsageCompleteness::Complete => {
-                    summary.usage_complete_count += 1
-                }
-                crate::usage_event::UsageCompleteness::Partial => summary.usage_partial_count += 1,
-                crate::usage_event::UsageCompleteness::Unavailable => {
-                    summary.usage_unavailable_count += 1
-                }
-            }
-            sum_complete(&mut summary.input_tokens_total, event.input_tokens_total);
-            sum_complete(
-                &mut summary.input_tokens_uncached,
-                event.input_tokens_uncached,
-            );
-            sum_complete(
-                &mut summary.cache_read_input_tokens,
-                event.cache_read_input_tokens,
-            );
-            sum_complete(
-                &mut summary.cache_write_input_tokens,
-                event.cache_write_input_tokens,
-            );
-            sum_complete(&mut summary.output_tokens, event.output_tokens);
-            sum_complete(&mut summary.total_tokens, event.total_tokens);
-        }
-        Ok(summary)
+        Ok(summarize_events(events))
     }
+
+    /// Summarize events linked to one run. No matching events are represented as
+    /// `None`; token counters remain unknown if any matching event lacks a value.
+    pub(crate) fn summarize_run(
+        &self,
+        run_id: &str,
+        start_unix_ms: u64,
+        end_unix_ms: u64,
+    ) -> std::io::Result<Option<UsageSummary>> {
+        let read = self.read_events(&UsageEventFilter {
+            start_unix_ms,
+            end_unix_ms,
+            run_id: Some(run_id.to_string()),
+            ..UsageEventFilter::default()
+        })?;
+        if read.read_incomplete {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "one or more local usage events could not be read",
+            ));
+        }
+        let events = read.events;
+        Ok((!events.is_empty()).then(|| summarize_events(events)))
+    }
+}
+
+fn summarize_events(events: Vec<LocalUsageEvent>) -> UsageSummary {
+    if events.is_empty() {
+        return UsageSummary::default();
+    }
+    let mut summary = UsageSummary {
+        input_tokens_total: Some(0),
+        input_tokens_uncached: Some(0),
+        cache_read_input_tokens: Some(0),
+        cache_write_input_tokens: Some(0),
+        output_tokens: Some(0),
+        total_tokens: Some(0),
+        ..UsageSummary::default()
+    };
+    let mut models = BTreeSet::new();
+    let mut protocols = BTreeSet::new();
+    for event in events {
+        summary.request_count = summary.request_count.saturating_add(event.request_count);
+        match event.outcome {
+            UsageOutcome::Succeeded => {
+                summary.succeeded_count =
+                    summary.succeeded_count.saturating_add(event.request_count)
+            }
+            UsageOutcome::Failed => {
+                summary.failed_count = summary.failed_count.saturating_add(event.request_count)
+            }
+            UsageOutcome::Incomplete => {
+                summary.incomplete_count =
+                    summary.incomplete_count.saturating_add(event.request_count)
+            }
+        }
+        match event.usage_completeness {
+            crate::usage_event::UsageCompleteness::Complete => summary.usage_complete_count += 1,
+            crate::usage_event::UsageCompleteness::Partial => summary.usage_partial_count += 1,
+            crate::usage_event::UsageCompleteness::Unavailable => {
+                summary.usage_unavailable_count += 1
+            }
+        }
+        if let Some(model) = event.model.filter(|model| !model.is_empty()) {
+            models.insert(model);
+        }
+        if !event.protocol.is_empty() {
+            protocols.insert(event.protocol);
+        }
+        sum_complete(&mut summary.input_tokens_total, event.input_tokens_total);
+        sum_complete(
+            &mut summary.input_tokens_uncached,
+            event.input_tokens_uncached,
+        );
+        sum_complete(
+            &mut summary.cache_read_input_tokens,
+            event.cache_read_input_tokens,
+        );
+        sum_complete(
+            &mut summary.cache_write_input_tokens,
+            event.cache_write_input_tokens,
+        );
+        sum_complete(&mut summary.output_tokens, event.output_tokens);
+        sum_complete(&mut summary.total_tokens, event.total_tokens);
+    }
+    summary.models = models.into_iter().collect();
+    summary.protocols = protocols.into_iter().collect();
+    summary
 }
 
 fn report_storage_warning(reported: &AtomicBool) {
@@ -452,5 +560,137 @@ mod tests {
         assert_eq!(summary.total_tokens, None);
         assert_eq!(summary.usage_complete_count, 1);
         assert_eq!(summary.usage_unavailable_count, 1);
+    }
+
+    #[test]
+    fn run_summaries_aggregate_mixed_protocols_without_double_counting_cache_tokens() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let store = UsageStore::new(temp.path());
+
+        let mut openai = event("gpt-test");
+        openai.protocol = "openai_chat_completions".to_string();
+        openai.input_tokens_total = Some(100);
+        openai.input_tokens_uncached = Some(70);
+        openai.cache_read_input_tokens = Some(30);
+        openai.cache_write_input_tokens = Some(0);
+        openai.output_tokens = Some(10);
+        openai.total_tokens = Some(110);
+        openai.usage_completeness = UsageCompleteness::Complete;
+        store.write_event(&openai).unwrap();
+
+        let mut duplicate_model = openai.clone();
+        duplicate_model.event_id = Uuid::new_v4();
+        duplicate_model.input_tokens_total = Some(0);
+        duplicate_model.input_tokens_uncached = Some(0);
+        duplicate_model.cache_read_input_tokens = Some(0);
+        duplicate_model.cache_write_input_tokens = Some(0);
+        duplicate_model.output_tokens = Some(0);
+        duplicate_model.total_tokens = Some(0);
+        store.write_event(&duplicate_model).unwrap();
+
+        let mut anthropic = event("claude-test");
+        anthropic.protocol = "anthropic_messages".to_string();
+        anthropic.input_tokens_total = Some(50);
+        anthropic.input_tokens_uncached = Some(15);
+        anthropic.cache_read_input_tokens = Some(30);
+        anthropic.cache_write_input_tokens = Some(5);
+        anthropic.output_tokens = Some(20);
+        anthropic.total_tokens = Some(70);
+        anthropic.usage_completeness = UsageCompleteness::Complete;
+        store.write_event(&anthropic).unwrap();
+
+        let summary = store
+            .summarize_run("run-123", 0, u64::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(summary.request_count, 3);
+        assert_eq!(summary.succeeded_count, 3);
+        assert_eq!(summary.failed_count, 0);
+        assert_eq!(summary.input_tokens_total, Some(150));
+        assert_eq!(summary.input_tokens_uncached, Some(85));
+        assert_eq!(summary.cache_read_input_tokens, Some(60));
+        assert_eq!(summary.cache_write_input_tokens, Some(5));
+        assert_eq!(summary.output_tokens, Some(30));
+        assert_eq!(summary.total_tokens, Some(180));
+        assert_eq!(summary.models, ["claude-test", "gpt-test"]);
+        assert_eq!(
+            summary.protocols,
+            ["anthropic_messages", "openai_chat_completions"]
+        );
+    }
+
+    #[test]
+    fn run_summaries_count_failed_and_incomplete_requests_and_keep_unknown_tokens_unknown() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let store = UsageStore::new(temp.path());
+        let mut failed = event("gpt-failed");
+        failed.run_id = Some("failed-run".to_string());
+        failed.outcome = UsageOutcome::Failed;
+        store.write_event(&failed).unwrap();
+        let mut incomplete = event("claude-interrupted");
+        incomplete.run_id = Some("failed-run".to_string());
+        incomplete.protocol = "anthropic_messages".to_string();
+        incomplete.outcome = UsageOutcome::Incomplete;
+        store.write_event(&incomplete).unwrap();
+
+        let summary = store
+            .summarize_run("failed-run", 0, u64::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(summary.request_count, 2);
+        assert_eq!(summary.succeeded_count, 0);
+        assert_eq!(summary.failed_count, 1);
+        assert_eq!(summary.incomplete_count, 1);
+        assert_eq!(summary.input_tokens_total, None);
+        assert_eq!(summary.output_tokens, None);
+        assert_eq!(summary.total_tokens, None);
+        assert_eq!(summary.models, ["claude-interrupted", "gpt-failed"]);
+        assert_eq!(
+            summary.protocols,
+            ["anthropic_messages", "openai_responses"]
+        );
+    }
+
+    #[test]
+    fn run_summaries_are_limited_to_run_id_and_time_range_and_absent_without_events() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let store = UsageStore::new(temp.path());
+        let mut event = event("gpt-test");
+        event.started_at_unix_ms = 100;
+        event.finished_at_unix_ms = 110;
+        store.write_event(&event).unwrap();
+
+        assert!(store
+            .summarize_run("another-run", 0, 200)
+            .unwrap()
+            .is_none());
+        assert!(store.summarize_run("run-123", 0, 99).unwrap().is_none());
+        assert!(store.summarize_run("run-123", 111, 200).unwrap().is_none());
+        assert!(store
+            .summarize_run("no-events", 0, u64::MAX)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .summarize_run("run-123", 100, 110)
+                .unwrap()
+                .unwrap()
+                .request_count,
+            1
+        );
+    }
+
+    #[test]
+    fn run_summary_fails_closed_on_malformed_events_but_general_reads_keep_valid_events() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let store = UsageStore::new(temp.path());
+        let valid = event("gpt-test");
+        store.write_event(&valid).unwrap();
+        let date = event_date(valid.started_at_unix_ms).unwrap();
+        let directory = temp.path().join("usage/events").join(date);
+        fs::write(directory.join("broken.json"), b"not-json").unwrap();
+
+        assert!(store.summarize_run("run-123", 0, u64::MAX).is_err());
+        assert_eq!(all_events(&store), [valid]);
     }
 }

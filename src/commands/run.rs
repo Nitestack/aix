@@ -5,8 +5,9 @@ use crate::error::AixError;
 use crate::gateway::LiteLlmAdminClient;
 use crate::run_history::{
     LeaseCleanupStatus, RunLeaseRecord, RunPolicyRecord, RunRecord, RunStatus, RunStore,
-    LEGACY_RUN_SCHEMA_VERSION, RUN_SCHEMA_VERSION,
+    RunUsageRecord, RUN_SCHEMA_VERSION,
 };
+use crate::usage_store::{UsageStore, UsageSummary};
 use color_eyre::Result;
 use std::path::Path;
 use std::sync::{
@@ -172,11 +173,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     });
     let started_at_unix_ms = RunRecord::now_unix_ms();
     let mut record = RunRecord {
-        schema_version: if policy_record.is_some() {
-            RUN_SCHEMA_VERSION
-        } else {
-            LEGACY_RUN_SCHEMA_VERSION
-        },
+        schema_version: RUN_SCHEMA_VERSION,
         run_id,
         name: metadata.name.clone(),
         workflow: metadata.workflow.clone(),
@@ -192,6 +189,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         status: RunStatus::Running,
         policy: policy_record.clone(),
         lease: None,
+        usage: None,
     };
 
     let interrupt_requested = Arc::new(AtomicBool::new(false));
@@ -345,6 +343,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         }
     }
 
+    let gateway_managed = active_sidecar.is_some();
     let started = Instant::now();
     let run_child = || {
         launch::run_command_status_interruptible(
@@ -381,6 +380,10 @@ pub async fn run(options: RunOptions) -> Result<()> {
         } else {
             RunStatus::Failed
         };
+    }
+
+    if gateway_managed {
+        record_run_usage(&mut record);
     }
 
     let mut cleanup_confirmed = true;
@@ -510,10 +513,124 @@ fn finish_prelaunch_failure(record: &mut RunRecord) {
     record.status = RunStatus::Failed;
 }
 
+fn record_run_usage(record: &mut RunRecord) {
+    let result = UsageStore::from_environment().and_then(|store| attach_run_usage(record, &store));
+    match result {
+        Ok(()) => {}
+        Err(_) => {
+            eprintln!("aix: run_usage_unavailable: could not summarize local gateway request usage")
+        }
+    }
+}
+
+fn attach_run_usage(record: &mut RunRecord, store: &UsageStore) -> std::io::Result<()> {
+    if let Some(summary) = store.summarize_run(
+        &record.run_id.to_string(),
+        record.started_at_unix_ms,
+        record.finished_at_unix_ms.unwrap_or(u64::MAX),
+    )? {
+        record.usage = Some(summary.into());
+    }
+    Ok(())
+}
+
+impl From<UsageSummary> for RunUsageRecord {
+    fn from(summary: UsageSummary) -> Self {
+        Self {
+            request_count: summary.request_count,
+            successful_requests: summary.succeeded_count,
+            failed_requests: summary
+                .failed_count
+                .saturating_add(summary.incomplete_count),
+            input_tokens_total: summary.input_tokens_total,
+            input_tokens_uncached: summary.input_tokens_uncached,
+            cache_read_input_tokens: summary.cache_read_input_tokens,
+            cache_write_input_tokens: summary.cache_write_input_tokens,
+            output_tokens: summary.output_tokens,
+            total_tokens: summary.total_tokens,
+            models: summary.models,
+            protocols: summary.protocols,
+        }
+    }
+}
+
 fn executable_name(program: &str) -> String {
     Path::new(program)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(program)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local_gateway::LaunchContext;
+    use crate::usage_event::{LocalUsageEvent, UsageOutcome};
+
+    #[test]
+    fn interrupted_run_keeps_available_usage_summary() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let run_id = Uuid::new_v4();
+        let store = UsageStore::new(temp.path());
+        let context = LaunchContext::new(
+            "work".to_string(),
+            "opencode".to_string(),
+            Some(run_id.to_string()),
+            None,
+        );
+        let mut event = LocalUsageEvent::new(&context, "openai_responses", Some("model-x".into()));
+        event.started_at_unix_ms = 100;
+        event.finished_at_unix_ms = 150;
+        event.outcome = UsageOutcome::Succeeded;
+        event.input_tokens_total = Some(40);
+        event.input_tokens_uncached = Some(30);
+        event.cache_read_input_tokens = Some(10);
+        event.output_tokens = Some(5);
+        event.total_tokens = Some(45);
+        store.write_event(&event).unwrap();
+
+        let mut record = RunRecord {
+            schema_version: RUN_SCHEMA_VERSION,
+            run_id,
+            name: None,
+            workflow: None,
+            task_id: None,
+            tags: Vec::new(),
+            profile: "work".to_string(),
+            logical_tool_name: Some("opencode".to_string()),
+            executable_name: "opencode".to_string(),
+            started_at_unix_ms: 100,
+            finished_at_unix_ms: Some(200),
+            duration_ms: Some(100),
+            process_exit_code: None,
+            status: RunStatus::Interrupted,
+            policy: None,
+            lease: None,
+            usage: None,
+        };
+
+        attach_run_usage(&mut record, &store).unwrap();
+        assert_eq!(record.status, RunStatus::Interrupted);
+        let usage = record.usage.unwrap();
+        assert_eq!(usage.request_count, 1);
+        assert_eq!(usage.successful_requests, 1);
+        assert_eq!(usage.failed_requests, 0);
+        assert_eq!(usage.total_tokens, Some(45));
+    }
+
+    #[test]
+    fn run_usage_counts_incomplete_requests_as_failed() {
+        let summary = UsageSummary {
+            request_count: 3,
+            succeeded_count: 1,
+            failed_count: 1,
+            incomplete_count: 1,
+            ..UsageSummary::default()
+        };
+        let usage = RunUsageRecord::from(summary);
+        assert_eq!(usage.request_count, 3);
+        assert_eq!(usage.successful_requests, 1);
+        assert_eq!(usage.failed_requests, 2);
+    }
 }

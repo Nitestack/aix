@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-pub const RUN_SCHEMA_VERSION: u8 = 2;
-pub const LEGACY_RUN_SCHEMA_VERSION: u8 = 1;
+pub const RUN_SCHEMA_VERSION: u8 = 3;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -47,6 +46,21 @@ pub struct RunPolicyRecord {
     pub effective_tags: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunUsageRecord {
+    pub request_count: u64,
+    pub successful_requests: u64,
+    pub failed_requests: u64,
+    pub input_tokens_total: Option<u64>,
+    pub input_tokens_uncached: Option<u64>,
+    pub cache_read_input_tokens: Option<u64>,
+    pub cache_write_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub models: Vec<String>,
+    pub protocols: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub schema_version: u8,
@@ -67,6 +81,8 @@ pub struct RunRecord {
     pub policy: Option<RunPolicyRecord>,
     #[serde(default)]
     pub lease: Option<RunLeaseRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<RunUsageRecord>,
 }
 
 impl RunRecord {
@@ -347,6 +363,7 @@ mod tests {
             status: RunStatus::Running,
             policy: None,
             lease: None,
+            usage: None,
         }
     }
 
