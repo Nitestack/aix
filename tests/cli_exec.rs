@@ -497,6 +497,54 @@ local_gateway = true
 
 #[test]
 #[cfg(unix)]
+fn local_gateway_child_cannot_inherit_env_backed_parent_credentials() {
+    let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    config
+        .write_str(
+            r#"
+[endpoint]
+base_url = "https://upstream.example.com"
+
+[profiles.work]
+api_key = { env = "AIX_PARENT_KEY" }
+
+[profiles.work.env]
+PROFILE_KEY_COPY = "prefix-sk-parent-env-secret-sentinel-suffix"
+
+[tools.openai]
+command = "sh"
+api_format = "openai"
+local_gateway = true
+
+[tools.openai.env]
+TOOL_KEY_COPY = "sk-parent-env-secret-sentinel"
+TOOL_SETTING = "preserved"
+"#,
+        )
+        .unwrap();
+
+    cmd()
+        .env("AIX_CONFIG", config.path())
+        .env("AIX_PARENT_KEY", "sk-parent-env-secret-sentinel")
+        .env("INHERITED_PARENT_CREDENTIAL", "sk-parent-env-secret-sentinel")
+        .env(
+            "INHERITED_PARENT_CREDENTIAL_FRAGMENT",
+            "prefix-sk-parent-env-secret-sentinel-suffix",
+        )
+        .env("UNRELATED_SETTING", "preserve-this-value")
+        .args([
+            "openai",
+            "work",
+            "--",
+            "-c",
+            "test -n \"$OPENAI_API_KEY\" && test \"$OPENAI_API_KEY\" != sk-parent-env-secret-sentinel && test \"$OPENAI_API_KEY\" = \"$LITELLM_API_KEY\" && case \"$OPENAI_BASE_URL\" in http://127.0.0.1:*) ;; *) exit 1 ;; esac && test -z \"${AIX_PARENT_KEY+x}\" && test -z \"${INHERITED_PARENT_CREDENTIAL+x}\" && test -z \"${INHERITED_PARENT_CREDENTIAL_FRAGMENT+x}\" && test -z \"${PROFILE_KEY_COPY+x}\" && test -z \"${TOOL_KEY_COPY+x}\" && test \"$TOOL_SETTING\" = preserved && test \"$UNRELATED_SETTING\" = preserve-this-value",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+#[cfg(unix)]
 fn local_gateway_dry_run_does_not_resolve_parent_or_custom_secrets() {
     let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
     config

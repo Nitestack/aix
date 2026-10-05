@@ -1,3 +1,4 @@
+mod json_usage;
 mod sse;
 
 #[allow(dead_code)]

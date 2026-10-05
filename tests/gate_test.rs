@@ -301,6 +301,7 @@ auth = { type = "chatgpt" }
 command = "opencode"
 api_format = "openai"
 [tools.opencode.chatgpt]
+transport = "local_gateway"
 access_token_env = "ACCESS_TOKEN"
 [run_policies.local]
 profile = "personal"
@@ -361,6 +362,100 @@ allowed_models = ["gpt-6-luna"]
         .as_str()
         .unwrap()
         .contains("monetary budget enforcement unavailable for this transport"));
+}
+
+fn run_chatgpt_local_model_gate(
+    dir: &TempDir,
+    tool_name: &str,
+    binding: &str,
+) -> std::process::Output {
+    let auth_dir = dir.path().join("auth");
+    write_chatgpt_credentials(&auth_dir);
+    let config = dir.child("chatgpt-local-model-policy.toml");
+    config
+        .write_str(&format!(
+            r#"
+default_profile = "personal"
+[profiles.personal]
+auth = {{ type = "chatgpt" }}
+[tools.{tool_name}]
+command = "{tool_name}"
+api_format = "openai"
+[tools.{tool_name}.chatgpt]
+access_token_env = "ACCESS_TOKEN"
+{binding}
+[run_policies.local]
+profile = "personal"
+max_duration = "2h"
+allowed_models = ["gpt-6-luna"]
+"#
+        ))
+        .unwrap();
+    Command::cargo_bin("aix")
+        .unwrap()
+        .env("AIX_AUTH_DIR", &auth_dir)
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "gate",
+            "--policy",
+            "local",
+            "--json",
+        ])
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn codex_app_server_local_gateway_passes_chatgpt_model_capability_preflight() {
+    let dir = TempDir::new().unwrap();
+    let output = run_chatgpt_local_model_gate(
+        &dir,
+        "codex",
+        "transport = \"local_gateway\"\nprepend_args = [\"app-server\", \"--listen\", \"stdio://\"]",
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(check(&report, "gateway")["status"], "pass");
+    assert_eq!(check(&report, "models")["status"], "pass");
+    assert_eq!(check(&report, "local_gateway")["status"], "pass");
+    assert!(check(&report, "local_gateway")["message"]
+        .as_str()
+        .unwrap()
+        .contains("ChatGPT local Responses adapter"));
+}
+
+#[test]
+fn direct_chatgpt_transport_fails_closed_for_allowed_model_enforcement() {
+    let dir = TempDir::new().unwrap();
+    let output = run_chatgpt_local_model_gate(&dir, "codex", "transport = \"direct\"");
+
+    assert_eq!(output.status.code(), Some(2));
+    let report: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(check(&report, "gateway")["status"], "fail");
+    assert_eq!(check(&report, "local_gateway")["status"], "fail");
+    assert!(check(&report, "local_gateway")["message"]
+        .as_str()
+        .unwrap()
+        .contains("no configured ChatGPT local Responses adapter"));
+}
+
+#[test]
+fn unsupported_chatgpt_binding_fails_closed_for_allowed_model_enforcement() {
+    let dir = TempDir::new().unwrap();
+    let output = run_chatgpt_local_model_gate(&dir, "other", "transport = \"direct\"");
+
+    assert_eq!(output.status.code(), Some(2));
+    let report: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(check(&report, "gateway")["status"], "fail");
+    assert_eq!(check(&report, "local_gateway")["status"], "fail");
+    assert!(!serde_json::to_string(&report).unwrap().contains("OpenCode"));
 }
 
 #[test]

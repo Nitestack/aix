@@ -1,3 +1,4 @@
+use super::json_usage::JsonUsageFieldExtractor;
 use super::sse::{SseDecoder, SseFrame};
 use crate::local_gateway::{ResponseBodyObserver, ResponseStreamEnd};
 use crate::usage_event::{TokenUsage, UsageEventRecorder, UsageOutcome};
@@ -156,8 +157,7 @@ pub(crate) struct OpenAiResponsesObserver {
     status: u16,
     protocol: OpenAiProtocol,
     is_sse: bool,
-    json_body: Vec<u8>,
-    json_body_overflowed: bool,
+    json_usage: JsonUsageFieldExtractor,
     finished: bool,
 }
 
@@ -178,8 +178,7 @@ impl OpenAiResponsesObserver {
             status,
             protocol,
             is_sse,
-            json_body: Vec::new(),
-            json_body_overflowed: false,
+            json_usage: JsonUsageFieldExtractor::new(matches!(protocol, OpenAiProtocol::Responses)),
             finished: false,
         }
     }
@@ -189,16 +188,8 @@ impl ResponseBodyObserver for OpenAiResponsesObserver {
     fn observe(&mut self, bytes: &[u8]) {
         if self.is_sse {
             self.stream.push(bytes, self.protocol);
-        } else if self
-            .json_body
-            .len()
-            .checked_add(bytes.len())
-            .is_some_and(|length| length <= MAX_USAGE_JSON_BYTES)
-        {
-            self.json_body.extend_from_slice(bytes);
         } else {
-            self.json_body.clear();
-            self.json_body_overflowed = true;
+            self.json_usage.push(bytes);
         }
         if let Some(recorder) = &mut self.recorder {
             recorder.set_usage(&self.stream.usage);
@@ -208,11 +199,9 @@ impl ResponseBodyObserver for OpenAiResponsesObserver {
     fn finish(&mut self, stream_end: ResponseStreamEnd) {
         if self.is_sse {
             self.stream.finish(self.protocol);
-        } else if !self.json_body_overflowed {
-            let usage = match self.protocol {
-                OpenAiProtocol::Responses => responses_json_usage(&self.json_body),
-                OpenAiProtocol::ChatCompletions => chat_completions_json_usage(&self.json_body),
-            };
+        } else {
+            self.json_usage.finish();
+            let usage = non_sse_json_usage(&self.json_usage, self.protocol);
             if let Some(usage) = usage {
                 self.stream.usage.merge(&usage);
             }
@@ -262,8 +251,6 @@ impl Drop for OpenAiResponsesObserver {
     }
 }
 
-const MAX_USAGE_JSON_BYTES: usize = 1024 * 1024;
-
 fn normalize_openai_usage(raw: OpenAiUsageRaw) -> TokenUsage {
     let input_tokens_total = raw.input_tokens.or(raw.prompt_tokens);
     let output_tokens = raw.output_tokens.or(raw.completion_tokens);
@@ -287,10 +274,36 @@ fn normalize_openai_usage(raw: OpenAiUsageRaw) -> TokenUsage {
     )
 }
 
+fn non_sse_json_usage(
+    extractor: &JsonUsageFieldExtractor,
+    protocol: OpenAiProtocol,
+) -> Option<TokenUsage> {
+    let parse = |bytes: &[u8]| {
+        serde_json::from_slice::<Option<OpenAiUsageRaw>>(bytes)
+            .ok()
+            .flatten()
+            .map(normalize_openai_usage)
+    };
+    match protocol {
+        OpenAiProtocol::Responses => match extractor.response_usage() {
+            Some(bytes) => match serde_json::from_slice::<Option<OpenAiUsageRaw>>(bytes) {
+                Ok(Some(raw)) => Some(normalize_openai_usage(raw)),
+                Ok(None) => extractor.root_usage().and_then(parse),
+                Err(_) => None,
+            },
+            None => extractor.root_usage().and_then(parse),
+        },
+        OpenAiProtocol::ChatCompletions => extractor.root_usage().and_then(parse),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local_gateway::LaunchContext;
     use crate::usage_event::UsageCompleteness;
+    use crate::usage_store::{UsageEventFilter, UsageStore};
+    use assert_fs::TempDir;
 
     #[test]
     fn responses_usage_captures_cached_input_and_calculates_total() {
@@ -364,5 +377,88 @@ mod tests {
         ];
         let chat_usage = chat_completions_sse_usage(chat).unwrap();
         assert_eq!(chat_usage.total_tokens, Some(6));
+    }
+
+    #[test]
+    fn non_sse_usage_extracts_across_chunk_splits_without_persisting_content() {
+        let state = TempDir::new().unwrap();
+        let store = UsageStore::new(state.path());
+        let content_marker = "OPENAI_RESPONSE_CONTENT_MARKER_DO_NOT_PERSIST";
+        let cases = [
+            (
+                OpenAiProtocol::Responses,
+                "openai_responses",
+                "responses-large",
+                format!(
+                    r#"{{"output":[{{"text":"{content_marker}{}"}},{{"type":"function_call_output","output":"TOOL_RESULT_MARKER_DO_NOT_PERSIST"}}],"response":{{"usage":{{"input_tokens":13,"input_tokens_details":{{"cached_tokens":4}},"output_tokens":6}}}}}}"#,
+                    "x".repeat(64 * 1024)
+                ),
+                (Some(13), Some(9), Some(4), Some(6), Some(19)),
+            ),
+            (
+                OpenAiProtocol::ChatCompletions,
+                "openai_chat_completions",
+                "chat-completions-large",
+                format!(
+                    r#"{{"choices":[{{"message":{{"content":"{content_marker}{}"}}}}],"usage":{{"prompt_tokens":10,"prompt_tokens_details":{{"cached_tokens":2}},"completion_tokens":4,"total_tokens":14}}}}"#,
+                    "y".repeat(32 * 1024)
+                ),
+                (Some(10), Some(8), Some(2), Some(4), Some(14)),
+            ),
+            (
+                OpenAiProtocol::Responses,
+                "openai_responses",
+                "responses-null-fallback",
+                r#"{"usage":{"input_tokens":2,"output_tokens":1},"response":{"usage":null}}"#
+                    .to_string(),
+                (Some(2), None, None, Some(1), Some(3)),
+            ),
+        ];
+
+        for (protocol, protocol_name, model, body, expected) in cases {
+            let context = LaunchContext::new("work".to_string(), "review".to_string(), None, None);
+            let mut recorder =
+                UsageEventRecorder::new(Some(store.clone()), &context, protocol_name);
+            recorder.set_model(Some(model));
+            let mut observer =
+                OpenAiResponsesObserver::for_protocol(recorder, 200, protocol, false);
+            let mut offset = 0;
+            let mut chunk_size = 1;
+            while offset < body.len() {
+                let end = (offset + chunk_size).min(body.len());
+                observer.observe(&body.as_bytes()[offset..end]);
+                offset = end;
+                chunk_size = (chunk_size * 7 % 29).max(1);
+            }
+            observer.finish(ResponseStreamEnd::Complete);
+
+            let events = store
+                .events(&UsageEventFilter {
+                    start_unix_ms: 0,
+                    end_unix_ms: u64::MAX,
+                    ..UsageEventFilter::default()
+                })
+                .unwrap();
+            let event = events
+                .iter()
+                .find(|event| event.model.as_deref() == Some(model))
+                .unwrap();
+            assert_eq!(event.input_tokens_total, expected.0);
+            assert_eq!(event.input_tokens_uncached, expected.1);
+            assert_eq!(event.cache_read_input_tokens, expected.2);
+            assert_eq!(event.output_tokens, expected.3);
+            assert_eq!(event.total_tokens, expected.4);
+            assert_eq!(event.outcome, UsageOutcome::Succeeded);
+            assert_eq!(event.usage_completeness, UsageCompleteness::Complete);
+        }
+
+        for day in std::fs::read_dir(state.path().join("usage/events")).unwrap() {
+            let day = day.unwrap();
+            for event in std::fs::read_dir(day.path()).unwrap() {
+                let persisted = std::fs::read_to_string(event.unwrap().path()).unwrap();
+                assert!(!persisted.contains(content_marker));
+                assert!(!persisted.contains("TOOL_RESULT_MARKER_DO_NOT_PERSIST"));
+            }
+        }
     }
 }

@@ -294,16 +294,16 @@ async fn preflight(options: GateOptions) -> PreflightReport {
     let chatgpt_model_enforcement_required =
         policy.is_some_and(|policy| policy.allowed_models.is_some());
     let discovered_models = if chatgpt_profile {
-        if has_chatgpt_opencode_tool(&cfg) {
+        if has_chatgpt_local_responses_adapter(&cfg) {
             report.pass(
                 "gateway",
-                "configured OpenCode SIWC bridge is available for local policy enforcement",
+                "configured ChatGPT local Responses adapter is available for local policy enforcement",
                 None,
             );
         } else if chatgpt_model_enforcement_required {
             report.fail(
                 "gateway",
-                "ChatGPT run policies require the configured OpenCode SIWC bridge",
+                "ChatGPT run policies require a configured local Responses adapter",
                 None,
                 GateFailureCategory::Config,
             );
@@ -458,16 +458,16 @@ async fn preflight(options: GateOptions) -> PreflightReport {
             "policy does not require local allowed-model enforcement",
         );
     } else if chatgpt_profile {
-        if has_chatgpt_opencode_tool(&cfg) {
+        if has_chatgpt_local_responses_adapter(&cfg) {
             report.pass(
                 "local_gateway",
-                "OpenCode SIWC request boundary can enforce allowed models",
+                "configured ChatGPT local Responses adapter can enforce allowed models",
                 None,
             );
         } else {
             report.fail(
                 "local_gateway",
-                "no configured OpenCode SIWC bridge can enforce allowed models",
+                "no configured ChatGPT local Responses adapter can enforce allowed models",
                 None,
                 GateFailureCategory::Config,
             );
@@ -656,11 +656,11 @@ fn skip_after_config(report: &mut GateReport) {
     report.skipped("budget", "config did not pass");
 }
 
-fn has_chatgpt_opencode_tool(config: &Config) -> bool {
+fn has_chatgpt_local_responses_adapter(config: &Config) -> bool {
     config
         .tools
-        .get("opencode")
-        .is_some_and(|tool| tool.chatgpt.is_some())
+        .iter()
+        .any(|(name, tool)| tool.chatgpt_responses_adapter(name).is_some())
 }
 
 fn has_api_key_local_gateway_tool(config: &Config) -> bool {

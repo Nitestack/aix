@@ -589,7 +589,11 @@ mod tests {
         let upstream = MockServer::start().await;
         let state = assert_fs::TempDir::new().unwrap();
         let usage_store = UsageStore::new(state.path());
-        let response_body = br#"{"id":"resp-secret","choices":[{"message":{"content":"response-marker"}}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16,"prompt_tokens_details":{"cached_tokens":3}}}"#.to_vec();
+        let large_output = "large text ".to_string() + &"x".repeat(256 * 1024);
+        let response_body = format!(
+            r#"{{"id":"resp-secret","choices":[{{"message":{{"content":"response-marker {large_output}","tool_calls":[{{"function":{{"arguments":"TOOL_ARGUMENT_MARKER_DO_NOT_PERSIST {large_output}"}}}}]}}}}],"usage":{{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16,"prompt_tokens_details":{{"cached_tokens":3}},"unknown_metadata":"USAGE_METADATA_MARKER_DO_NOT_PERSIST"}}}}"#
+        )
+        .into_bytes();
         Mock::given(method("POST"))
             .and(path(CHAT_COMPLETIONS_PATH))
             .and(header(AUTHORIZATION, format!("Bearer {UPSTREAM_KEY}")))
@@ -727,6 +731,8 @@ mod tests {
         for marker in [
             "prompt-marker",
             "response-marker",
+            "TOOL_ARGUMENT_MARKER_DO_NOT_PERSIST",
+            "USAGE_METADATA_MARKER_DO_NOT_PERSIST",
             "resp-secret",
             "responses-secret",
             "private",
@@ -926,7 +932,11 @@ mod tests {
         let upstream = MockServer::start().await;
         let state = assert_fs::TempDir::new().unwrap();
         let usage_store = UsageStore::new(state.path());
-        let response_body = br#"{"id":"message-secret","content":[{"type":"text","text":"response-marker"}],"usage":{"input_tokens":8,"cache_creation_input_tokens":2,"cache_read_input_tokens":4,"output_tokens":5}}"#.to_vec();
+        let large_output = "large response ".to_string() + &"y".repeat(256 * 1024);
+        let response_body = format!(
+            r#"{{"id":"message-secret","content":[{{"type":"text","text":"response-marker {large_output}"}},{{"type":"tool_use","input":{{"secret":"TOOL_INPUT_MARKER_DO_NOT_PERSIST {large_output}"}}}}],"usage":{{"input_tokens":8,"cache_creation_input_tokens":2,"cache_read_input_tokens":4,"output_tokens":5,"unknown_metadata":"USAGE_METADATA_MARKER_DO_NOT_PERSIST"}}}}"#
+        )
+        .into_bytes();
         Mock::given(method("POST"))
             .and(path(MESSAGES_PATH))
             .and(header("x-api-key", UPSTREAM_KEY))
@@ -965,6 +975,29 @@ mod tests {
         assert_eq!(events[0].output_tokens, Some(5));
         assert_eq!(events[0].total_tokens, Some(19));
         assert_eq!(events[0].outcome, UsageOutcome::Succeeded);
+        let event_dir = std::fs::read_dir(state.path().join("usage/events"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let persisted = std::fs::read_to_string(
+            std::fs::read_dir(event_dir)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path(),
+        )
+        .unwrap();
+        for marker in [
+            "response-marker",
+            "TOOL_INPUT_MARKER_DO_NOT_PERSIST",
+            "USAGE_METADATA_MARKER_DO_NOT_PERSIST",
+            "message-secret",
+        ] {
+            assert!(!persisted.contains(marker));
+        }
     }
 
     #[tokio::test]
@@ -1031,6 +1064,65 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].outcome, UsageOutcome::Succeeded);
         assert_eq!(events[0].usage_completeness, UsageCompleteness::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn malformed_non_sse_usage_is_unavailable_without_changing_the_response() {
+        let upstream = MockServer::start().await;
+        let state = assert_fs::TempDir::new().unwrap();
+        let usage_store = UsageStore::new(state.path());
+        let response_body = br#"{"id":"malformed-response-secret","output":"private response marker","usage":{"input_tokens":"not-a-number","output_tokens":4,"unknown":"private usage marker"}}"#.to_vec();
+        Mock::given(method("POST"))
+            .and(path(RESPONSES_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(response_body.clone(), "application/json"),
+            )
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let gateway = gateway(
+            ApiFormat::OpenAi,
+            &upstream.uri(),
+            Some(usage_store.clone()),
+        )
+        .await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{}{RESPONSES_PATH}", gateway.address()))
+            .bearer_auth(gateway.child_token().expose_secret())
+            .header("content-type", "application/json")
+            .body(r#"{"model":"malformed-usage-model","input":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), response_body);
+
+        let events = all_events(&usage_store);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].outcome, UsageOutcome::Succeeded);
+        assert_eq!(events[0].usage_completeness, UsageCompleteness::Unavailable);
+        let event_dir = std::fs::read_dir(state.path().join("usage/events"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let persisted = std::fs::read_to_string(
+            std::fs::read_dir(event_dir)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path(),
+        )
+        .unwrap();
+        for marker in [
+            "malformed-response-secret",
+            "private response marker",
+            "private usage marker",
+        ] {
+            assert!(!persisted.contains(marker));
+        }
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use super::json_usage::JsonUsageFieldExtractor;
 use super::sse::{SseDecoder, SseFrame};
 use crate::local_gateway::{ResponseBodyObserver, ResponseStreamEnd};
 use crate::usage_event::{TokenUsage, UsageEventRecorder, UsageOutcome};
@@ -111,8 +112,7 @@ pub(crate) struct AnthropicMessagesObserver {
     recorder: Option<UsageEventRecorder>,
     status: u16,
     is_sse: bool,
-    json_body: Vec<u8>,
-    json_body_overflowed: bool,
+    json_usage: JsonUsageFieldExtractor,
     finished: bool,
 }
 
@@ -123,8 +123,7 @@ impl AnthropicMessagesObserver {
             recorder: Some(recorder),
             status,
             is_sse,
-            json_body: Vec::new(),
-            json_body_overflowed: false,
+            json_usage: JsonUsageFieldExtractor::new(false),
             finished: false,
         }
     }
@@ -134,16 +133,8 @@ impl ResponseBodyObserver for AnthropicMessagesObserver {
     fn observe(&mut self, bytes: &[u8]) {
         if self.is_sse {
             self.stream.push(bytes);
-        } else if self
-            .json_body
-            .len()
-            .checked_add(bytes.len())
-            .is_some_and(|length| length <= MAX_USAGE_JSON_BYTES)
-        {
-            self.json_body.extend_from_slice(bytes);
         } else {
-            self.json_body.clear();
-            self.json_body_overflowed = true;
+            self.json_usage.push(bytes);
         }
         if let Some(recorder) = &mut self.recorder {
             recorder.set_usage(&self.stream.usage);
@@ -153,8 +144,14 @@ impl ResponseBodyObserver for AnthropicMessagesObserver {
     fn finish(&mut self, stream_end: ResponseStreamEnd) {
         if self.is_sse {
             self.stream.finish();
-        } else if !self.json_body_overflowed {
-            if let Some(usage) = messages_json_usage(&self.json_body) {
+        } else {
+            self.json_usage.finish();
+            if let Some(usage) = self
+                .json_usage
+                .root_usage()
+                .and_then(|bytes| serde_json::from_slice::<AnthropicUsageRaw>(bytes).ok())
+                .map(normalize_anthropic_usage)
+            {
                 self.stream.usage.merge(&usage);
             }
         }
@@ -182,8 +179,6 @@ impl ResponseBodyObserver for AnthropicMessagesObserver {
         self.finished = true;
     }
 }
-
-const MAX_USAGE_JSON_BYTES: usize = 1024 * 1024;
 
 impl Drop for AnthropicMessagesObserver {
     fn drop(&mut self) {
@@ -220,7 +215,10 @@ fn normalize_anthropic_usage(raw: AnthropicUsageRaw) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local_gateway::LaunchContext;
     use crate::usage_event::UsageCompleteness;
+    use crate::usage_store::{UsageEventFilter, UsageStore};
+    use assert_fs::TempDir;
 
     #[test]
     fn messages_usage_includes_cache_counters_in_total_input_exactly_once() {
@@ -264,5 +262,61 @@ mod tests {
         assert_eq!(usage.cache_read_input_tokens, Some(2));
         assert_eq!(usage.output_tokens, Some(5));
         assert_eq!(usage.total_tokens, Some(11));
+    }
+
+    #[test]
+    fn non_sse_usage_extracts_cache_counters_across_chunk_splits_without_content() {
+        let state = TempDir::new().unwrap();
+        let store = UsageStore::new(state.path());
+        let body = format!(
+            r#"{{"content":[{{"type":"text","text":"ANTHROPIC_RESPONSE_MARKER_DO_NOT_PERSIST{}"}},{{"type":"tool_use","input":{{"private":"TOOL_INPUT_MARKER_DO_NOT_PERSIST"}}}}],"usage":{{"input_tokens":11,"cache_creation_input_tokens":3,"cache_read_input_tokens":5,"output_tokens":7}}}}"#,
+            "z".repeat(64 * 1024)
+        );
+        let context = LaunchContext::new("work".to_string(), "claude".to_string(), None, None);
+        let recorder = UsageEventRecorder::new(Some(store.clone()), &context, "anthropic_messages");
+        let mut observer = AnthropicMessagesObserver::new(recorder, 200, false);
+        let mut offset = 0;
+        let mut chunk_size = 1;
+        while offset < body.len() {
+            let end = (offset + chunk_size).min(body.len());
+            observer.observe(&body.as_bytes()[offset..end]);
+            offset = end;
+            chunk_size = (chunk_size * 11 % 37).max(1);
+        }
+        observer.finish(ResponseStreamEnd::Complete);
+
+        let events = store
+            .events(&UsageEventFilter {
+                start_unix_ms: 0,
+                end_unix_ms: u64::MAX,
+                ..UsageEventFilter::default()
+            })
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].input_tokens_total, Some(19));
+        assert_eq!(events[0].input_tokens_uncached, Some(11));
+        assert_eq!(events[0].cache_read_input_tokens, Some(5));
+        assert_eq!(events[0].cache_write_input_tokens, Some(3));
+        assert_eq!(events[0].output_tokens, Some(7));
+        assert_eq!(events[0].total_tokens, Some(26));
+        assert_eq!(events[0].usage_completeness, UsageCompleteness::Complete);
+        assert_eq!(events[0].outcome, UsageOutcome::Succeeded);
+        let event_dir = std::fs::read_dir(state.path().join("usage/events"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let persisted = std::fs::read_to_string(
+            std::fs::read_dir(event_dir)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path(),
+        )
+        .unwrap();
+        assert!(!persisted.contains("ANTHROPIC_RESPONSE_MARKER_DO_NOT_PERSIST"));
+        assert!(!persisted.contains("TOOL_INPUT_MARKER_DO_NOT_PERSIST"));
     }
 }

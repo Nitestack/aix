@@ -519,26 +519,45 @@ pub fn apply_lease_credentials(
             };
             true
         } else {
-            parent_key.is_empty() || !value.contains(parent_key)
+            true
         }
     });
 
-    if !parent_key.is_empty() {
-        for (name, value) in std::env::vars_os() {
-            if value.to_string_lossy().contains(parent_key) {
-                let name = name.to_string_lossy().into_owned();
-                if !env
-                    .vars
+    scrub_parent_credential(env, parent_key);
+}
+
+pub(crate) fn scrub_parent_credential(env: &mut LaunchEnv, parent_key: &str) {
+    if parent_key.is_empty() {
+        return;
+    }
+
+    env.vars.retain(|(_, value)| !value.contains(parent_key));
+    env.auth_vars
+        .retain(|(_, value)| !value.expose_secret().contains(parent_key));
+
+    for (name, value) in std::env::vars_os() {
+        if value.to_string_lossy().contains(parent_key) {
+            let name = name.to_string_lossy().into_owned();
+            let overridden = env
+                .vars
+                .iter()
+                .any(|(configured_name, _)| configured_name == &name)
+                || env
+                    .auth_vars
                     .iter()
                     .any(|(configured_name, _)| configured_name == &name)
-                {
-                    env.remove_vars.push(name);
-                }
+                || env
+                    .clear_vars
+                    .iter()
+                    .any(|cleared_name| cleared_name == &name);
+            if !overridden {
+                env.remove_vars.push(name);
             }
         }
-        env.remove_vars.sort_unstable();
-        env.remove_vars.dedup();
     }
+
+    env.remove_vars.sort_unstable();
+    env.remove_vars.dedup();
 }
 
 pub async fn run_named_tool(
@@ -668,6 +687,7 @@ pub(crate) async fn start_launch_sidecar(
             )
             .await?;
             gateway.configure_env(&mut resolved.env);
+            scrub_parent_credential(&mut resolved.env, parent_gateway.api_key.expose_secret());
             gateway.into_server()
         }
     };
