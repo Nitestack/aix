@@ -311,10 +311,12 @@ binding, while LiteLLM leases and run policies remain API-key-only.
 The refresh token, retained ID token, and issued OAuth client ID stay in aix's
 owner-only auth store; they are never passed to the child or written to run
 history. `--dry-run` prints the executable, effective arguments, and variable
-names, and does not refresh a token. aix refreshes before a child starts, not
-while it is running. A long-lived harness must be restarted to receive a renewed
-token; Codex app-server documents a restart-and-resume flow. These instructions
-cover Codex app-server only, not the Codex TUI or other Codex modes.
+names, and does not start a gateway or refresh a token. Direct transport obtains
+the access token before the child starts, so a long-lived direct-mode harness
+must be restarted to receive a renewed token. The supported Codex app-server
+local-gateway mode instead keeps a stable local bearer and obtains a current
+upstream token for each inference request. This integration covers Codex
+app-server only, not the Codex TUI or other Codex modes.
 
 ### Model defaults and aliases
 
@@ -457,8 +459,9 @@ programs.aix.tools.review = {
 
 #### Codex app-server with ChatGPT plan authentication
 
-OpenAI documents ChatGPT-plan token sharing for Codex app-server using the
-Responses API provider below. Configure an explicit aix handoff:
+OpenAI documents ChatGPT-plan token sharing for Codex app-server using a custom
+Responses provider. Opt into aix's local gateway to keep the real access token
+inside aix and observe usage:
 
 ```toml
 [tools.codex]
@@ -466,19 +469,9 @@ command = "codex"
 api_format = "openai"
 
 [tools.codex.chatgpt]
+transport = "local_gateway"
 access_token_env = "ACCESS_TOKEN"
-prepend_args = [
-  "app-server",
-  "--listen",
-  "stdio://",
-  "-c", 'model_provider="openai_chatgpt_plan"',
-  "-c", 'model_providers.openai_chatgpt_plan.name="ChatGPT plan"',
-  "-c", 'model_providers.openai_chatgpt_plan.base_url="https://api.openai.com/v1"',
-  "-c", 'model_providers.openai_chatgpt_plan.env_key="ACCESS_TOKEN"',
-  "-c", 'model_providers.openai_chatgpt_plan.wire_api="responses"',
-  "-c", "model_providers.openai_chatgpt_plan.requires_openai_auth=false",
-  "-c", "model_providers.openai_chatgpt_plan.supports_websockets=false",
-]
+prepend_args = ["app-server", "--listen", "stdio://"]
 clear_env = ["OPENAI_API_KEY", "CODEX_API_KEY"]
 ```
 
@@ -489,39 +482,32 @@ programs.aix.tools.codex = {
   command = "codex";
   apiFormat = "openai";
   chatgpt = {
+    transport = "local_gateway";
     accessTokenEnv = "ACCESS_TOKEN";
-    prependArgs = [
-      "app-server"
-      "--listen"
-      "stdio://"
-      "-c"
-      ''model_provider="openai_chatgpt_plan"''
-      "-c"
-      ''model_providers.openai_chatgpt_plan.name="ChatGPT plan"''
-      "-c"
-      ''model_providers.openai_chatgpt_plan.base_url="https://api.openai.com/v1"''
-      "-c"
-      ''model_providers.openai_chatgpt_plan.env_key="ACCESS_TOKEN"''
-      "-c"
-      ''model_providers.openai_chatgpt_plan.wire_api="responses"''
-      "-c"
-      "model_providers.openai_chatgpt_plan.requires_openai_auth=false"
-      "-c"
-      "model_providers.openai_chatgpt_plan.supports_websockets=false"
-    ];
+    prependArgs = [ "app-server" "--listen" "stdio://" ];
     clearEnv = [ "OPENAI_API_KEY" "CODEX_API_KEY" ];
   };
 };
 ```
 
-Manual smoke test: install a current Codex CLI, run `aix auth login personal`,
-and check `aix codex personal --dry-run` for `codex app-server --listen
-stdio://`, the Responses provider settings, and `ACCESS_TOKEN` (name only). For
-the live check, point a Codex app-server JSON-RPC client at `aix codex personal`,
-send `initialize`, `initialized`, `thread/start`, and `turn/start`, and verify a
-completed response. No `codex login` is needed. See OpenAI's [Codex app-server
-guide](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)
-for the protocol sequence and provider details.
+The local-gateway transport injects one-shot Codex `-c` overrides for a unique
+Responses provider, the ephemeral loopback base URL, and `env_key =
+"ACCESS_TOKEN"`. That variable contains only the random local bearer; aix fetches
+or refreshes the real access token for each request to the public OpenAI API.
+No `codex login` is needed, and aix does not write Codex config, auth, or session
+files or create a separate `CODEX_HOME`. Other ChatGPT-bound tools remain direct
+by default; local-gateway mode is currently limited to Codex app-server over
+stdio and the existing OpenCode adapter.
+
+Dry-run displays `transport: local_gateway` and that a dynamic local Responses
+provider/base URL will be used, but no actual URL or credential. Codex CLI
+0.157.0 was checked for the `app-server --listen stdio:// -c ...` syntax. The
+CLI-only check did not perform inference; a live inference/tool/refresh smoke
+test still needs an eligible ChatGPT account. Local usage events report request
+and token counts without inventing a USD cost; account-level plan usage remains
+in ChatGPT **Settings → Usage**. See OpenAI's [Codex app-server guide](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)
+and [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+for the current provider schema and SIWC request contract.
 
 #### OpenCode v2 with ChatGPT plan authentication
 
@@ -847,8 +833,8 @@ aix claude -- chat
 aix opencode work --dry-run
 ```
 
-The `[tools]` map is otherwise generic launch wiring. OpenCode is the narrow
-exception: a ChatGPT-authenticated `opencode` entry enables the SIWC bridge
+The `[tools]` map is otherwise generic launch wiring. ChatGPT-authenticated
+OpenCode and Codex app-server entries can use their narrow SIWC bridge adapters
 described above. Other tools do not get harness-specific adapters or workflows.
 
 ### Listing profiles

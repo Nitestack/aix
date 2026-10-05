@@ -29,6 +29,9 @@ pub enum AixError {
     #[error("tool {tool:?} is not configured to consume ChatGPT-plan credentials; configure [tools.{tool}.chatgpt] with access_token_env")]
     ChatGptToolNotConfigured { tool: String },
 
+    #[error("ChatGPT local_gateway transport is supported only for OpenAI-compatible OpenCode or Codex app-server bindings; configure an eligible tool or use transport = \"direct\" (tool {tool:?})")]
+    ChatGptLocalGatewayUnsupported { tool: String },
+
     #[error("LiteLLM lease and run-policy flows require an API-key profile; ChatGPT plan usage is not a LiteLLM lease")]
     ChatGptRunLeaseUnsupported,
 
@@ -477,6 +480,7 @@ impl AixError {
             | Self::ChatGptProfileBaseUrl { .. }
             | Self::ChatGptAuthUnsupported
             | Self::ChatGptToolNotConfigured { .. }
+            | Self::ChatGptLocalGatewayUnsupported { .. }
             | Self::ChatGptRunLeaseUnsupported
             | Self::RunPolicyBudgetUnavailable
             | Self::AuthLoginRequiresInteractive

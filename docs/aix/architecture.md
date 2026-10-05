@@ -62,10 +62,10 @@ path. `protocol.rs` builds the PKCE authorization request, validates the loopbac
 callback, exchanges authorization codes, verifies ID-token signatures and
 claims from OpenID metadata/JWKS, discovers revocation, and refreshes tokens.
 `store.rs` writes versioned, profile-scoped records atomically and uses file
-locks to serialize login/logout/refresh across processes. `launch.rs` asks this
-service for a usable access token only for an explicitly ChatGPT-bound tool.
-Ordinary bound tools receive that access token at launch; OpenCode's dedicated
-bridge asks `AuthService` for a token per upstream request instead.
+locks to serialize login/logout/refresh across processes. Direct ChatGPT tool
+bindings receive a usable access token at launch. Gateway-backed bindings use
+the shared Responses bridge, which asks `AuthService` for a token per upstream
+inference request instead.
 
 The store lives under the platform local application-data directory (or
 `AIX_AUTH_DIR`). On Unix, the directory and files are restricted to the owner
@@ -73,11 +73,11 @@ The store lives under the platform local application-data directory (or
 rest. The status command reads only local state and never returns token values.
 The ordinary launch boundary exposes only the short-lived access token, under
 the configured `access_token_env`; refresh tokens, ID tokens, client IDs, and
-tokens for other profiles remain in the auth service/store. The OpenCode child
-instead receives only a random bridge bearer token; the ChatGPT access token is
-added to a request inside aix and is never placed in the child environment. No
-OAuth token is exported through `env`, `shell`, generic `exec`, inference, or an
-unconfigured tool.
+tokens for other profiles remain in the auth service/store. OpenCode and
+Codex-local-gateway children instead receive only a random bridge bearer token;
+the ChatGPT access token is added to a request inside aix and is never placed
+in the child environment. No OAuth token is exported through `env`, `shell`,
+generic `exec`, inference, or an unconfigured tool.
 `aix run` uses the same explicit binding, but lease and run-policy paths reject
 ChatGPT profiles before reaching LiteLLM.
 
@@ -145,39 +145,48 @@ Shared by `exec`, `shell`, `run`, and external named-tool dispatch.
 launch a child, and preserve its exit behavior. API-key launches keep the
 generated/profile/tool precedence and legacy named-tool fallbacks. ChatGPT
 launches require `tools.<name>.chatgpt`, clear standard inherited API-key
-variables and configured `clear_env`, then apply profile env and tool env. Most
-bound tools receive the selected access token last; ChatGPT-authenticated
-OpenCode instead uses the `opencode_sidecar` lifecycle described below.
-ChatGPT prepended arguments come before caller arguments. Dry-run reports
-arguments and variable names without starting the bridge or loading/refreshing
-OAuth credentials. An unconfigured API-key `aix run` command receives both
-credential formats.
+variables and configured `clear_env`, then apply profile env and tool env.
+Direct bindings receive the selected access token last; OpenCode and opted-in
+Codex app-server launches instead receive a local bridge bearer. Codex's
+dynamic provider overrides are appended after caller arguments so they win over
+endpoint settings from inherited or caller configuration. Dry-run reports the
+selected transport, arguments, and variable names without starting a bridge or
+loading/refreshing OAuth credentials. An unconfigured API-key `aix run`
+command receives both credential formats.
 
-### `src/commands/launch/opencode.rs` — OpenCode SIWC bridge
+### `src/local_gateway/chatgpt_responses.rs` — ChatGPT Responses transport
 
-This narrow adapter is selected only for the logical `opencode` tool with a
-ChatGPT profile. It binds an ephemeral listener to `127.0.0.1`, generates a
-per-launch bridge secret, and supplies process-local OpenCode v2 configuration
-for a dedicated `aix-chatgpt` Responses provider. It accepts only authenticated
-`POST /v1/responses` and `GET /v1/models` requests and fixes the upstream base to
-`https://api.openai.com/v1/`. The real access token is fetched from
-`AuthService` for every upstream request; request/response streaming and the
-current SIWC request restrictions are handled here rather than in generic
-launch code. Dropping the sidecar cancels the listener and in-flight requests.
-It writes no OpenCode configuration, credential, session, or project files and
-does not implement a general proxy or model-catalog synchronizer.
+This reusable SIWC adapter binds an ephemeral listener to `127.0.0.1`, generates
+a per-launch bridge secret, accepts only authenticated `POST /v1/responses` and
+`GET /v1/models`, and fixes the upstream base to `https://api.openai.com/v1/`.
+The real access token is fetched from `AuthService` for each upstream request.
+Request normalization, SSE forwarding, and metadata-only usage observation live
+here rather than in tool-specific launch code. Dropping the sidecar cancels the
+listener and in-flight requests. It does not implement a general proxy.
+
+### OpenCode and Codex launch adapters
+
+`src/commands/launch/opencode.rs` supplies OpenCode v2's process-local
+`aix-chatgpt` Responses provider configuration while delegating traffic to the
+shared bridge. For Codex, `src/commands/launch/chatgpt.rs` adds one-shot `-c`
+overrides for a unique `aix_chatgpt_plan` provider and the runtime loopback URL.
+Only configured OpenCode and Codex app-server bindings may select the local
+ChatGPT transport; other ChatGPT tools remain direct by default. Neither adapter
+writes the tool's config, auth, session, or project files.
 
 ### Named-tool dispatch (`aix <tool>`) — in `src/app.rs`
 
 `aix <tool>` is handled by the `Command::Tool` external subcommand in `app.rs`.
 The launcher checks `tools.<name>` first, then applies compatibility fallback.
-The only harness-specific behavior is the narrow OpenCode SIWC sidecar above.
+The only harness-specific behavior is process-local provider setup for OpenCode
+and Codex app-server; both reuse the shared ChatGPT Responses bridge.
 
 - API-key profile + configured `[tools.<name>]` → configured command, format, and env
 - API-key profile + unconfigured `aix claude` → `ApiFormat::Anthropic`
 - API-key profile + other unconfigured `aix <tool>` → `ApiFormat::OpenAi`
-- ChatGPT profile + configured non-OpenCode tool → explicit access-token handoff
+- ChatGPT profile + configured direct tool → explicit access-token handoff
 - ChatGPT profile + configured `opencode` tool → local bridge credential only
+- ChatGPT profile + configured Codex app-server with `transport = "local_gateway"` → local bridge credential only
 - ChatGPT profile + missing binding → capability error; no API-key fallback
 
 Usage: `aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]`

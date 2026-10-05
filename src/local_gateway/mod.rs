@@ -1,9 +1,15 @@
 mod api_key;
+mod chatgpt_responses;
 mod context;
 mod server;
 mod stream;
 
 pub(crate) use api_key::ApiKeyGatewayHandle;
+pub(crate) use chatgpt_responses::ChatGptResponsesHandle;
+#[cfg(test)]
+pub(crate) use chatgpt_responses::{
+    normalize_response_request, CompatibilityError, UNSUPPORTED_RESPONSE_FIELDS,
+};
 pub(crate) use context::{LaunchContext, PolicyRejection, RequestEnforcement};
 pub(crate) use server::ServerHandle;
 pub(crate) use stream::{

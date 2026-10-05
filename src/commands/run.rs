@@ -383,6 +383,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     }
 
     let gateway_managed = active_sidecar.is_some();
+    child_args.extend(resolved.codex_provider_overrides.iter().cloned());
     let started = Instant::now();
     let run_child = || {
         launch::run_command_status_interruptible_with_deadline(

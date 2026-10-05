@@ -90,6 +90,17 @@ let
 
   chatgptToolConfigType = lib.types.submodule {
     options = {
+      transport = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.enum [
+            "direct"
+            "local_gateway"
+          ]
+        );
+        default = null;
+        description = "Use direct token handoff, or an eligible aix local Responses gateway transport.";
+      };
+
       accessTokenEnv = lib.mkOption {
         type = lib.types.str;
         example = "ACCESS_TOKEN";
@@ -222,6 +233,9 @@ let
     // lib.optionalAttrs (tool.chatgpt != null) {
       chatgpt = {
         access_token_env = tool.chatgpt.accessTokenEnv;
+      }
+      // lib.optionalAttrs (tool.chatgpt.transport != null) {
+        transport = tool.chatgpt.transport;
       }
       // lib.optionalAttrs (tool.chatgpt.prependArgs != [ ]) {
         prepend_args = tool.chatgpt.prependArgs;

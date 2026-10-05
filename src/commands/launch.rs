@@ -3,7 +3,7 @@ use crate::commands::ProfileSelection;
 use crate::config;
 use crate::error::AixError;
 use crate::local_gateway::{
-    ApiKeyGatewayHandle, LaunchContext as LocalGatewayContext, ServerHandle,
+    ApiKeyGatewayHandle, ChatGptResponsesHandle, LaunchContext as LocalGatewayContext, ServerHandle,
 };
 use crate::secrets::SecretString;
 use color_eyre::Result;
@@ -55,11 +55,13 @@ pub struct ResolvedRunLaunch {
     pub allowed_models: Vec<String>,
     pub policy: Option<ResolvedRunPolicy>,
     pub prepend_args: Vec<String>,
+    pub codex_provider_overrides: Vec<String>,
     sidecar_plan: Option<LaunchSidecarPlan>,
 }
 
 enum LaunchSidecarPlan {
     OpenCodeSiwc,
+    CodexChatGptResponses { access_token_env: String },
     ApiKey { api_format: config::ApiFormat },
 }
 
@@ -220,6 +222,7 @@ async fn resolve_tool_launch(
         allowed_models: resolution.allowed_models,
         policy: resolution.policy,
         prepend_args: resolution.prepend_args,
+        codex_provider_overrides: Vec::new(),
         sidecar_plan: resolution.sidecar_plan,
     })
 }
@@ -571,7 +574,7 @@ pub async fn run_named_tool(
         timeout,
     )
     .await?;
-    let args = resolved
+    let mut args = resolved
         .prepend_args
         .iter()
         .cloned()
@@ -586,6 +589,7 @@ pub async fn run_named_tool(
     else {
         return run_command(&resolved.program, &args, &resolved.env, false);
     };
+    args.extend(resolved.codex_provider_overrides.iter().cloned());
     let (interrupt_requested, terminated) = install_interrupt_handlers()?;
     let child_result = sidecar
         .run_child(|| {
@@ -623,6 +627,29 @@ pub(crate) async fn start_launch_sidecar(
         LaunchSidecarPlan::OpenCodeSiwc => {
             let bridge = opencode::BridgeHandle::start(context, timeout).await?;
             bridge.configure_env(&mut resolved.env);
+            bridge.into_server()
+        }
+        LaunchSidecarPlan::CodexChatGptResponses { access_token_env } => {
+            let bridge = ChatGptResponsesHandle::start(
+                context,
+                timeout,
+                crate::local_gateway::AuthFailureResponse::new(
+                    "aix_chatgpt_gateway_error",
+                    "Invalid local ChatGPT credential",
+                ),
+            )
+            .await?;
+            let base_url = format!("http://127.0.0.1:{}/v1", bridge.port());
+            resolved
+                .env
+                .auth_vars
+                .push((access_token_env.clone(), bridge.child_token()));
+            resolved
+                .codex_provider_overrides
+                .extend(chatgpt::codex_provider_overrides(
+                    &base_url,
+                    &access_token_env,
+                ));
             bridge.into_server()
         }
         LaunchSidecarPlan::ApiKey { api_format } => {
@@ -671,6 +698,13 @@ pub(crate) fn print_sidecar_dry_run(resolved: &ResolvedRunLaunch) {
     if let Some(plan) = &resolved.sidecar_plan {
         match plan {
             LaunchSidecarPlan::OpenCodeSiwc => opencode::print_dry_run(),
+            LaunchSidecarPlan::CodexChatGptResponses { access_token_env } => {
+                eprintln!("transport: local_gateway");
+                eprintln!(
+                    "Would use a dynamic local Responses provider/base URL for Codex app-server"
+                );
+                eprintln!("Would set local bearer in {access_token_env}");
+            }
             LaunchSidecarPlan::ApiKey { api_format } => {
                 ApiKeyGatewayHandle::print_dry_run(*api_format)
             }
@@ -1196,6 +1230,7 @@ access_token_env = "ACCESS_TOKEN"
                 tags: Vec::new(),
             }),
             prepend_args: Vec::new(),
+            codex_provider_overrides: Vec::new(),
             sidecar_plan: None,
         };
         let run_id = Uuid::parse_str("4b9a85df-51d9-49a4-9a17-69d7f0dc91f1").unwrap();
@@ -1206,6 +1241,15 @@ access_token_env = "ACCESS_TOKEN"
         assert_eq!(run_context.logical_tool_name, "opencode");
         assert_eq!(run_context.run_id.as_deref(), Some(run_id_string.as_str()));
         assert_eq!(run_context.run_policy.as_deref(), Some("bounded"));
+
+        resolved.logical_tool_name = Some("codex".to_string());
+        let codex_context = sidecar_context(&resolved, Some(run_id), None);
+        assert_eq!(codex_context.logical_tool_name, "codex");
+        assert_eq!(
+            codex_context.run_id.as_deref(),
+            Some(run_id_string.as_str())
+        );
+        assert_eq!(codex_context.run_policy.as_deref(), Some("bounded"));
 
         resolved.policy = None;
         let named_tool_context = sidecar_context(&resolved, None, None);

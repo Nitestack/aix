@@ -38,7 +38,8 @@ pub(super) async fn resolve_tool_launch(
         .ok_or_else(|| AixError::ChatGptToolNotConfigured {
             tool: tool_name.to_string(),
         })?;
-    let uses_opencode_bridge = tool_name == "opencode";
+    let responses_adapter = tool.chatgpt_responses_adapter(tool_name);
+    let uses_opencode_bridge = responses_adapter == Some(config::ChatGptResponsesAdapter::OpenCode);
     if tool.local_gateway && !uses_opencode_bridge {
         return Err(AixError::ChatGptAuthUnsupported.into());
     }
@@ -49,40 +50,51 @@ pub(super) async fn resolve_tool_launch(
             tool: tool_name.to_string(),
         })?;
     let program = tool.command.as_deref().unwrap_or(tool_name).to_string();
+    let uses_responses_gateway = responses_adapter.is_some();
+
     let resolved_allowed_models = super::resolve_allowed_models(
         policy.and_then(|policy| policy.allowed_models.as_ref()),
         allowed_models.to_vec(),
         cfg,
         profile,
     )?;
-    if !resolved_allowed_models.is_empty() && !uses_opencode_bridge {
+    if !resolved_allowed_models.is_empty() && !uses_responses_gateway {
         return Err(AixError::RunPolicyEnforcementUnavailable {
             policy: policy_name.unwrap_or_default().to_string(),
             constraint: "allowed_models",
         }
         .into());
     }
+    let (sidecar_plan, names_only_vars) = match responses_adapter {
+        Some(config::ChatGptResponsesAdapter::OpenCode) => (
+            Some(super::LaunchSidecarPlan::OpenCodeSiwc),
+            vec![
+                super::opencode::BRIDGE_TOKEN_ENV.to_string(),
+                super::opencode::OPENCODE_CONFIG_ENV.to_string(),
+            ],
+        ),
+        Some(config::ChatGptResponsesAdapter::CodexAppServer) => (
+            Some(super::LaunchSidecarPlan::CodexChatGptResponses {
+                access_token_env: binding.access_token_env.clone(),
+            }),
+            vec![binding.access_token_env.clone()],
+        ),
+        None => (None, vec![binding.access_token_env.clone()]),
+    };
 
     let mut auth_vars = Vec::new();
-    let mut display_only_vars = Vec::new();
-    let mut sidecar_plan = None;
-    if matches!(tool_env_mode, ToolEnvMode::NamesOnly) {
-        if uses_opencode_bridge {
-            display_only_vars.push(super::opencode::BRIDGE_TOKEN_ENV.to_string());
-            display_only_vars.push(super::opencode::OPENCODE_CONFIG_ENV.to_string());
-            sidecar_plan = Some(super::LaunchSidecarPlan::OpenCodeSiwc);
-        } else {
-            display_only_vars.push(binding.access_token_env.clone());
-        }
-    } else if uses_opencode_bridge {
+    let mut display_only_vars = if matches!(tool_env_mode, ToolEnvMode::NamesOnly) {
+        names_only_vars
+    } else if uses_responses_gateway {
         validate_executable(&program)?;
-        sidecar_plan = Some(super::LaunchSidecarPlan::OpenCodeSiwc);
+        Vec::new()
     } else {
         let service = crate::auth::AuthService::new(timeout)?;
         let access_token = service.access_token(profile_name).await?;
         auth_vars.push((binding.access_token_env.clone(), access_token));
         validate_executable(&program)?;
-    }
+        Vec::new()
+    };
 
     let mut vars = vec![("AIX_PROFILE".to_string(), profile_name.clone())];
     append_configured_env(
@@ -102,13 +114,13 @@ pub(super) async fn resolve_tool_launch(
         "LITELLM_BASE_URL".to_string(),
     ];
     clear_vars.extend(binding.clear_env.iter().cloned());
-    if uses_opencode_bridge {
+    if uses_responses_gateway {
         clear_vars.push(binding.access_token_env.clone());
     }
     clear_vars.sort_unstable();
     clear_vars.dedup();
 
-    if uses_opencode_bridge {
+    if uses_responses_gateway {
         vars.retain(|(name, _)| {
             name != &binding.access_token_env && !clear_vars.iter().any(|clear| clear == name)
         });
@@ -136,4 +148,45 @@ pub(super) async fn resolve_tool_launch(
         prepend_args: binding.prepend_args.clone(),
         sidecar_plan,
     })
+}
+
+pub(super) fn codex_provider_overrides(base_url: &str, access_token_env: &str) -> Vec<String> {
+    // Avoid merging process-local auth/base URL settings with a provider table
+    // already present in the user's Codex config.
+    const PROVIDER: &str = "aix_chatgpt_plan";
+    let mut args = Vec::with_capacity(14);
+    let mut add_override = |key: &str, value: String| {
+        args.push("-c".to_string());
+        args.push(format!("{key}={value}"));
+    };
+    let toml_string = |value: &str| {
+        serde_json::to_string(value).expect("Codex provider strings are serializable")
+    };
+
+    add_override("model_provider", toml_string(PROVIDER));
+    add_override(
+        &format!("model_providers.{PROVIDER}.name"),
+        toml_string("ChatGPT plan via aix"),
+    );
+    add_override(
+        &format!("model_providers.{PROVIDER}.base_url"),
+        toml_string(base_url),
+    );
+    add_override(
+        &format!("model_providers.{PROVIDER}.env_key"),
+        toml_string(access_token_env),
+    );
+    add_override(
+        &format!("model_providers.{PROVIDER}.wire_api"),
+        toml_string("responses"),
+    );
+    add_override(
+        &format!("model_providers.{PROVIDER}.requires_openai_auth"),
+        "false".to_string(),
+    );
+    add_override(
+        &format!("model_providers.{PROVIDER}.supports_websockets"),
+        "false".to_string(),
+    );
+    args
 }

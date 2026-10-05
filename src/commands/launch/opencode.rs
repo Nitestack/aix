@@ -1,65 +1,21 @@
+#[cfg(test)]
 use crate::auth::AuthService;
 use crate::commands::launch::LaunchEnv;
-use crate::local_gateway::{self, LaunchContext, ServerHandle};
+use crate::local_gateway::{self, ChatGptResponsesHandle, LaunchContext, ServerHandle};
 #[cfg(test)]
 use crate::secrets::SecretString;
-use crate::usage_event::{UsageEventRecorder, UsageOutcome};
-use crate::usage_observer::openai::OpenAiResponsesObserver;
 #[cfg(test)]
 use crate::usage_store::UsageEventFilter;
+#[cfg(test)]
 use crate::usage_store::UsageStore;
-use axum::body::Body;
-use axum::extract::{Extension, State};
-use axum::http::header::{ACCEPT, CONTENT_TYPE};
-use axum::http::{Method, Request, Response, StatusCode};
-use axum::Router;
 use color_eyre::Result;
+#[cfg(test)]
 use serde_json::Value;
+#[cfg(test)]
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
 use url::Url;
-
-// OpenAI's current OSS SIWC preview contract: https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
-const UNSUPPORTED_RESPONSE_FIELDS: &[&str] = &[
-    "background",
-    "conversation",
-    "max_output_tokens",
-    "max_tool_calls",
-    "metadata",
-    "moderation",
-    "multi_agent",
-    "prompt",
-    "prompt_cache_retention",
-    "safety_identifier",
-    "temperature",
-    "top_logprobs",
-    "top_p",
-    "truncation",
-    "user",
-    "previous_response_id",
-];
-
-const UNSUPPORTED_HOSTED_TOOLS: &[&str] = &[
-    "code_interpreter",
-    "file_search",
-    "computer",
-    "computer_use_preview",
-    "image_generation",
-    "mcp",
-    "tool_search",
-    "programmatic_tool_calling",
-];
-
-const UNSUPPORTED_INPUT_ITEM_TYPES: &[&str] = &[
-    "code_interpreter_call",
-    "computer_call",
-    "computer_call_output",
-    "file_search_call",
-    "file_search_call_output",
-    "image_generation_call",
-    "mcp_call",
-    "tool_search_call",
-];
 
 const PROVIDER_ID: &str = "aix-chatgpt";
 // Mirror the ChatGPT-eligible models in OpenCode's v2 OpenAI catalog. The
@@ -98,16 +54,6 @@ pub(super) const CHATGPT_MODEL_IDS: &[&str] = &[
 pub(super) const OPENCODE_CONFIG_ENV: &str = "OPENCODE_CONFIG_CONTENT";
 pub(super) const BRIDGE_TOKEN_ENV: &str = "AIX_OPENCODE_BRIDGE_TOKEN";
 const RESPONSES_PROVIDER_PACKAGE: &str = "@opencode/ai/providers/openai/responses";
-const OPENAI_PUBLIC_API_BASE: &str = "https://api.openai.com/v1/";
-const FORWARDED_RESPONSE_HEADERS: &[&str] = &[
-    "content-type",
-    "cache-control",
-    "retry-after",
-    "x-request-id",
-    "openai-request-id",
-    "openai-processing-ms",
-    "openai-version",
-];
 
 pub(super) fn print_dry_run() {
     eprintln!(
@@ -138,34 +84,23 @@ pub(super) fn runtime_config(port: u16) -> Result<String, serde_json::Error> {
     }))
 }
 
-struct BridgeState {
-    auth: Arc<AuthService>,
-    upstream_base: Url,
-    client: reqwest::Client,
-    usage_store: Option<UsageStore>,
-}
-
 pub(super) struct BridgeHandle {
-    server: ServerHandle,
+    gateway: ChatGptResponsesHandle,
     runtime_config: String,
 }
 
 impl BridgeHandle {
     pub(super) async fn start(context: LaunchContext, timeout: Duration) -> Result<Self> {
-        let auth = Arc::new(AuthService::new(timeout)?);
-        let upstream_base = Url::parse(OPENAI_PUBLIC_API_BASE)?;
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(15))
-            .build()?;
-        Self::bind(
+        let gateway = ChatGptResponsesHandle::start(
             context,
-            auth,
-            upstream_base,
-            client,
-            UsageStore::from_environment_or_warn(),
+            timeout,
+            local_gateway::AuthFailureResponse::new(
+                "aix_opencode_bridge_error",
+                "Invalid bridge credential",
+            ),
         )
-        .await
+        .await?;
+        Self::from_gateway(gateway)
     }
 
     #[cfg(test)]
@@ -174,11 +109,17 @@ impl BridgeHandle {
         auth: Arc<AuthService>,
         upstream_base: Url,
     ) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(5))
-            .build()?;
-        Self::bind(context, auth, upstream_base, client, None).await
+        let gateway = ChatGptResponsesHandle::start_for_test(
+            context,
+            auth,
+            upstream_base,
+            local_gateway::AuthFailureResponse::new(
+                "aix_opencode_bridge_error",
+                "Invalid bridge credential",
+            ),
+        )
+        .await?;
+        Self::from_gateway(gateway)
     }
 
     #[cfg(test)]
@@ -188,36 +129,24 @@ impl BridgeHandle {
         upstream_base: Url,
         usage_store: UsageStore,
     ) -> Result<Self> {
-        let client = reqwest::Client::new();
-        Self::bind(context, auth, upstream_base, client, Some(usage_store)).await
-    }
-
-    async fn bind(
-        context: LaunchContext,
-        auth: Arc<AuthService>,
-        upstream_base: Url,
-        client: reqwest::Client,
-        usage_store: Option<UsageStore>,
-    ) -> Result<Self> {
-        let state = Arc::new(BridgeState {
+        let gateway = ChatGptResponsesHandle::start_for_test_with_usage_store(
+            context,
             auth,
             upstream_base,
-            client,
             usage_store,
-        });
-        let app = Router::new().fallback(handle_request).with_state(state);
-        let server = ServerHandle::start(
-            app,
-            context,
             local_gateway::AuthFailureResponse::new(
                 "aix_opencode_bridge_error",
                 "Invalid bridge credential",
             ),
         )
         .await?;
-        let runtime_config = runtime_config(server.port())?;
+        Self::from_gateway(gateway)
+    }
+
+    fn from_gateway(gateway: ChatGptResponsesHandle) -> Result<Self> {
+        let runtime_config = runtime_config(gateway.port())?;
         Ok(Self {
-            server,
+            gateway,
             runtime_config,
         })
     }
@@ -226,377 +155,47 @@ impl BridgeHandle {
         env.vars
             .push((OPENCODE_CONFIG_ENV.to_string(), self.runtime_config.clone()));
         env.auth_vars
-            .push((BRIDGE_TOKEN_ENV.to_string(), self.server.child_token()));
+            .push((BRIDGE_TOKEN_ENV.to_string(), self.gateway.child_token()));
     }
 
     pub(super) fn into_server(self) -> ServerHandle {
-        self.server
+        self.gateway.into_server()
     }
 
     #[cfg(test)]
     pub(super) fn port(&self) -> u16 {
-        self.server.port()
+        self.gateway.port()
     }
 
     #[cfg(test)]
     fn address(&self) -> std::net::SocketAddr {
-        self.server.address()
+        self.gateway.address()
     }
 
     #[cfg(test)]
     pub(super) fn child_token(&self) -> SecretString {
-        self.server.child_token()
+        self.gateway.child_token()
     }
 
     #[cfg(test)]
     pub(super) async fn stop(self) {
-        self.server.stop().await;
+        self.gateway.stop().await;
     }
-}
-
-async fn handle_request(
-    State(state): State<Arc<BridgeState>>,
-    Extension(context): Extension<LaunchContext>,
-    request: Request<Body>,
-) -> Response<Body> {
-    let (parts, body) = request.into_parts();
-    let is_inference = parts.uri.path() == "/v1/responses";
-    let mut usage = is_inference
-        .then(|| UsageEventRecorder::new(state.usage_store.clone(), &context, "openai_responses"));
-    if is_inference {
-        if let Err(rejection) = context.enforcement.check_deadline(Instant::now()) {
-            let (status, category, message) = local_gateway::policy_rejection_details(rejection);
-            reject_inference_request(&mut usage, status, category);
-            return error_response(status, message);
-        }
-    }
-    if parts.uri.query().is_some() {
-        reject_inference_request(&mut usage, StatusCode::NOT_FOUND, "local_compatibility");
-        return error_response(StatusCode::NOT_FOUND, "Route not found");
-    }
-
-    let (endpoint, method, request_body) = match (&parts.method, parts.uri.path()) {
-        (&Method::POST, "/v1/responses") => {
-            let is_json = parts
-                .headers
-                .get(CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.starts_with("application/json"));
-            if !is_json {
-                reject_inference_request(
-                    &mut usage,
-                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                    "local_compatibility",
-                );
-                return error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Expected JSON request");
-            }
-            let body = match local_gateway::read_bounded_body(body).await {
-                Ok(body) => body,
-                Err(_) => {
-                    reject_inference_request(
-                        &mut usage,
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "local_compatibility",
-                    );
-                    return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
-                }
-            };
-            let mut request: Value = match serde_json::from_slice(&body) {
-                Ok(request) => request,
-                Err(_) => {
-                    reject_inference_request(&mut usage, StatusCode::BAD_REQUEST, "invalid_json");
-                    return error_response(StatusCode::BAD_REQUEST, "Invalid JSON request");
-                }
-            };
-            let model = request.get("model").and_then(Value::as_str);
-            if let Some(recorder) = &mut usage {
-                recorder.set_model(model);
-            }
-            if let Err(rejection) = context.enforcement.check_model(model) {
-                let (status, category, message) =
-                    local_gateway::policy_rejection_details(rejection);
-                reject_inference_request(&mut usage, status, category);
-                return error_response(status, message);
-            }
-            let normalized = match normalize_response_request(&mut request) {
-                Ok(request) => request,
-                Err(error) => {
-                    reject_inference_request(
-                        &mut usage,
-                        StatusCode::BAD_REQUEST,
-                        "local_compatibility",
-                    );
-                    return error_response(StatusCode::BAD_REQUEST, error.to_string().as_str());
-                }
-            };
-            let body = match serde_json::to_vec(&normalized) {
-                Ok(body) => body,
-                Err(_) => {
-                    reject_inference_request(&mut usage, StatusCode::BAD_REQUEST, "invalid_json");
-                    return error_response(StatusCode::BAD_REQUEST, "Invalid JSON request");
-                }
-            };
-            ("responses", Method::POST, Some(body))
-        }
-        (&Method::GET, "/v1/models") => ("models", Method::GET, None),
-        (_, "/v1/responses") => {
-            reject_inference_request(
-                &mut usage,
-                StatusCode::METHOD_NOT_ALLOWED,
-                "local_compatibility",
-            );
-            return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed");
-        }
-        (_, "/v1/models") => {
-            return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed")
-        }
-        _ => return error_response(StatusCode::NOT_FOUND, "Route not found"),
-    };
-
-    if is_inference {
-        if let Err(rejection) = context.enforcement.check_deadline(Instant::now()) {
-            let (status, category, message) = local_gateway::policy_rejection_details(rejection);
-            reject_inference_request(&mut usage, status, category);
-            return error_response(status, message);
-        }
-    }
-
-    proxy_upstream(
-        state,
-        &context.profile,
-        endpoint,
-        method,
-        request_body,
-        usage,
-    )
-    .await
-}
-
-fn reject_inference_request(
-    recorder: &mut Option<UsageEventRecorder>,
-    status: StatusCode,
-    category: &str,
-) {
-    if let Some(mut recorder) = recorder.take() {
-        recorder.finish(UsageOutcome::Failed, Some(status.as_u16()), Some(category));
-    }
-}
-
-async fn proxy_upstream(
-    state: Arc<BridgeState>,
-    profile_name: &str,
-    endpoint: &str,
-    method: Method,
-    request_body: Option<Vec<u8>>,
-    mut usage: Option<UsageEventRecorder>,
-) -> Response<Body> {
-    let token = match state.auth.access_token(profile_name).await {
-        Ok(token) => token,
-        Err(_) => {
-            if let Some(mut recorder) = usage.take() {
-                recorder.finish(
-                    UsageOutcome::Failed,
-                    Some(StatusCode::BAD_GATEWAY.as_u16()),
-                    Some("authentication"),
-                );
-            }
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                "Could not obtain the selected ChatGPT profile's access token",
-            );
-        }
-    };
-    let Ok(url) = state.upstream_base.join(endpoint) else {
-        if let Some(mut recorder) = usage.take() {
-            recorder.finish(
-                UsageOutcome::Failed,
-                Some(StatusCode::BAD_GATEWAY.as_u16()),
-                Some("upstream_transport"),
-            );
-        }
-        return error_response(StatusCode::BAD_GATEWAY, "Upstream request failed");
-    };
-    let mut request = state
-        .client
-        .request(method, url)
-        .bearer_auth(token.expose_secret());
-    if let Some(body) = request_body {
-        request = request
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "text/event-stream")
-            .body(body);
-    } else {
-        request = request.header(ACCEPT, "application/json");
-    }
-
-    let upstream = match request.send().await {
-        Ok(response) => response,
-        Err(_) => {
-            if let Some(mut recorder) = usage.take() {
-                recorder.finish(
-                    UsageOutcome::Failed,
-                    Some(StatusCode::BAD_GATEWAY.as_u16()),
-                    Some("upstream_transport"),
-                );
-            }
-            return error_response(StatusCode::BAD_GATEWAY, "Upstream request failed");
-        }
-    };
-    if endpoint == "responses" {
-        let status = upstream.status().as_u16();
-        let observer = Box::new(OpenAiResponsesObserver::new(
-            usage
-                .take()
-                .expect("Responses request has a usage recorder"),
-            status,
-        ));
-        return match local_gateway::forward_response_observed(
-            upstream,
-            FORWARDED_RESPONSE_HEADERS,
-            observer,
-        ) {
-            Ok(response) => response,
-            Err(_) => error_response(StatusCode::BAD_GATEWAY, "Upstream response failed"),
-        };
-    }
-    match local_gateway::forward_response(upstream, FORWARDED_RESPONSE_HEADERS) {
-        Ok(response) => response,
-        Err(_) => error_response(StatusCode::BAD_GATEWAY, "Upstream response failed"),
-    }
-}
-
-fn error_response(status: StatusCode, message: &str) -> Response<Body> {
-    local_gateway::error_response(status, "aix_opencode_bridge_error", message)
-}
-
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-enum CompatibilityError {
-    #[error("Responses request must be a JSON object")]
-    InvalidRequest,
-    #[error("system input must contain only text content")]
-    InvalidSystemContent,
-    #[error("Responses tools must use supported function/custom or web search forms")]
-    UnsupportedTool,
-}
-
-fn normalize_response_request(request: &mut Value) -> Result<Value, CompatibilityError> {
-    let object = request
-        .as_object_mut()
-        .ok_or(CompatibilityError::InvalidRequest)?;
-
-    for field in UNSUPPORTED_RESPONSE_FIELDS {
-        object.remove(*field);
-    }
-
-    if let Some(tools) = object.get("tools") {
-        validate_tool_list(tools)?;
-    }
-    if let Some(tools) = object.get("additional_tools") {
-        validate_tool_list(tools)?;
-    }
-
-    let mut system_texts = Vec::new();
-    if let Some(input) = object.get_mut("input") {
-        if let Some(items) = input.as_array_mut() {
-            let mut retained = Vec::with_capacity(items.len());
-            for item in items.drain(..) {
-                if item
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|kind| UNSUPPORTED_INPUT_ITEM_TYPES.contains(&kind))
-                {
-                    return Err(CompatibilityError::UnsupportedTool);
-                }
-                if item.get("role").and_then(Value::as_str) == Some("system") {
-                    let content = item
-                        .get("content")
-                        .ok_or(CompatibilityError::InvalidSystemContent)?;
-                    system_texts.push(extract_system_text(content)?);
-                } else {
-                    retained.push(item);
-                }
-            }
-            *items = retained;
-        }
-    }
-
-    if !system_texts.is_empty() {
-        let system_context = system_texts.join("\n\n");
-        let existing = object
-            .remove("instructions")
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or(CompatibilityError::InvalidSystemContent)
-            })
-            .transpose()?;
-        object.insert(
-            "instructions".to_string(),
-            Value::String(match existing.filter(|text| !text.is_empty()) {
-                Some(existing) => format!("{existing}\n\n{system_context}"),
-                None => system_context,
-            }),
-        );
-    }
-
-    object.insert("store".to_string(), Value::Bool(false));
-    object.insert("stream".to_string(), Value::Bool(true));
-    Ok(request.clone())
-}
-
-fn validate_tool_list(tools: &Value) -> Result<(), CompatibilityError> {
-    let tools = tools
-        .as_array()
-        .ok_or(CompatibilityError::UnsupportedTool)?;
-    for tool in tools {
-        let kind = tool
-            .get("type")
-            .and_then(Value::as_str)
-            .ok_or(CompatibilityError::UnsupportedTool)?;
-        if UNSUPPORTED_HOSTED_TOOLS.contains(&kind)
-            || !matches!(
-                kind,
-                "function" | "custom" | "web_search" | "web_search_preview"
-            )
-        {
-            return Err(CompatibilityError::UnsupportedTool);
-        }
-    }
-    Ok(())
-}
-
-fn extract_system_text(content: &Value) -> Result<String, CompatibilityError> {
-    if let Some(text) = content.as_str() {
-        return Ok(text.to_owned());
-    }
-    let parts = content
-        .as_array()
-        .ok_or(CompatibilityError::InvalidSystemContent)?;
-    let text = parts
-        .iter()
-        .map(|part| {
-            let kind = part.get("type").and_then(Value::as_str);
-            if !matches!(kind, None | Some("text") | Some("input_text")) {
-                return Err(CompatibilityError::InvalidSystemContent);
-            }
-            part.get("text")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or(CompatibilityError::InvalidSystemContent)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(text.join("\n"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local_gateway::{
+        normalize_response_request, CompatibilityError, UNSUPPORTED_RESPONSE_FIELDS,
+    };
+    use crate::usage_event::UsageOutcome;
     use assert_fs::TempDir;
-    use axum::body::{to_bytes, Bytes};
+    use axum::body::{to_bytes, Body, Bytes};
     use axum::extract::State;
-    use axum::http::header::AUTHORIZATION;
-    use axum::http::Request;
+    use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+    use axum::http::{Request, Response, StatusCode};
+    use axum::Router;
     use futures_util::stream;
     use serde_json::json;
     use std::convert::Infallible;
@@ -792,7 +391,38 @@ mod tests {
         )
     }
 
-    fn restricted_run_launch_context(deadline: Option<Instant>) -> LaunchContext {
+    fn codex_run_launch_context() -> LaunchContext {
+        let resolved = super::super::ResolvedRunLaunch {
+            env: LaunchEnv {
+                vars: Vec::new(),
+                auth_vars: Vec::new(),
+                display_only_vars: Vec::new(),
+                clear_vars: Vec::new(),
+                remove_vars: Vec::new(),
+                profile_name: "personal".to_string(),
+            },
+            program: "codex".to_string(),
+            logical_tool_name: Some("codex".to_string()),
+            parent_gateway: None,
+            allowed_models: Vec::new(),
+            policy: Some(super::super::ResolvedRunPolicy {
+                name: "bounded".to_string(),
+                max_budget: Some(10.0),
+                max_duration: "1h".to_string(),
+                tags: Vec::new(),
+            }),
+            prepend_args: Vec::new(),
+            codex_provider_overrides: Vec::new(),
+            sidecar_plan: None,
+        };
+        super::super::sidecar_context(
+            &resolved,
+            Some(uuid::Uuid::parse_str("4b9a85df-51d9-49a4-9a17-69d7f0dc91f1").unwrap()),
+            None,
+        )
+    }
+
+    fn restricted_run_launch_context(deadline: Option<std::time::Instant>) -> LaunchContext {
         LaunchContext::with_enforcement(
             "personal".to_string(),
             "opencode".to_string(),
@@ -1288,6 +918,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_responses_record_usage_with_run_attribution() {
+        let directory = TempDir::new().unwrap();
+        let auth = auth_service(
+            &directory,
+            Url::parse("https://auth.openai.com/api/accounts/oauth/token").unwrap(),
+            "codex-access-token",
+        );
+        let (upstream, capture, upstream_task) = fake_api_server().await;
+        let usage_dir = TempDir::new().unwrap();
+        let bridge = BridgeHandle::start_for_test_with_usage_store(
+            codex_run_launch_context(),
+            auth,
+            upstream,
+            UsageStore::new(usage_dir.path()),
+        )
+        .await
+        .unwrap();
+        let token = bridge.child_token();
+        let address = bridge.address();
+        let client = reqwest::Client::new();
+
+        // The fake upstream pauses before its usage-bearing terminal event.
+        // Release it up front so this test only needs to await the full stream.
+        capture.release_second_chunk.notify_one();
+        let response = client
+            .post(format!("http://{address}/v1/responses"))
+            .bearer_auth(token.expose_secret())
+            .json(&json!({ "model": "gpt-codex-test", "input": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = response.bytes().await.unwrap();
+
+        let events = UsageStore::new(usage_dir.path())
+            .events(&UsageEventFilter {
+                start_unix_ms: 0,
+                end_unix_ms: u64::MAX,
+                ..UsageEventFilter::default()
+            })
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].profile, "personal");
+        assert_eq!(events[0].logical_tool_name, "codex");
+        assert_eq!(
+            events[0].run_id.as_deref(),
+            Some("4b9a85df-51d9-49a4-9a17-69d7f0dc91f1")
+        );
+        assert_eq!(events[0].run_policy.as_deref(), Some("bounded"));
+        assert_eq!(events[0].protocol, "openai_responses");
+        assert_eq!(events[0].model.as_deref(), Some("gpt-codex-test"));
+        assert_eq!(events[0].input_tokens_total, Some(7));
+        assert_eq!(events[0].output_tokens, Some(3));
+        assert_eq!(events[0].total_tokens, Some(10));
+
+        bridge.stop().await;
+        upstream_task.abort();
+    }
+
+    #[tokio::test]
     async fn bridge_enforces_the_shared_model_allowlist_for_each_responses_request() {
         let directory = TempDir::new().unwrap();
         let auth = auth_service(
@@ -1348,7 +1038,9 @@ mod tests {
         );
         let (upstream, capture, upstream_task) = fake_api_server().await;
         let bridge = BridgeHandle::start_for_test(
-            restricted_run_launch_context(Some(Instant::now() - Duration::from_secs(1))),
+            restricted_run_launch_context(Some(
+                std::time::Instant::now() - std::time::Duration::from_secs(1),
+            )),
             auth,
             upstream,
         )

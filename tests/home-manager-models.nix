@@ -98,6 +98,7 @@ in
         command = "codex";
         apiFormat = "openai";
         chatgpt = {
+          transport = "local_gateway";
           accessTokenEnv = "ACCESS_TOKEN";
           prependArgs = [
             "app-server"

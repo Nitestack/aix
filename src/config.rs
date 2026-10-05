@@ -78,6 +78,19 @@ impl ApiFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatGptTransport {
+    Direct,
+    LocalGateway,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChatGptResponsesAdapter {
+    OpenCode,
+    CodexAppServer,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tool {
@@ -94,11 +107,37 @@ pub struct Tool {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatGptTool {
+    #[serde(default)]
+    pub transport: Option<ChatGptTransport>,
     pub access_token_env: String,
     #[serde(default)]
     pub prepend_args: Vec<String>,
     #[serde(default)]
     pub clear_env: Vec<String>,
+}
+
+fn is_codex_app_server(binding: &ChatGptTool) -> bool {
+    binding.prepend_args.get(..3).is_some_and(|args| {
+        args[0] == "app-server" && args[1] == "--listen" && args[2] == "stdio://"
+    })
+}
+
+impl Tool {
+    pub(crate) fn chatgpt_responses_adapter(
+        &self,
+        tool_name: &str,
+    ) -> Option<ChatGptResponsesAdapter> {
+        let binding = self.chatgpt.as_ref()?;
+        match (tool_name, binding.transport) {
+            ("opencode", None | Some(ChatGptTransport::LocalGateway)) => {
+                Some(ChatGptResponsesAdapter::OpenCode)
+            }
+            ("codex", Some(ChatGptTransport::LocalGateway)) if is_codex_app_server(binding) => {
+                Some(ChatGptResponsesAdapter::CodexAppServer)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -545,6 +584,14 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
                     name: chatgpt.access_token_env.clone(),
                 });
             }
+            if chatgpt.transport == Some(ChatGptTransport::LocalGateway) {
+                let is_openai = tool.api_format == ApiFormat::OpenAi;
+                if !is_openai || tool.chatgpt_responses_adapter(name).is_none() {
+                    return Err(AixError::ChatGptLocalGatewayUnsupported {
+                        tool: name.to_string(),
+                    });
+                }
+            }
         }
     }
 
@@ -904,6 +951,7 @@ auth = { type = "chatgpt" }
 [tools.codex]
 api_format = "openai"
 [tools.codex.chatgpt]
+transport = "local_gateway"
 access_token_env = "ACCESS_TOKEN"
 prepend_args = ["app-server", "--listen", "stdio://"]
 clear_env = ["OPENAI_API_KEY", "CODEX_API_KEY"]
@@ -911,15 +959,15 @@ clear_env = ["OPENAI_API_KEY", "CODEX_API_KEY"]
             )
             .unwrap(),
             serde_yaml::from_str::<Config>(
-                "profiles:\n  personal:\n    auth:\n      type: chatgpt\ntools:\n  codex:\n    api_format: openai\n    chatgpt:\n      access_token_env: ACCESS_TOKEN\n      prepend_args: [app-server, --listen, stdio://]\n      clear_env: [OPENAI_API_KEY, CODEX_API_KEY]\n",
+                "profiles:\n  personal:\n    auth:\n      type: chatgpt\ntools:\n  codex:\n    api_format: openai\n    chatgpt:\n      transport: local_gateway\n      access_token_env: ACCESS_TOKEN\n      prepend_args: [app-server, --listen, stdio://]\n      clear_env: [OPENAI_API_KEY, CODEX_API_KEY]\n",
             )
             .unwrap(),
             serde_json::from_str::<Config>(
-                r#"{"profiles":{"personal":{"auth":{"type":"chatgpt"}}},"tools":{"codex":{"api_format":"openai","chatgpt":{"access_token_env":"ACCESS_TOKEN","prepend_args":["app-server","--listen","stdio://"],"clear_env":["OPENAI_API_KEY","CODEX_API_KEY"]}}}}"#,
+                r#"{"profiles":{"personal":{"auth":{"type":"chatgpt"}}},"tools":{"codex":{"api_format":"openai","chatgpt":{"transport":"local_gateway","access_token_env":"ACCESS_TOKEN","prepend_args":["app-server","--listen","stdio://"],"clear_env":["OPENAI_API_KEY","CODEX_API_KEY"]}}}}"#,
             )
             .unwrap(),
             json5::from_str::<Config>(
-                "{profiles:{personal:{auth:{type:'chatgpt'}}},tools:{codex:{api_format:'openai',chatgpt:{access_token_env:'ACCESS_TOKEN',prepend_args:['app-server','--listen','stdio://'],clear_env:['OPENAI_API_KEY','CODEX_API_KEY']}}}}",
+                "{profiles:{personal:{auth:{type:'chatgpt'}}},tools:{codex:{api_format:'openai',chatgpt:{transport:'local_gateway',access_token_env:'ACCESS_TOKEN',prepend_args:['app-server','--listen','stdio://'],clear_env:['OPENAI_API_KEY','CODEX_API_KEY']}}}}",
             )
             .unwrap(),
         ];
@@ -927,10 +975,55 @@ clear_env = ["OPENAI_API_KEY", "CODEX_API_KEY"]
         for config in configs {
             validate(&config).unwrap();
             let binding = config.tools["codex"].chatgpt.as_ref().unwrap();
+            assert_eq!(binding.transport, Some(ChatGptTransport::LocalGateway));
             assert_eq!(binding.access_token_env, "ACCESS_TOKEN");
             assert_eq!(binding.prepend_args, ["app-server", "--listen", "stdio://"]);
             assert_eq!(binding.clear_env, ["OPENAI_API_KEY", "CODEX_API_KEY"]);
         }
+    }
+
+    #[test]
+    fn chatgpt_transport_defaults_to_legacy_behavior_and_accepts_direct() {
+        let legacy: Config = toml::from_str(
+            "[profiles.personal]\nauth = { type = 'chatgpt' }\n[tools.codex]\napi_format = 'openai'\n[tools.codex.chatgpt]\naccess_token_env = 'ACCESS_TOKEN'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            legacy.tools["codex"].chatgpt.as_ref().unwrap().transport,
+            None
+        );
+
+        let direct: Config = toml::from_str(
+            "[profiles.personal]\nauth = { type = 'chatgpt' }\n[tools.codex]\napi_format = 'openai'\n[tools.codex.chatgpt]\ntransport = 'direct'\naccess_token_env = 'ACCESS_TOKEN'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            direct.tools["codex"].chatgpt.as_ref().unwrap().transport,
+            Some(ChatGptTransport::Direct)
+        );
+    }
+
+    #[test]
+    fn chatgpt_local_gateway_is_limited_to_codex_app_server_openai_transport() {
+        let local_gateway = |tool: &str, api_format: &str, prepend_args: &str| {
+            let config: Config = toml::from_str(&format!(
+                "[profiles.personal]\nauth = {{ type = 'chatgpt' }}\n[tools.{tool}]\napi_format = '{api_format}'\n[tools.{tool}.chatgpt]\ntransport = 'local_gateway'\naccess_token_env = 'ACCESS_TOKEN'\nprepend_args = {prepend_args}\n"
+            ))
+            .unwrap();
+            validate(&config)
+        };
+
+        assert!(local_gateway("codex", "openai", "['app-server', '--listen', 'stdio://']").is_ok());
+        assert!(
+            local_gateway("other", "openai", "['app-server', '--listen', 'stdio://']").is_err()
+        );
+        assert!(local_gateway(
+            "codex",
+            "anthropic",
+            "['app-server', '--listen', 'stdio://']"
+        )
+        .is_err());
+        assert!(local_gateway("codex", "openai", "['exec']").is_err());
     }
 
     #[test]

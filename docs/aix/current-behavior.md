@@ -76,30 +76,30 @@ not encrypted at rest.
 
 `aix auth status` is offline and reports only non-secret state. `aix auth
 logout` clears local tokens even if remote revocation is unavailable. A ChatGPT
-profile can launch only a configured tool with `[tools.<name>.chatgpt]`. Most
-bound tools receive a selected access token at launch; OpenCode is the narrow
-exception and receives only a random per-launch local bridge credential. aix
-gets the actual OpenCode upstream credential from `AuthService` on each request,
-so a long-running OpenCode session can cross token refresh without restart.
-`aix env`, `shell`, `exec`, `ask`, and unconfigured tools do not receive OAuth
-tokens. LiteLLM leases and run policies remain API-key-only. No child receives a
-refresh token, ID token, or issued client ID, and run history remains
-metadata-only. Other long-running tools are not updated when their access token
-expires; Codex app-server's documented restart/resume path remains outside aix's
-process lifecycle management.
+profile can launch only a configured tool with `[tools.<name>.chatgpt]`. Existing
+bindings remain direct by default, except ChatGPT-authenticated OpenCode retains
+its existing local bridge. Codex app-server can opt into `transport =
+"local_gateway"`; compatible runs receive only a random per-launch local
+credential, and aix gets the real access token from `AuthService` for each
+upstream inference request. These gateway-backed processes can cross token
+refresh without restarting. Other tools remain on direct token handoff and may
+need a restart after their access token expires. `aix env`, `shell`, `exec`,
+`ask`, and unconfigured tools do not receive OAuth tokens. LiteLLM leases and
+run policies remain API-key-only. No child receives a refresh token, ID token,
+or issued client ID, and run history remains metadata-only.
 
 For a ChatGPT-authenticated `opencode` tool, aix launches OpenCode v2 with a
 process-local `aix-chatgpt` Responses provider configured through
-`OPENCODE_CONFIG_CONTENT`. The provider targets a loopback-only, ephemeral
-bridge with a random local bearer token. The bridge accepts only
+`OPENCODE_CONFIG_CONTENT`. The provider targets the shared loopback-only,
+ephemeral Responses bridge with a random local bearer token. The bridge accepts only
 `POST /v1/responses` and `GET /v1/models`, forwards only to the public
 `https://api.openai.com/v1/` API, streams SSE, and applies the current SIWC
-preview request constraints. It does not edit OpenCode credentials, config,
-sessions, or project files. Configure a profile or global default model; the
-bridge does not discover a full model catalog. Dry-run does not start it or
-read/refresh credentials. The runtime provider shape is based on the OpenCode
-v2.0.22 provider docs; see the README for the example and the pending real-account
-live smoke check.
+preview request constraints while recording metadata-only local usage. Codex
+app-server uses one-shot provider overrides for the loopback URL and local
+credential. Neither integration edits the tool's config, auth, session, or
+project files. Dry-run starts no listener and reads/refreshes no credentials. See
+[ChatGPT Responses local gateway](chatgpt-local-gateway.md) for the Codex
+configuration and compatibility check.
 
 ---
 
@@ -130,16 +130,17 @@ fallback remains. ChatGPT-bound launches do not generate any API-key variables.
 | Unconfigured `aix claude` | Anthropic | `AIX_PROFILE`, `ANTHROPIC_*`, `LITELLM_*` |
 | Other unconfigured `aix <tool>` | OpenAI | `AIX_PROFILE`, `OPENAI_*`, `LITELLM_*` |
 | Unconfigured `aix run -- CMD` | Both | All seven generated credential variables, then profile env |
-| Configured non-OpenCode tool with ChatGPT profile | `[tools.<name>.chatgpt]` | `AIX_PROFILE`, profile/tool env, then only the declared access-token variable |
+| Configured direct tool with ChatGPT profile | `[tools.<name>.chatgpt]` (default transport) | `AIX_PROFILE`, profile/tool env, then only the declared access-token variable |
 | Configured `opencode` tool with ChatGPT profile | `[tools.opencode.chatgpt]` | `AIX_PROFILE`, profile/tool env, process-local config, and a random local bridge token; no ChatGPT token |
+| Configured Codex app-server with ChatGPT local gateway | `[tools.codex.chatgpt]` with `transport = "local_gateway"` | `AIX_PROFILE`, profile/tool env, dynamic provider overrides, and only a random local bearer in the declared token variable |
 | Tool lacking a ChatGPT binding | — | Rejected for ChatGPT profile; no API-key fallback or token handoff |
 
 For API-key configured tools, the precedence is generated credentials → profile
 env → tool env. For ChatGPT tools, aix removes inherited standard API-key
 variables and `clear_env`, then applies profile env → tool env. Ordinary tools
-receive the selected access token last. OpenCode clears its configured
-access-token variable and standard API-key variables, then receives only its
-local bridge token and process-local provider config. `aix run` uses the
+receive the selected access token last. Gateway-backed tools clear their
+configured token variable and standard API-key variables, then receive only a
+local bridge token and process-local provider configuration. `aix run` uses the
 configured tool's `command`, prepended arguments, and auth binding. `AIX_API_KEY`
 and `AIX_BASE_URL` are not generated by aix; custom env entries may set them
 explicitly.
