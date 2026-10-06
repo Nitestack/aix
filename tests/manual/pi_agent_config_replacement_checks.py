@@ -20,6 +20,7 @@ from pi_agent_config_replacement_support import (
     require,
     run_aix,
     run_process,
+    run_pi_from_aix_shell,
     run_staged_pi,
     sha256,
     tool_names,
@@ -314,6 +315,22 @@ def verify_launch_modes(proof: ProofContext) -> None:
     require(
         exec_request["authorization"] == f"Bearer {PROFILE_A_KEY}",
         "aix exec did not keep the profile connection authoritative",
+    )
+
+    shell_launch = run_pi_from_aix_shell(
+        proof,
+        "profile_a",
+        "--model",
+        "openai/profile-a-model",
+        "--print",
+        "--approve",
+        "profile-a-shell-marker",
+    )
+    require("reply:profile-a" in shell_launch.stdout, "aix shell launch failed")
+    shell_request = find_request(profile_a_server, "profile-a-shell-marker")
+    require(
+        shell_request["authorization"] == f"Bearer {PROFILE_A_KEY}",
+        "aix shell did not keep the profile connection authoritative",
     )
 
 

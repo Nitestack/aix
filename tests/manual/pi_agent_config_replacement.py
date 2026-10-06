@@ -97,6 +97,9 @@ def main() -> None:
             (agent / "trust.json").symlink_to(trust_path)
 
         wrapper = Path(__file__).with_name("pi_agent_config_overlay.py").resolve()
+        shim_dir = root / "pi-shim"
+        shim_dir.mkdir()
+        (shim_dir / "pi").symlink_to(wrapper)
         aix_config = root / "aix.toml"
         make_aix_config(
             aix_config,
@@ -107,6 +110,7 @@ def main() -> None:
             normal_session_dir=normal_session_dir,
             wrapper=wrapper,
             stage_root=stage_root,
+            shim_path=f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}",
             pi=pi,
         )
 
@@ -123,6 +127,7 @@ def main() -> None:
                 "PI_OFFLINE": "1",
                 "PI_TELEMETRY": "0",
                 "PI_SKIP_VERSION_CHECK": "1",
+                "SHELL": "/bin/sh",
             }
         )
         for proxy_name in (
@@ -161,7 +166,7 @@ def main() -> None:
         print("config_replacement=settings+models+keybindings+resources=passed")
         print("project_rules_and_trust=passed")
         print("session_history_and_saved_auth=passed")
-        print("aix_run_named_tool_exec_and_concurrent_profiles=passed")
+        print("aix_shell_run_named_tool_exec_and_concurrent_profiles=passed")
         print("read_only_sources_and_relative_resources=passed")
     finally:
         for server in servers:

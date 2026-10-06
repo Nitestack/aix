@@ -6,6 +6,7 @@ import hashlib
 import http.server
 import json
 import os
+import shlex
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -288,6 +289,35 @@ def run_aix(
     )
 
 
+def run_pi_from_aix_shell(
+    proof: ProofContext, profile: str, *pi_args: str
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        [
+            proof.aix,
+            "--config",
+            str(proof.aix_config),
+            "--profile",
+            profile,
+            "--non-interactive",
+            "shell",
+        ],
+        cwd=proof.project,
+        env=proof.env,
+        input=shlex.join(["pi", *pi_args]) + "\n",
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"aix shell launch failed ({result.returncode})\n"
+            f"stdout:\n{result.stdout[-3000:]}\nstderr:\n{result.stderr[-3000:]}"
+        )
+    return result
+
+
 def list_models(pi: str, agent_dir: Path, cwd: Path, query: str) -> str:
     env = os.environ.copy()
     env.update(
@@ -409,6 +439,7 @@ def make_aix_config(
     normal_session_dir: Path,
     wrapper: Path,
     stage_root: Path,
+    shim_path: str,
     pi: str,
 ) -> None:
     quote = json.dumps
@@ -427,6 +458,7 @@ def make_aix_config(
                 f"PI_CODING_AGENT_SESSION_DIR = {quote(str(normal_session_dir))}",
                 f"AIX_PI_STAGE_ROOT = {quote(str(stage_root))}",
                 f"AIX_PI_BINARY = {quote(pi)}",
+                f"PATH = {quote(shim_path)}",
                 "",
                 "[profiles.profile_b]",
                 'api_key = { env = "AIX_TEST_PROFILE_B_KEY" }',
@@ -437,6 +469,7 @@ def make_aix_config(
                 f"PI_CODING_AGENT_SESSION_DIR = {quote(str(normal_session_dir))}",
                 f"AIX_PI_STAGE_ROOT = {quote(str(stage_root))}",
                 f"AIX_PI_BINARY = {quote(pi)}",
+                f"PATH = {quote(shim_path)}",
                 "",
                 "[tools.pi]",
                 f"command = {quote(str(wrapper))}",

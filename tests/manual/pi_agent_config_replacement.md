@@ -42,7 +42,7 @@ pi_version=1.0.4
 config_replacement=settings+models+keybindings+resources=passed
 project_rules_and_trust=passed
 session_history_and_saved_auth=passed
-aix_run_named_tool_exec_and_concurrent_profiles=passed
+aix_shell_run_named_tool_exec_and_concurrent_profiles=passed
 read_only_sources_and_relative_resources=passed
 ```
 
@@ -101,10 +101,11 @@ Pi stores compatible provider endpoints in `models.json`. The adapter stages a
 temporary copy of the selected profile's model configuration, sets both the
 OpenAI provider and each selected model's `baseUrl` from aix's generated
 `OPENAI_BASE_URL`, and passes aix's `OPENAI_API_KEY` with `--api-key`. The proof
-runs all three applicable aix launch
-forms: `aix run -- pi ...`, the configured named-tool form `aix pi -- ...`, and
-generic `aix exec -- <adapter> ...`. Two concurrent `aix run -- pi ...` launches
-reach separate local gateways with their own profile keys and model configuration.
+runs all four applicable aix launch forms: `aix shell` followed by `pi ...` through
+a temporary `PATH` shim, `aix run -- pi ...`, the configured named-tool form
+`aix pi -- ...`, and generic `aix exec -- <adapter> ...`. Two concurrent
+`aix run -- pi ...` launches reach separate local gateways with their own profile
+keys and model configuration.
 The read-only source files remain byte-for-byte unchanged. The proof uses ordinary
 Pi model selection and session flags; those overrides do not replace aix's
 connection. The adapter rejects conflicting API-key, provider, extension, and
