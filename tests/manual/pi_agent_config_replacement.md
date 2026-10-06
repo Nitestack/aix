@@ -9,8 +9,12 @@ adapter must stage an overlay for read-only/generated configuration and make the
 selected aix connection win over Pi's saved and model-configured credentials.
 
 The reproducible proof is [`pi_agent_config_replacement.py`](pi_agent_config_replacement.py).
-It uses synthetic credentials and local mock OpenAI-compatible gateways; it does not
-need a real model account or send requests to an external service.
+Its adapter, checks, and shared test fixtures are
+[`pi_agent_config_overlay.py`](pi_agent_config_overlay.py),
+[`pi_agent_config_replacement_checks.py`](pi_agent_config_replacement_checks.py),
+and [`pi_agent_config_replacement_support.py`](pi_agent_config_replacement_support.py).
+The runner uses synthetic credentials and local mock OpenAI-compatible gateways; it
+does not need a real model account or send requests to an external service.
 
 ## Tested versions and invocation
 
@@ -57,9 +61,13 @@ come from the selected agent directory. A model and extension unique to the norm
 directory do not appear in the profile launch.
 
 Pi project configuration remains separate. The proof approves a project `.pi`
-directory and observes its system-prompt addition and extension; a control launch
-with `--no-approve` omits those trust-gated resources but still loads project
-`AGENTS.md`. No project-configuration disabling is used to simulate replacement.
+directory and observes its `defaultThinkingLevel` setting, system-prompt addition,
+and extension; a control launch with `--no-approve` omits those trust-gated
+resources but still loads project `AGENTS.md`. An SDK settings check confirms the
+project setting is effective only in the trusted state. No project-configuration
+disabling is used to simulate replacement. The existing project's saved decision
+in the normal agent's `trust.json` is shared into each profile; one launch uses it
+without an override, while `--no-approve` overrides it as Pi specifies.
 
 ### Preserve existing sessions and saved credentials
 
@@ -76,29 +84,34 @@ directory.
 Pi reads saved provider credentials from `<agent-dir>/auth.json`. The selected
 profile's native directory and staged overlay therefore share the existing auth
 file rather than copying it; the test confirms the saved synthetic key remains
-available. Pi's documented credential order is runtime `--api-key`, stored
+available. The profile also shares the existing `trust.json` and session leaf.
+Pi's documented credential order is runtime `--api-key`, stored
 `auth.json`, a `models.json` key, then provider environment variables. Therefore
 injecting aix's key only as `OPENAI_API_KEY` is insufficient when saved Pi auth is
 present. The adapter supplies the selected aix key through Pi's one-shot
 `--api-key` option. It rejects a user-supplied `--api-key`, which would contradict
 the selected aix profile. Native `--provider openai` and model selection remain
 available for model IDs declared by that profile; other providers, unconfigured
-models, and `--models` cycling patterns are rejected by this proof adapter so they
-cannot route around the selected endpoint.
+models, `--models` cycling patterns, and explicit `--extension` sources are
+rejected by this proof adapter so they cannot route around the selected endpoint.
 
 ### Keep the aix connection authoritative
 
 Pi stores compatible provider endpoints in `models.json`. The adapter stages a
-temporary copy of the selected profile's model configuration, sets its OpenAI
-provider `baseUrl` from aix's generated `OPENAI_BASE_URL`, and passes aix's
-`OPENAI_API_KEY` with `--api-key`. The proof runs all three applicable aix launch
+temporary copy of the selected profile's model configuration, sets both the
+OpenAI provider and each selected model's `baseUrl` from aix's generated
+`OPENAI_BASE_URL`, and passes aix's `OPENAI_API_KEY` with `--api-key`. The proof
+runs all three applicable aix launch
 forms: `aix run -- pi ...`, the configured named-tool form `aix pi -- ...`, and
 generic `aix exec -- <adapter> ...`. Two concurrent `aix run -- pi ...` launches
 reach separate local gateways with their own profile keys and model configuration.
 The read-only source files remain byte-for-byte unchanged. The proof uses ordinary
 Pi model selection and session flags; those overrides do not replace aix's
-connection. The adapter rejects a conflicting API-key argument and Pi's nonexistent
-`--agent-dir` argument.
+connection. The adapter rejects conflicting API-key, provider, extension, and
+agent-directory arguments. Explicit project/profile extensions are still loaded
+under Pi's trust rules; as arbitrary in-process code they are not a security
+sandbox and are outside this proof's claim about model requests through the
+selected profile's OpenAI catalog.
 
 ### Relative and project resources
 
@@ -107,7 +120,9 @@ directory. The proof loads a profile extension and skill referenced via `../shar
 from outside that directory. Its staging layout mirrors the relative base and
 symlinks the unchanged shared resource directory, so references keep resolving to
 the intended source. This pattern also works for read-only generated settings and
-keybindings; only the staged `models.json` is rewritten.
+keybindings. The staged overlay rewrites `settings.json` only to set the default
+provider to OpenAI and `models.json` to replace provider- and model-level endpoints;
+the source files themselves remain unchanged.
 
 The test covers file-based extensions and skills, not npm/git package installation.
 Pi stores package-manager state below the agent directory (`npm`, `git`, and
@@ -123,8 +138,8 @@ read-only.
 - The proof exercises API-key auth. Pi's saved OAuth credentials also live in
   `auth.json`, but an OAuth refresh flow was not run; production must preserve the
   same file and Pi's locking/permissions behavior.
-- Project trust-gated resources and context discovery are verified on Linux. No
-  Windows or macOS run was performed.
+- Project trust-gated settings/resources and context discovery are verified on
+  Linux. No Windows or macOS run was performed.
 - Temporary staging is required when aix must override a native model endpoint
   without editing its source. Relative external resource paths must be mirrored
   or made absolute in the stage; silently copying only `settings.json` breaks
