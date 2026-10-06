@@ -2,11 +2,14 @@
 
 ## Result
 
-**Feasible with a small launch adapter; not implemented in production by this ticket.**
-Pi can replace its complete user-level agent directory with the directory selected by
-an aix profile while reusing the original session and authentication stores. The
-adapter must stage an overlay for read-only/generated configuration and make the
-selected aix connection win over Pi's saved and model-configured credentials.
+**Partial proof; the full feasibility gate is not satisfied.** Pi can replace its
+complete user-level agent directory with the directory selected by an aix profile
+while reusing the original session, trust, and authentication stores. A launch
+adapter can stage read-only/generated configuration and make the selected aix
+connection win for requests using the profile's OpenAI-compatible models. Pi's
+native RPC model-switch command can still select another configured provider from
+the preserved auth/config stores, so this proof does not claim connection authority
+after arbitrary native provider switches.
 
 The reproducible proof is [`pi_agent_config_replacement.py`](pi_agent_config_replacement.py).
 Its adapter, checks, and shared test fixtures are
@@ -43,6 +46,7 @@ config_replacement=settings+models+keybindings+resources=passed
 project_rules_and_trust=passed
 session_history_and_saved_auth=passed
 aix_shell_run_named_tool_exec_and_concurrent_profiles=passed
+connection_authority=blocked_by_native_rpc_model_switch
 read_only_sources_and_relative_resources=passed
 ```
 
@@ -91,28 +95,45 @@ injecting aix's key only as `OPENAI_API_KEY` is insufficient when saved Pi auth 
 present. The adapter supplies the selected aix key through Pi's one-shot
 `--api-key` option. It rejects a user-supplied `--api-key`, which would contradict
 the selected aix profile. Native `--provider openai` and model selection remain
-available for model IDs declared by that profile; other providers, unconfigured
-models, `--models` cycling patterns, and explicit `--extension` sources are
-rejected by this proof adapter so they cannot route around the selected endpoint.
+available for model IDs declared by that profile. The adapter supplies an exact
+`--models` scope for the selected profile's OpenAI catalog, and rejects user
+`--models`, other-provider CLI selectors, unconfigured models, and explicit
+`--extension` sources. That scope limits startup lookup and model cycling, but it
+does not constrain Pi's RPC `set_model` command.
 
-### Keep the aix connection authoritative
+### Connection-authority blocker
 
 Pi stores compatible provider endpoints in `models.json`. The adapter stages a
 temporary copy of the selected profile's model configuration, sets both the
 OpenAI provider and each selected model's `baseUrl` from aix's generated
-`OPENAI_BASE_URL`, and passes aix's `OPENAI_API_KEY` with `--api-key`. The proof
-runs all four applicable aix launch forms: `aix shell` followed by `pi ...` through
-a temporary `PATH` shim, `aix run -- pi ...`, the configured named-tool form
-`aix pi -- ...`, and generic `aix exec -- <adapter> ...`. Two concurrent
+`OPENAI_BASE_URL`, scopes model cycling to those OpenAI models, and passes aix's
+`OPENAI_API_KEY` with `--api-key`. The proof runs all four aix launch forms:
+`aix shell` followed by `pi ...` through a temporary `PATH` shim,
+`aix run -- pi ...`, the configured named-tool form `aix pi -- ...`, and generic
+`aix exec -- <adapter> ...`. Two concurrent
 `aix run -- pi ...` launches reach separate local gateways with their own profile
 keys and model configuration.
-The read-only source files remain byte-for-byte unchanged. The proof uses ordinary
-Pi model selection and session flags; those overrides do not replace aix's
-connection. The adapter rejects conflicting API-key, provider, extension, and
-agent-directory arguments. Explicit project/profile extensions are still loaded
-under Pi's trust rules; as arbitrary in-process code they are not a security
-sandbox and are outside this proof's claim about model requests through the
-selected profile's OpenAI catalog.
+The read-only source files remain byte-for-byte unchanged. The proof demonstrates
+that ordinary CLI model selection within the AIX profile's OpenAI catalog routes
+to the selected gateway in all four launch forms. It also demonstrates a blocker:
+with a synthetic saved Anthropic credential and an Anthropic model in the existing
+Pi `models.json`, Pi 1.0.4 accepts an RPC `set_model` to that model even when
+launched with `--models openai/profile-a-model`. The returned model has
+`baseUrl: http://saved-provider.invalid/v1`, not the AIX-selected endpoint. This
+test sends no request to that model or URL.
+
+The behavior is consistent with Pi's documented/source behavior: `--models`
+provides a startup/cycling scope (`docs/cli.md`), while `dist/modes/rpc/rpc-mode.js`
+implements `set_model` by searching `session.modelRuntime.getAvailableSnapshot()`
+without checking the scope. The test preserves the existing `auth.json`, so an
+authenticated non-OpenAI model remains available. Deciding whether aix profiles
+must disable these native provider switches, map every Pi provider through the
+profile, or explicitly permit them requires a product decision; this proof does
+not weaken that contract or claim the gate is complete.
+
+The adapter rejects conflicting API-key, provider, extension, and agent-directory
+arguments. Explicit project/profile extensions still load under Pi trust rules;
+as arbitrary in-process code they are not a security sandbox.
 
 ### Relative and project resources
 
@@ -145,8 +166,10 @@ read-only.
   without editing its source. Relative external resource paths must be mirrored
   or made absolute in the stage; silently copying only `settings.json` breaks
   native relative-path semantics.
-- The proof confirms feasibility through aix's existing configured-tool and generic
-  process launch modes. It makes no production schema or launcher changes.
+- Replacement, session/history preservation, and saved-auth preservation are
+  demonstrated through existing aix launch modes. Overall connection authority
+  remains blocked by the native RPC provider switch above. No production schema or
+  launcher changes are made.
 
 ## Authoritative Pi sources
 

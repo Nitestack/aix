@@ -14,17 +14,22 @@ stage_root = Path(os.environ["AIX_PI_STAGE_ROOT"])
 pi = os.environ["AIX_PI_BINARY"]
 args = sys.argv[1:]
 option_args = args[: args.index("--")] if "--" in args else args
+
+
+def reject(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(64)
+
+
 source_models = json.loads((source / "models.json").read_text())
 allowed_models = {
     model["id"]
     for model in source_models.get("providers", {}).get("openai", {}).get("models", [])
     if isinstance(model, dict) and isinstance(model.get("id"), str)
 }
-
-
-def reject(message):
-    print(message, file=sys.stderr)
-    raise SystemExit(64)
+if not allowed_models:
+    reject("the selected AIX profile has no OpenAI-compatible models")
+model_scope = ",".join(f"openai/{model_id}" for model_id in sorted(allowed_models))
 
 
 # Pi has no --agent-dir flag; AIX owns that environment selector. A user-supplied
@@ -114,7 +119,11 @@ with tempfile.TemporaryDirectory(prefix="pi-agent-overlay-", dir=stage_root) as 
 
     env = os.environ.copy()
     env["PI_CODING_AGENT_DIR"] = str(staged_agent)
-    pi_args = [pi, *args] if args[:1] == ["auth"] else [pi, "--api-key", api_key, *args]
+    pi_args = (
+        [pi, *args]
+        if args[:1] == ["auth"]
+        else [pi, "--models", model_scope, "--api-key", api_key, *args]
+    )
     result = subprocess.run(
         pi_args,
         env=env,

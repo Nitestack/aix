@@ -11,6 +11,7 @@ from pathlib import Path
 from pi_agent_config_replacement_support import (
     PROFILE_A_KEY,
     PROFILE_B_KEY,
+    SAVED_ANTHROPIC_KEY,
     SAVED_AUTH_KEY,
     ProofContext,
     find_request,
@@ -177,6 +178,7 @@ def verify_sessions_and_launches(
 ) -> None:
     verify_session_preservation(proof)
     verify_launch_modes(proof)
+    verify_native_provider_switch_blocker(proof)
     verify_concurrent_profiles(proof, source_hashes)
     verify_selector_guards(proof)
 
@@ -331,6 +333,52 @@ def verify_launch_modes(proof: ProofContext) -> None:
     require(
         shell_request["authorization"] == f"Bearer {PROFILE_A_KEY}",
         "aix shell did not keep the profile connection authoritative",
+    )
+
+
+def verify_native_provider_switch_blocker(proof: ProofContext) -> None:
+    profile_a_agent = proof.profile_a_agent
+    auth_env = proof.env.copy()
+    auth_env["PI_CODING_AGENT_DIR"] = str(profile_a_agent)
+    auth_env.pop("PI_CODING_AGENT_SESSION_DIR", None)
+    run_aix_for_profile = partial(run_aix, proof)
+    saved_auth = run_process(
+        [proof.pi, "auth", "print-api-key", "--provider", "anthropic"],
+        cwd=proof.project,
+        env=auth_env,
+    )
+    require(
+        saved_auth.stdout.strip() == SAVED_ANTHROPIC_KEY,
+        "saved secondary-provider auth was not preserved",
+    )
+
+    switched = run_aix_for_profile(
+        "profile_a",
+        "--mode",
+        "rpc",
+        "--no-session",
+        "--model",
+        "openai/profile-a-model",
+        mode="exec",
+        input_text=(
+            '{"id":"switch","type":"set_model",'
+            '"provider":"anthropic","modelId":"saved-provider-model"}\n'
+        ),
+    )
+    responses = [
+        json.loads(line)
+        for line in switched.stdout.splitlines()
+        if line.startswith("{")
+    ]
+    response = next((item for item in responses if item.get("id") == "switch"), None)
+    require(
+        response is not None and response.get("success") is True,
+        "expected Pi RPC set_model to reproduce the provider-switch blocker",
+    )
+    require(
+        response["data"].get("provider") == "anthropic"
+        and response["data"].get("baseUrl") == "http://saved-provider.invalid/v1",
+        f"Pi RPC did not switch to the configured secondary endpoint: {response}",
     )
 
 

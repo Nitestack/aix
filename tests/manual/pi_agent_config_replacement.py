@@ -17,6 +17,7 @@ from pi_agent_config_replacement_support import (
     PROFILE_B_KEY,
     MockOpenAIServer,
     ProofContext,
+    add_alternate_provider_model,
     create_normal_agent,
     make_aix_config,
     native_project_session_dir,
@@ -71,6 +72,7 @@ def main() -> None:
         profile_b_agent = profile_config(
             profile_b_root, "profile-b-model", "dark", "ctrl+alt+b"
         )
+        add_alternate_provider_model(profile_a_agent)
         create_normal_agent(normal_agent, "normal-session-model", f"{profile_a_url}/v1")
         for agent in (profile_a_agent, profile_b_agent):
             (agent / "auth.json").symlink_to(normal_agent / "auth.json")
@@ -167,6 +169,7 @@ def main() -> None:
         print("project_rules_and_trust=passed")
         print("session_history_and_saved_auth=passed")
         print("aix_shell_run_named_tool_exec_and_concurrent_profiles=passed")
+        print("connection_authority=blocked_by_native_rpc_model_switch")
         print("read_only_sources_and_relative_resources=passed")
     finally:
         for server in servers:

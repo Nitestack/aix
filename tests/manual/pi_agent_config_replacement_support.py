@@ -15,6 +15,7 @@ from typing import Any
 
 PI_VERSION = "1.0.4"
 SAVED_AUTH_KEY = "synthetic-saved-user-key"
+SAVED_ANTHROPIC_KEY = "synthetic-saved-anthropic-key"
 MODEL_CONFIG_KEY = "synthetic-models-json-key"
 PROFILE_A_KEY = "synthetic-aix-profile-a-key"
 PROFILE_B_KEY = "synthetic-aix-profile-b-key"
@@ -149,6 +150,26 @@ def model_config(model_id: str, base_url: str) -> dict[str, object]:
     }
 
 
+def add_alternate_provider_model(agent_dir: Path) -> None:
+    path = agent_dir / "models.json"
+    config = json.loads(path.read_text())
+    path.chmod(0o644)
+    config["providers"]["anthropic"] = {
+        "baseUrl": "http://saved-provider.invalid/v1",
+        "api": "anthropic-messages",
+        "models": [
+            {
+                "id": "saved-provider-model",
+                "name": "Saved provider model",
+                "contextWindow": 8192,
+                "maxTokens": 2048,
+            }
+        ],
+    }
+    write_json(path, config)
+    path.chmod(0o444)
+
+
 def write_extension(path: Path, name: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -229,7 +250,10 @@ def create_normal_agent(agent_dir: Path, model_id: str, server_url: str) -> None
     write_json(agent_dir / "models.json", model_config(model_id, server_url))
     write_json(
         agent_dir / "auth.json",
-        {"openai": {"type": "api_key", "key": SAVED_AUTH_KEY}},
+        {
+            "openai": {"type": "api_key", "key": SAVED_AUTH_KEY},
+            "anthropic": {"type": "api_key", "key": SAVED_ANTHROPIC_KEY},
+        },
     )
     (agent_dir / "AGENTS.md").write_text("NORMAL_GLOBAL_CONTEXT_MARKER\n")
     (agent_dir / "extensions").mkdir()
@@ -245,11 +269,13 @@ def run_process(
     cwd: Path,
     env: dict[str, str],
     timeout: int = 90,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         command,
         cwd=cwd,
         env=env,
+        input=input_text,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -264,7 +290,11 @@ def run_process(
 
 
 def run_aix(
-    proof: ProofContext, profile: str, *pi_args: str, mode: str = "run"
+    proof: ProofContext,
+    profile: str,
+    *pi_args: str,
+    mode: str = "run",
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if mode == "run":
         launch_args = ["run", "--", "pi", *pi_args]
@@ -286,6 +316,7 @@ def run_aix(
         ],
         cwd=proof.project,
         env=proof.env,
+        input_text=input_text,
     )
 
 
