@@ -26,6 +26,9 @@ gateway = "litellm"
 label = "Work"
 api_key = "sk-compat-work"
 
+[profiles.work.tool_configs.codex]
+config_dir = "/existing/codex-home"
+
 [profiles.local]
 label = "Local"
 api_key = "sk-compat-local"
@@ -41,6 +44,9 @@ profiles:
   work:
     label: Work
     api_key: sk-compat-work
+    tool_configs:
+      codex:
+        config_dir: /existing/codex-home
   local:
     label: Local
     api_key: sk-compat-local
@@ -54,7 +60,11 @@ const JSON: &str = r#"{
     "gateway": "litellm"
   },
   "profiles": {
-    "work": { "label": "Work", "api_key": "sk-compat-work" },
+    "work": {
+      "label": "Work",
+      "api_key": "sk-compat-work",
+      "tool_configs": { "codex": { "config_dir": "/existing/codex-home" } }
+    },
     "local": { "label": "Local", "api_key": "sk-compat-local" }
   }
 }"#;
@@ -67,7 +77,11 @@ const JSON5: &str = r#"{
     gateway: "litellm",
   },
   profiles: {
-    work: { label: "Work", api_key: "sk-compat-work" },
+    work: {
+      label: "Work",
+      api_key: "sk-compat-work",
+      tool_configs: { codex: { config_dir: "/existing/codex-home" } },
+    },
     local: { label: "Local", api_key: "sk-compat-local" },
   },
 }"#;

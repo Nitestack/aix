@@ -110,6 +110,8 @@
             grep -Fxq 'default = "company/model-default"' ${homeManagerConfigs.configured}
             grep -Fxq '[profiles.work.models.aliases]' ${homeManagerConfigs.configured}
             grep -Fxq 'fast = "company/model-fast"' ${homeManagerConfigs.configured}
+            grep -Fxq '[profiles.work.tool_configs.codex]' ${homeManagerConfigs.configured}
+            grep -Fxq 'config_dir = "/profiles/work/codex"' ${homeManagerConfigs.configured}
             grep -Fxq '[tools.review]' ${homeManagerConfigs.configured}
             grep -Fxq 'command = "review-agent"' ${homeManagerConfigs.configured}
             grep -Fxq 'api_format = "both"' ${homeManagerConfigs.configured}

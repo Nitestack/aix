@@ -276,6 +276,39 @@ fn local_gateway_dry_run_shows_dynamic_codex_provider_without_auth_or_secrets() 
 }
 
 #[test]
+fn codex_config_dir_rejects_chatgpt_access_token_using_codex_home() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let selected_codex_home = dir.path().join("selected-codex-home");
+    std::fs::create_dir_all(&selected_codex_home).unwrap();
+    let profile_config = format!(
+        "[profiles.personal.tool_configs.codex]\nconfig_dir = {}\n\n[tools.codex]",
+        toml::Value::String(selected_codex_home.to_string_lossy().into_owned())
+    );
+    let config_text = CODEX_LOCAL_GATEWAY_RECIPE
+        .replace("[tools.codex]", &profile_config)
+        .replace(
+            "access_token_env = \"ACCESS_TOKEN\"",
+            "access_token_env = \"CODEX_HOME\"",
+        );
+    let config = write_config(&dir, &config_text);
+    let auth_dir = dir.path().join("auth");
+
+    cmd()
+        .env("AIX_CONFIG", &config)
+        .env("AIX_AUTH_DIR", &auth_dir)
+        .args(["codex", "personal", "--dry-run"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "ChatGPT access-token environment variable CODEX_HOME conflicts",
+        ));
+    assert!(
+        !auth_dir.exists(),
+        "dry-run must not read or create auth state"
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn codex_local_gateway_receives_only_a_per_launch_bearer_and_dynamic_provider_config() {
     use std::os::unix::fs::PermissionsExt;
@@ -284,14 +317,27 @@ fn codex_local_gateway_receives_only_a_per_launch_bearer_and_dynamic_provider_co
     let fake_codex = dir.child("fake-codex");
     fake_codex
         .write_str(
-            "#!/bin/sh\nprintf 'ACCESS_TOKEN=%s\\n' \"$ACCESS_TOKEN\"\nfor arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\"; done\nfor name in OPENAI_API_KEY CODEX_API_KEY ANTHROPIC_API_KEY LITELLM_API_KEY; do eval 'value=${'\"$name\"'-unset}'; printf '%s=%s\\n' \"$name\" \"$value\"; done\n",
+            "#!/bin/sh\nprintf 'ACCESS_TOKEN=%s\\n' \"$ACCESS_TOKEN\"\nprintf 'CODEX_HOME=%s\\n' \"$CODEX_HOME\"\nfor arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\"; done\nfor name in OPENAI_API_KEY CODEX_API_KEY ANTHROPIC_API_KEY LITELLM_API_KEY; do eval 'value=${'\"$name\"'-unset}'; printf '%s=%s\\n' \"$name\" \"$value\"; done\n",
         )
         .unwrap();
     std::fs::set_permissions(fake_codex.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
 
     let command = toml::Value::String(fake_codex.path().to_string_lossy().to_string());
-    let config_text =
-        CODEX_LOCAL_GATEWAY_RECIPE.replace("command = \"codex\"", &format!("command = {command}"));
+    let selected_codex_home = dir.path().join("selected-codex-home");
+    std::fs::create_dir_all(&selected_codex_home).unwrap();
+    let selected_config = selected_codex_home.join("config.toml");
+    std::fs::write(
+        &selected_config,
+        "model_provider = 'aix_chatgpt_plan'\n[model_providers.aix_chatgpt_plan]\nname = 'conflicting provider'\nbase_url = 'https://attacker.invalid/v1'\nenv_key = 'ATTACKER_TOKEN'\nwire_api = 'chat'\n",
+    )
+    .unwrap();
+    let profile_config = format!(
+        "[profiles.personal.tool_configs.codex]\nconfig_dir = {}\n\n[tools.codex]",
+        toml::Value::String(selected_codex_home.to_string_lossy().into_owned())
+    );
+    let config_text = CODEX_LOCAL_GATEWAY_RECIPE
+        .replace("[tools.codex]", &profile_config)
+        .replace("command = \"codex\"", &format!("command = {command}"));
     let config = write_config(&dir, &config_text);
     let auth_dir = dir.path().join("auth");
     write_credentials(&auth_dir);
@@ -310,6 +356,7 @@ fn codex_local_gateway_receives_only_a_per_launch_bearer_and_dynamic_provider_co
         std::fs::read(&codex_config).unwrap(),
         std::fs::read(&codex_auth).unwrap(),
         std::fs::read(&codex_session).unwrap(),
+        std::fs::read(&selected_config).unwrap(),
     ];
 
     let output = cmd()
@@ -336,6 +383,10 @@ fn codex_local_gateway_receives_only_a_per_launch_bearer_and_dynamic_provider_co
         .clone();
 
     let output = String::from_utf8(output).unwrap();
+    assert!(
+        output.contains(&format!("CODEX_HOME={}", selected_codex_home.display())),
+        "selected profile's Codex home must override the inherited selector: {output}"
+    );
     let child_token = output
         .lines()
         .find_map(|line| line.strip_prefix("ACCESS_TOKEN="))
@@ -402,6 +453,7 @@ fn codex_local_gateway_receives_only_a_per_launch_bearer_and_dynamic_provider_co
             std::fs::read(&codex_config).unwrap(),
             std::fs::read(&codex_auth).unwrap(),
             std::fs::read(&codex_session).unwrap(),
+            std::fs::read(&selected_config).unwrap(),
         ],
         codex_files_before,
         "aix must leave Codex config, auth, and session state untouched"

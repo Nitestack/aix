@@ -208,6 +208,14 @@ pub enum AixError {
     #[error("configured command for tool {name:?} must not be empty")]
     EmptyToolCommand { name: String },
 
+    #[error(
+        "{argument} conflicts with the selected Codex configuration directory and aix-managed connection"
+    )]
+    CodexConfigArgumentConflict { argument: &'static str },
+
+    #[error("ChatGPT access-token environment variable CODEX_HOME conflicts with the selected Codex configuration directory")]
+    CodexConfigEnvironmentConflict,
+
     #[error("run policy names must not be empty")]
     EmptyRunPolicyName,
 
@@ -514,6 +522,8 @@ impl AixError {
             | Self::InvalidEnvironmentVariableName { .. }
             | Self::EmptyToolName
             | Self::EmptyToolCommand { .. }
+            | Self::CodexConfigArgumentConflict { .. }
+            | Self::CodexConfigEnvironmentConflict
             | Self::EmptyRunPolicyName
             | Self::InvalidRunPolicyBudget { .. }
             | Self::InvalidRunPolicyDuration { .. }

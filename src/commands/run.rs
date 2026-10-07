@@ -79,6 +79,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         require_litellm: lease,
         dry_run,
         timeout,
+        native_args: command_args,
     })
     .await?;
     if let Some(run_policy) = &resolved.policy {
@@ -159,9 +160,11 @@ pub async fn run(options: RunOptions) -> Result<()> {
 
     let mut child_args = resolved.prepend_args.clone();
     child_args.extend(command_args.iter().cloned());
+    launch::validate_codex_config_args(&resolved, &child_args)?;
 
     if dry_run {
         launch::validate_executable(&resolved.program)?;
+        launch::print_tool_config_dry_run(&resolved);
         launch::print_sidecar_dry_run(&resolved);
         run_lease::print_dry_run(
             &resolved,

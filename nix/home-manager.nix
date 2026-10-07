@@ -168,6 +168,28 @@ let
     };
   };
 
+  codexToolConfigType = lib.types.submodule {
+    options.configDir = lib.mkOption {
+      type = lib.types.str;
+      example = "~/.config/codex/work";
+      description = ''
+        Existing Codex home selected through CODEX_HOME for this aix profile.
+        CODEX_HOME also selects Codex persistent state, so the standard Codex
+        home’s sessions, history, and saved authentication are not automatically
+        shared. The replacement behavior was checked with codex-cli 0.157.0;
+        other versions are unverified.
+      '';
+    };
+  };
+
+  profileToolConfigsType = lib.types.submodule {
+    options.codex = lib.mkOption {
+      type = lib.types.nullOr codexToolConfigType;
+      default = null;
+      description = "Optional profile-specific native Codex home.";
+    };
+  };
+
   runPolicyType = lib.types.submodule {
     options = {
       profile = lib.mkOption {
@@ -322,6 +344,13 @@ let
     }
     // lib.optionalAttrs (hasModelConfig profile.models) {
       models = mkModelConfig profile.models;
+    }
+    // lib.optionalAttrs (profile.toolConfigs.codex != null) {
+      tool_configs = {
+        codex = {
+          config_dir = profile.toolConfigs.codex.configDir;
+        };
+      };
     };
 
   mkEndpoint =
@@ -532,6 +561,12 @@ in
               description = "Model defaults and aliases that override the shared programs.aix.models settings.";
               default = { };
               type = modelConfigType;
+            };
+
+            toolConfigs = lib.mkOption {
+              description = "Profile-specific native tool configuration directories.";
+              default = { };
+              type = profileToolConfigsType;
             };
           };
         }

@@ -1,5 +1,5 @@
 use super::{
-    append_configured_env, validate_executable, LaunchContext, LaunchEnv, LaunchRequest,
+    append_configured_env_excluding, validate_executable, LaunchContext, LaunchEnv, LaunchRequest,
     LaunchResolution, ToolEnvMode,
 };
 use crate::config;
@@ -19,10 +19,13 @@ pub(super) async fn resolve_tool_launch(
         policy_name,
         require_litellm,
         allowed_models,
+        codex_config,
         ..
     } = request;
 
-    let LaunchContext { cfg, profile_name } = context;
+    let LaunchContext {
+        cfg, profile_name, ..
+    } = context;
     let policy = super::resolve_run_policy(cfg, policy_name)?;
     if policy.is_some_and(|policy| policy.max_budget.is_some()) {
         return Err(AixError::RunPolicyBudgetUnavailable.into());
@@ -49,6 +52,13 @@ pub(super) async fn resolve_tool_launch(
         .ok_or_else(|| AixError::ChatGptToolNotConfigured {
             tool: tool_name.to_string(),
         })?;
+    if binding.access_token_env == "CODEX_HOME"
+        && codex_config
+            .as_ref()
+            .is_some_and(|selection| selection.is_active())
+    {
+        return Err(AixError::CodexConfigEnvironmentConflict.into());
+    }
     let program = tool.command.as_deref().unwrap_or(tool_name).to_string();
     let uses_responses_gateway = responses_adapter.is_some();
 
@@ -97,13 +107,28 @@ pub(super) async fn resolve_tool_launch(
     };
 
     let mut vars = vec![("AIX_PROFILE".to_string(), profile_name.clone())];
-    append_configured_env(
+    let skipped_env_names: &[&str] = if codex_config
+        .as_ref()
+        .is_some_and(|selection| selection.is_active())
+    {
+        &["CODEX_HOME"]
+    } else {
+        &[]
+    };
+    append_configured_env_excluding(
         &profile.env,
         tool_env_mode,
         &mut vars,
         &mut display_only_vars,
+        skipped_env_names,
     )?;
-    append_configured_env(&tool.env, tool_env_mode, &mut vars, &mut display_only_vars)?;
+    append_configured_env_excluding(
+        &tool.env,
+        tool_env_mode,
+        &mut vars,
+        &mut display_only_vars,
+        skipped_env_names,
+    )?;
 
     let mut clear_vars = vec![
         "ANTHROPIC_API_KEY".to_string(),
@@ -146,14 +171,41 @@ pub(super) async fn resolve_tool_launch(
             tags: policy.tags.clone(),
         }),
         prepend_args: binding.prepend_args.clone(),
+        codex_provider_overrides: Vec::new(),
         sidecar_plan,
+        codex_config: None,
     })
 }
 
 pub(super) fn codex_provider_overrides(base_url: &str, access_token_env: &str) -> Vec<String> {
     // Avoid merging process-local auth/base URL settings with a provider table
     // already present in the user's Codex config.
-    const PROVIDER: &str = "aix_chatgpt_plan";
+    codex_provider_config_overrides(
+        "aix_chatgpt_plan",
+        "ChatGPT plan via aix",
+        base_url,
+        access_token_env,
+        false,
+    )
+}
+
+pub(super) fn codex_api_key_provider_overrides(base_url: &str) -> Vec<String> {
+    codex_provider_config_overrides(
+        "aix_api_key_gateway",
+        "API key via aix",
+        base_url,
+        "OPENAI_API_KEY",
+        true,
+    )
+}
+
+fn codex_provider_config_overrides(
+    provider: &str,
+    name: &str,
+    base_url: &str,
+    env_key: &str,
+    requires_openai_auth: bool,
+) -> Vec<String> {
     let mut args = Vec::with_capacity(14);
     let mut add_override = |key: &str, value: String| {
         args.push("-c".to_string());
@@ -163,29 +215,29 @@ pub(super) fn codex_provider_overrides(base_url: &str, access_token_env: &str) -
         serde_json::to_string(value).expect("Codex provider strings are serializable")
     };
 
-    add_override("model_provider", toml_string(PROVIDER));
+    add_override("model_provider", toml_string(provider));
     add_override(
-        &format!("model_providers.{PROVIDER}.name"),
-        toml_string("ChatGPT plan via aix"),
+        &format!("model_providers.{provider}.name"),
+        toml_string(name),
     );
     add_override(
-        &format!("model_providers.{PROVIDER}.base_url"),
+        &format!("model_providers.{provider}.base_url"),
         toml_string(base_url),
     );
     add_override(
-        &format!("model_providers.{PROVIDER}.env_key"),
-        toml_string(access_token_env),
+        &format!("model_providers.{provider}.env_key"),
+        toml_string(env_key),
     );
     add_override(
-        &format!("model_providers.{PROVIDER}.wire_api"),
+        &format!("model_providers.{provider}.wire_api"),
         toml_string("responses"),
     );
     add_override(
-        &format!("model_providers.{PROVIDER}.requires_openai_auth"),
-        "false".to_string(),
+        &format!("model_providers.{provider}.requires_openai_auth"),
+        requires_openai_auth.to_string(),
     );
     add_override(
-        &format!("model_providers.{PROVIDER}.supports_websockets"),
+        &format!("model_providers.{provider}.supports_websockets"),
         "false".to_string(),
     );
     args

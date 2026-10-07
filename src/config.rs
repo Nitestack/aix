@@ -157,6 +157,24 @@ pub struct Profile {
     /// Additional environment variables injected when this profile is used.
     pub env: HashMap<String, SecretSource>,
     pub models: ModelConfig,
+    pub tool_configs: ProfileToolConfigs,
+}
+
+/// Native configuration sources tied to a named aix profile.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileToolConfigs {
+    #[serde(default)]
+    pub codex: Option<CodexToolConfig>,
+}
+
+/// A native Codex home selected for Codex launches using this profile.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexToolConfig {
+    /// Existing directory supplied to Codex as `CODEX_HOME`. This also selects
+    /// persistent Codex state; only codex-cli 0.157.0 has been checked here.
+    pub config_dir: PathBuf,
 }
 
 #[derive(Debug)]
@@ -201,6 +219,8 @@ struct ProfileConfig {
     env: HashMap<String, SecretSource>,
     #[serde(default)]
     models: ModelConfig,
+    #[serde(default)]
+    tool_configs: ProfileToolConfigs,
 }
 
 #[derive(Deserialize)]
@@ -239,6 +259,7 @@ impl<'de> Deserialize<'de> for Profile {
             base_url: config.base_url,
             env: config.env,
             models: config.models,
+            tool_configs: config.tool_configs,
         })
     }
 }

@@ -1,4 +1,4 @@
-use crate::commands::env::{collect_profile_vars, collect_vars, resolve_profile};
+use crate::commands::env::{collect_profile_vars_excluding, collect_vars, resolve_profile};
 use crate::commands::ProfileSelection;
 use crate::config;
 use crate::error::AixError;
@@ -7,6 +7,7 @@ use crate::local_gateway::{
 };
 use crate::secrets::SecretString;
 use color_eyre::Result;
+use directories::BaseDirs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -56,6 +57,7 @@ pub struct ResolvedRunLaunch {
     pub policy: Option<ResolvedRunPolicy>,
     pub prepend_args: Vec<String>,
     pub codex_provider_overrides: Vec<String>,
+    codex_config: Option<CodexConfigSelection>,
     sidecar_plan: Option<LaunchSidecarPlan>,
 }
 
@@ -100,12 +102,15 @@ struct LaunchResolution {
     allowed_models: Vec<String>,
     policy: Option<ResolvedRunPolicy>,
     prepend_args: Vec<String>,
+    codex_provider_overrides: Vec<String>,
     sidecar_plan: Option<LaunchSidecarPlan>,
+    codex_config: Option<CodexConfigSelection>,
 }
 
 struct LaunchContext {
     cfg: config::Config,
     profile_name: String,
+    config_path: PathBuf,
 }
 
 impl LaunchContext {
@@ -130,6 +135,64 @@ struct LaunchRequest<'a> {
     allowed_models: &'a [String],
     policy_name: Option<&'a str>,
     require_litellm: bool,
+    codex_config: Option<CodexConfigSelection>,
+    native_args: &'a [String],
+}
+
+#[derive(Clone, Debug)]
+struct CodexConfigSelection {
+    profile_name: String,
+    config_path: PathBuf,
+    requested_dir: PathBuf,
+    effective_dir: PathBuf,
+    unavailable_reason: Option<&'static str>,
+}
+
+impl CodexConfigSelection {
+    fn is_active(&self) -> bool {
+        self.unavailable_reason.is_none()
+    }
+
+    fn warn_selected_state_root(&self) {
+        eprintln!(
+            "warning: profile '{}' tool 'codex' config_dir '{}' from aix config '{}' sets CODEX_HOME, which also selects Codex persistent state; the standard Codex home's sessions, history, and saved authentication are not automatically shared (tested with codex-cli 0.157.0; other versions are unverified)",
+            self.profile_name,
+            self.requested_dir.display(),
+            self.config_path.display(),
+        );
+    }
+
+    fn warn_fallback(&self) {
+        let reason = self
+            .unavailable_reason
+            .expect("fallback warning requires an unavailable directory");
+        eprintln!(
+            "warning: profile '{}' tool 'codex' config_dir '{}' from aix config '{}' {}; using standard Codex configuration",
+            self.profile_name,
+            self.requested_dir.display(),
+            self.config_path.display(),
+            reason,
+        );
+    }
+
+    fn print_dry_run(&self) {
+        if self.is_active() {
+            eprintln!(
+                "Codex configuration: selected '{}' for profile '{}' (tool 'codex'; source '{}'); CODEX_HOME also selects persistent state; codex-cli 0.157.0 tested, other versions unverified",
+                self.effective_dir.display(),
+                self.profile_name,
+                self.config_path.display(),
+            );
+        } else {
+            eprintln!(
+                "Codex configuration: '{}' {}; would use standard Codex configuration for profile '{}' (tool 'codex'; source '{}')",
+                self.requested_dir.display(),
+                self.unavailable_reason.unwrap_or("is unavailable"),
+                self.profile_name,
+                self.config_path.display(),
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -153,6 +216,8 @@ pub fn resolve_launch_env(
         allowed_models: &[],
         policy_name: None,
         require_litellm: false,
+        codex_config: None,
+        native_args: &[],
     })?;
     Ok(resolution.env)
 }
@@ -167,6 +232,7 @@ pub(crate) struct RunLaunchRequest<'a> {
     pub require_litellm: bool,
     pub dry_run: bool,
     pub timeout: Duration,
+    pub native_args: &'a [String],
 }
 
 pub(crate) async fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<ResolvedRunLaunch> {
@@ -180,6 +246,7 @@ pub(crate) async fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<
         require_litellm,
         dry_run,
         timeout,
+        native_args,
     } = request;
     resolve_tool_launch(
         LaunchRequest {
@@ -196,6 +263,8 @@ pub(crate) async fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<
             allowed_models,
             policy_name,
             require_litellm,
+            codex_config: None,
+            native_args,
         },
         timeout,
     )
@@ -203,17 +272,49 @@ pub(crate) async fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<
 }
 
 async fn resolve_tool_launch(
-    request: LaunchRequest<'_>,
+    mut request: LaunchRequest<'_>,
     timeout: Duration,
 ) -> Result<ResolvedRunLaunch> {
     let context = load_launch_context(&request)?;
     let profile = context.profile()?;
+    let codex_config = match request.configured_tool_name {
+        Some("codex") => profile.tool_configs.codex.as_ref().map(|tool_config| {
+            resolve_codex_config_selection(
+                &context.profile_name,
+                &context.config_path,
+                &tool_config.config_dir,
+            )
+        }),
+        _ => None,
+    };
+    validate_codex_config_selection_args(codex_config.as_ref(), request.native_args)?;
+    request.codex_config = codex_config.clone();
+    let tool_env_mode = request.tool_env_mode;
     let is_chatgpt = profile.auth.is_chatgpt();
-    let resolution = if is_chatgpt {
+    let mut resolution = if is_chatgpt {
         chatgpt::resolve_tool_launch(request, &context, profile, timeout).await?
     } else {
         resolve_api_key_launch(request, &context, profile)?
     };
+    if let Some(codex_config) = codex_config {
+        if codex_config.is_active() {
+            resolution.env.vars.retain(|(name, _)| name != "CODEX_HOME");
+            resolution
+                .env
+                .display_only_vars
+                .retain(|name| name != "CODEX_HOME");
+            resolution.env.vars.push((
+                "CODEX_HOME".to_string(),
+                codex_config.effective_dir.to_string_lossy().into_owned(),
+            ));
+            if matches!(tool_env_mode, ToolEnvMode::Resolve) {
+                codex_config.warn_selected_state_root();
+            }
+        } else if matches!(tool_env_mode, ToolEnvMode::Resolve) {
+            codex_config.warn_fallback();
+        }
+        resolution.codex_config = Some(codex_config);
+    }
     Ok(ResolvedRunLaunch {
         env: resolution.env,
         program: resolution.program,
@@ -222,7 +323,8 @@ async fn resolve_tool_launch(
         allowed_models: resolution.allowed_models,
         policy: resolution.policy,
         prepend_args: resolution.prepend_args,
-        codex_provider_overrides: Vec::new(),
+        codex_provider_overrides: resolution.codex_provider_overrides,
+        codex_config: resolution.codex_config,
         sidecar_plan: resolution.sidecar_plan,
     })
 }
@@ -280,7 +382,81 @@ fn load_launch_context(request: &LaunchRequest<'_>) -> Result<LaunchContext> {
         return Err(AixError::LeaseNotLiteLlm.into());
     }
 
-    Ok(LaunchContext { cfg, profile_name })
+    Ok(LaunchContext {
+        cfg,
+        profile_name,
+        config_path: path,
+    })
+}
+
+fn resolve_codex_config_selection(
+    profile_name: &str,
+    config_path: &Path,
+    requested_dir: &Path,
+) -> CodexConfigSelection {
+    let (effective_dir, unavailable_reason) =
+        match expand_codex_config_dir(config_path, requested_dir) {
+            Ok(path) => match check_codex_config_dir(&path) {
+                Ok(()) => (path, None),
+                Err(reason) => (path, Some(reason)),
+            },
+            Err(reason) => (requested_dir.to_path_buf(), Some(reason)),
+        };
+    CodexConfigSelection {
+        profile_name: profile_name.to_string(),
+        config_path: config_path.to_path_buf(),
+        requested_dir: requested_dir.to_path_buf(),
+        effective_dir,
+        unavailable_reason,
+    }
+}
+
+fn expand_codex_config_dir(
+    config_path: &Path,
+    requested_dir: &Path,
+) -> Result<PathBuf, &'static str> {
+    if requested_dir.as_os_str().is_empty() {
+        return Err("is empty");
+    }
+    let requested = requested_dir.to_string_lossy();
+    let expanded = if requested == "~" {
+        BaseDirs::new()
+            .map(|dirs| dirs.home_dir().to_path_buf())
+            .ok_or("home-directory shorthand could not be expanded")?
+    } else if let Some(suffix) = requested
+        .strip_prefix("~/")
+        .or_else(|| requested.strip_prefix("~\\"))
+    {
+        BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(suffix))
+            .ok_or("home-directory shorthand could not be expanded")?
+    } else {
+        requested_dir.to_path_buf()
+    };
+
+    if expanded.is_absolute() {
+        return Ok(expanded);
+    }
+    let config_dir = config_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    Ok(config_dir.join(expanded))
+}
+
+fn check_codex_config_dir(path: &Path) -> Result<(), &'static str> {
+    let metadata = std::fs::metadata(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => "does not exist",
+        _ => "cannot be accessed",
+    })?;
+    if !metadata.is_dir() {
+        return Err("is not a directory");
+    }
+    let mut entries = std::fs::read_dir(path).map_err(|_| "is not readable")?;
+    if entries.next().is_some_and(|entry| entry.is_err()) {
+        return Err("is not readable");
+    }
+    Ok(())
 }
 
 pub(super) fn resolve_run_policy<'a>(
@@ -312,11 +488,14 @@ fn resolve_api_key_launch(
         format_override,
         configured_tool_name,
         tool_env_mode,
+        codex_config,
         allowed_models,
         policy_name,
         ..
     } = request;
-    let LaunchContext { cfg, profile_name } = context;
+    let LaunchContext {
+        cfg, profile_name, ..
+    } = context;
     let policy = resolve_run_policy(cfg, policy_name)?;
 
     let resolved_requested_models = allowed_models
@@ -354,38 +533,55 @@ fn resolve_api_key_launch(
         validate_executable(&effective_program)?;
     }
 
-    let local_gateway_dry_run = local_gateway && matches!(tool_env_mode, ToolEnvMode::NamesOnly);
-    let (mut vars, mut display_only_vars, parent_gateway) = if local_gateway_dry_run {
-        let mut vars: Vec<_> = collect_vars(profile_name, "", "", &api_format)
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect();
-        vars.retain(|(name, _)| !is_gateway_managed_env_var(name));
-        let mut display_only_vars = Vec::new();
-        append_configured_env(
-            &profile_entry.env,
-            ToolEnvMode::NamesOnly,
-            &mut vars,
-            &mut display_only_vars,
-        )?;
-        display_only_vars.extend(ApiKeyGatewayHandle::dry_run_variable_names(api_format));
-        (vars, display_only_vars, None)
+    let dry_run = matches!(tool_env_mode, ToolEnvMode::NamesOnly);
+    let local_gateway_dry_run = local_gateway && dry_run;
+    let codex_config_dry_run = codex_config.is_some() && dry_run;
+    let codex_config_active = codex_config
+        .as_ref()
+        .is_some_and(|selection| selection.is_active());
+    let skipped_env_names: &[&str] = if codex_config_active {
+        &["CODEX_HOME"]
     } else {
-        let api_key = profile_entry.resolve_api_key()?;
-        let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
-        let vars = collect_profile_vars(
-            profile_name,
-            api_key.expose_secret(),
-            base_url.expose_secret(),
-            &api_format,
-            profile_entry,
-        )?;
-        (
-            vars,
-            Vec::new(),
-            Some(ParentGatewayCredentials { base_url, api_key }),
-        )
+        &[]
     };
+    let (mut vars, mut display_only_vars, parent_gateway) =
+        if local_gateway_dry_run || codex_config_dry_run {
+            let mut vars: Vec<_> = collect_vars(profile_name, "", "", &api_format)
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect();
+            if local_gateway_dry_run {
+                vars.retain(|(name, _)| !is_gateway_managed_env_var(name));
+            }
+            let mut display_only_vars = Vec::new();
+            append_configured_env_excluding(
+                &profile_entry.env,
+                ToolEnvMode::NamesOnly,
+                &mut vars,
+                &mut display_only_vars,
+                skipped_env_names,
+            )?;
+            if local_gateway_dry_run {
+                display_only_vars.extend(ApiKeyGatewayHandle::dry_run_variable_names(api_format));
+            }
+            (vars, display_only_vars, None)
+        } else {
+            let api_key = profile_entry.resolve_api_key()?;
+            let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
+            let vars = collect_profile_vars_excluding(
+                profile_name,
+                api_key.expose_secret(),
+                base_url.expose_secret(),
+                &api_format,
+                profile_entry,
+                skipped_env_names,
+            )?;
+            (
+                vars,
+                Vec::new(),
+                Some(ParentGatewayCredentials { base_url, api_key }),
+            )
+        };
     let clear_vars = if configured_tool.is_some() {
         match api_format {
             config::ApiFormat::Anthropic => {
@@ -401,11 +597,35 @@ fn resolve_api_key_launch(
         Vec::new()
     };
     if let Some(tool) = configured_tool {
-        append_configured_env(&tool.env, tool_env_mode, &mut vars, &mut display_only_vars)?;
+        append_configured_env_excluding(
+            &tool.env,
+            tool_env_mode,
+            &mut vars,
+            &mut display_only_vars,
+            skipped_env_names,
+        )?;
     }
 
-    let logical_tool_name = configured_tool.map(|_| configured_tool_name.unwrap().to_string());
+    let logical_tool_name = configured_tool
+        .map(|_| configured_tool_name.unwrap().to_string())
+        .or_else(|| {
+            (configured_tool_name == Some("codex") && codex_config_active)
+                .then(|| "codex".to_string())
+        });
     let sidecar_plan = local_gateway.then_some(LaunchSidecarPlan::ApiKey { api_format });
+    let codex_provider_overrides = if codex_config_active
+        && configured_tool_name == Some("codex")
+        && api_format.supports_openai()
+        && !local_gateway
+    {
+        vars.iter()
+            .rev()
+            .find(|(name, _)| name == "OPENAI_BASE_URL")
+            .map(|(_, base_url)| chatgpt::codex_api_key_provider_overrides(base_url))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     Ok(LaunchResolution {
         env: LaunchEnv {
@@ -427,7 +647,9 @@ fn resolve_api_key_launch(
             tags: policy.tags.clone(),
         }),
         prepend_args: Vec::new(),
+        codex_provider_overrides,
         sidecar_plan,
+        codex_config: None,
     })
 }
 
@@ -443,15 +665,19 @@ fn is_gateway_managed_env_var(name: &str) -> bool {
     )
 }
 
-fn append_configured_env(
+fn append_configured_env_excluding(
     values: &std::collections::HashMap<String, crate::secrets::SecretSource>,
     mode: ToolEnvMode,
     vars: &mut Vec<(String, String)>,
     display_only_vars: &mut Vec<String>,
+    excluded_names: &[&str],
 ) -> Result<()> {
     let mut values: Vec<_> = values.iter().collect();
     values.sort_unstable_by_key(|(key, _)| key.as_str());
     for (key, value) in values {
+        if excluded_names.contains(&key.as_str()) {
+            continue;
+        }
         match mode {
             ToolEnvMode::Resolve => {
                 vars.push((key.clone(), value.resolve()?.expose_secret().to_string()));
@@ -589,6 +815,8 @@ pub async fn run_named_tool(
             allowed_models: &[],
             policy_name: None,
             require_litellm: false,
+            codex_config: None,
+            native_args: &args,
         },
         timeout,
     )
@@ -599,13 +827,16 @@ pub async fn run_named_tool(
         .cloned()
         .chain(args)
         .collect::<Vec<_>>();
+    validate_codex_config_args(&resolved, &args)?;
     if dry_run {
+        print_tool_config_dry_run(&resolved);
         print_sidecar_dry_run(&resolved);
         return run_command(&resolved.program, &args, &resolved.env, true);
     }
 
     let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None, None, None).await?
     else {
+        args.extend(resolved.codex_provider_overrides.iter().cloned());
         return run_command(&resolved.program, &args, &resolved.env, false);
     };
     args.extend(resolved.codex_provider_overrides.iter().cloned());
@@ -687,6 +918,26 @@ pub(crate) async fn start_launch_sidecar(
             )
             .await?;
             gateway.configure_env(&mut resolved.env);
+            if api_format.supports_openai()
+                && resolved.logical_tool_name.as_deref() == Some("codex")
+                && resolved
+                    .codex_config
+                    .as_ref()
+                    .is_some_and(CodexConfigSelection::is_active)
+            {
+                if let Some(base_url) = resolved
+                    .env
+                    .vars
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name == "OPENAI_BASE_URL")
+                    .map(|(_, value)| value.clone())
+                {
+                    resolved
+                        .codex_provider_overrides
+                        .extend(chatgpt::codex_api_key_provider_overrides(&base_url));
+                }
+            }
             scrub_parent_credential(&mut resolved.env, parent_gateway.api_key.expose_secret());
             gateway.into_server()
         }
@@ -730,6 +981,43 @@ pub(crate) fn print_sidecar_dry_run(resolved: &ResolvedRunLaunch) {
             }
         }
     }
+}
+
+pub(crate) fn print_tool_config_dry_run(resolved: &ResolvedRunLaunch) {
+    if let Some(selection) = &resolved.codex_config {
+        selection.print_dry_run();
+    }
+}
+
+pub(crate) fn validate_codex_config_args(
+    resolved: &ResolvedRunLaunch,
+    args: &[String],
+) -> Result<(), AixError> {
+    validate_codex_config_selection_args(resolved.codex_config.as_ref(), args)
+}
+
+fn validate_codex_config_selection_args(
+    selection: Option<&CodexConfigSelection>,
+    args: &[String],
+) -> Result<(), AixError> {
+    let conflicting_argument = selection
+        .is_some_and(CodexConfigSelection::is_active)
+        .then(|| {
+            args.iter().find_map(|argument| match argument.as_str() {
+                "--ignore-user-config" => Some("--ignore-user-config"),
+                "--oss" => Some("--oss"),
+                "--local-provider" => Some("--local-provider"),
+                "--remote" => Some("--remote"),
+                value if value.starts_with("--local-provider=") => Some("--local-provider"),
+                value if value.starts_with("--remote=") => Some("--remote"),
+                _ => None,
+            })
+        })
+        .flatten();
+    if let Some(argument) = conflicting_argument {
+        return Err(AixError::CodexConfigArgumentConflict { argument });
+    }
+    Ok(())
 }
 
 fn install_interrupt_handlers() -> Result<(Arc<AtomicBool>, Arc<AtomicBool>), AixError> {
@@ -1077,6 +1365,8 @@ clear_env = ["CODEX_API_KEY"]
             allowed_models: &[],
             policy_name: None,
             require_litellm: false,
+            codex_config: None,
+            native_args: &[],
         }
     }
 
@@ -1085,6 +1375,7 @@ clear_env = ["CODEX_API_KEY"]
         let context = LaunchContext {
             cfg: chatgpt_opencode_config(),
             profile_name: "personal".to_string(),
+            config_path: PathBuf::from("aix.toml"),
         };
         let profile = context.profile().unwrap();
         let resolved = chatgpt::resolve_tool_launch(
@@ -1121,6 +1412,7 @@ clear_env = ["CODEX_API_KEY"]
         let context = LaunchContext {
             cfg: chatgpt_opencode_config(),
             profile_name: "personal".to_string(),
+            config_path: PathBuf::from("aix.toml"),
         };
         let profile = context.profile().unwrap();
         let resolved = chatgpt::resolve_tool_launch(
@@ -1158,6 +1450,7 @@ clear_env = ["CODEX_API_KEY"]
         let context = LaunchContext {
             cfg,
             profile_name: "personal".to_string(),
+            config_path: PathBuf::from("aix.toml"),
         };
         let profile = context.profile().unwrap();
         let resolved = chatgpt::resolve_tool_launch(
@@ -1197,6 +1490,7 @@ access_token_env = "ACCESS_TOKEN"
         let context = LaunchContext {
             cfg: config,
             profile_name: "work".to_string(),
+            config_path: PathBuf::from("aix.toml"),
         };
         let profile = context.profile().unwrap();
         let resolution = resolve_api_key_launch(
@@ -1213,6 +1507,8 @@ access_token_env = "ACCESS_TOKEN"
                 allowed_models: &[],
                 policy_name: None,
                 require_litellm: false,
+                codex_config: None,
+                native_args: &[],
             },
             &context,
             profile,
@@ -1251,6 +1547,7 @@ access_token_env = "ACCESS_TOKEN"
             }),
             prepend_args: Vec::new(),
             codex_provider_overrides: Vec::new(),
+            codex_config: None,
             sidecar_plan: None,
         };
         let run_id = Uuid::parse_str("4b9a85df-51d9-49a4-9a17-69d7f0dc91f1").unwrap();

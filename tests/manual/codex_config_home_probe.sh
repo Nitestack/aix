@@ -46,6 +46,16 @@ run_codex "$probe/selected" features list >"$probe/selected.features" 2>"$probe/
 grep -Eq '^multi_agent[[:space:]]+stable[[:space:]]+true$' "$probe/global.features" || fail 'global config marker was not effective'
 grep -Eq '^multi_agent[[:space:]]+stable[[:space:]]+false$' "$probe/selected.features" || fail 'selected config marker was not effective'
 
+# A trusted project config remains native Codex behavior under the selected home.
+mkdir -p "$probe/project/.codex"
+printf 'features.multi_agent = true\n' >"$probe/project/.codex/config.toml"
+printf 'features.multi_agent = false\ncli_auth_credentials_store = "file"\n[projects."%s"]\ntrust_level = "trusted"\n' \
+	"$probe/project" >"$probe/selected/config.toml"
+(cd "$probe/project" && run_codex "$probe/selected" features list >"$probe/project.features" 2>"$probe/project.err") || fail 'trusted project config did not load under selected CODEX_HOME'
+grep -Eq '^multi_agent[[:space:]]+stable[[:space:]]+true$' "$probe/project.features" || fail 'native project config was not applied'
+(cd "$probe/cwd" && run_codex "$probe/selected" features list >"$probe/non-project.features" 2>"$probe/non-project.err") || fail 'selected user config did not load outside the project'
+grep -Eq '^multi_agent[[:space:]]+stable[[:space:]]+false$' "$probe/non-project.features" || fail 'selected user config changed outside the project'
+
 # Concurrent read-only starts with different homes keep their config values separate.
 mkdir -p "$probe/concurrent-a" "$probe/concurrent-b"
 write_feature_config "$probe/concurrent-a" true
@@ -101,6 +111,7 @@ run_codex "$probe/staged-home" login status >"$probe/shared-auth.out" 2>&1 || fa
 grep -q 'Logged in using an API key' "$probe/shared-auth.out" || fail 'linked auth.json was not recognized'
 
 printf 'PASS: CODEX_HOME replacement, --profile layering, and selected-home relative path\n'
+printf 'PASS: native trusted project configuration remains active under selected CODEX_HOME\n'
 printf 'PASS: concurrent read-only starts with different homes keep their config values separate\n'
 printf 'PASS: file auth is home-scoped; a synthetic auth.json symlink is visible to Codex\n'
 printf 'LIMIT: synthetic credential is not ChatGPT auth; sessions, history, keyring, and shared-state concurrency are not proven\n'

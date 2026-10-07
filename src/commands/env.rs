@@ -79,6 +79,17 @@ pub(crate) fn collect_profile_vars(
     api_format: &config::ApiFormat,
     profile: &config::Profile,
 ) -> Result<Vec<(String, String)>, AixError> {
+    collect_profile_vars_excluding(profile_name, api_key, base_url, api_format, profile, &[])
+}
+
+pub(crate) fn collect_profile_vars_excluding(
+    profile_name: &str,
+    api_key: &str,
+    base_url: &str,
+    api_format: &config::ApiFormat,
+    profile: &config::Profile,
+    excluded_names: &[&str],
+) -> Result<Vec<(String, String)>, AixError> {
     let mut vars: Vec<(String, String)> = collect_vars(profile_name, api_key, base_url, api_format)
         .into_iter()
         .map(|(key, value)| (key.to_string(), value))
@@ -86,7 +97,11 @@ pub(crate) fn collect_profile_vars(
 
     // Append profile values last so explicit profile configuration can override
     // a generated variable when a provider requires different naming or values.
-    let mut custom_vars: Vec<_> = profile.env.iter().collect();
+    let mut custom_vars: Vec<_> = profile
+        .env
+        .iter()
+        .filter(|(key, _)| !excluded_names.contains(&key.as_str()))
+        .collect();
     custom_vars.sort_unstable_by_key(|(key, _)| key.as_str());
     for (key, value) in custom_vars {
         vars.push((key.clone(), value.resolve()?.expose_secret().to_string()));

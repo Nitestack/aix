@@ -9,6 +9,7 @@ let
     {
       models ? { },
       workModels ? { },
+      workToolConfigs ? { },
       tools ? { },
       chatgpt ? false,
     }:
@@ -65,6 +66,7 @@ let
                           env = "AIX_TEST_API_KEY";
                         };
                         models = workModels;
+                        toolConfigs = workToolConfigs;
                       };
                     };
               };
@@ -119,6 +121,7 @@ in
       default = "company/model-default";
       aliases.fast = "company/model-fast";
     };
+    workToolConfigs.codex.configDir = "/profiles/work/codex";
   };
 
   legacy = render { };

@@ -413,6 +413,7 @@ mod tests {
             }),
             prepend_args: Vec::new(),
             codex_provider_overrides: Vec::new(),
+            codex_config: None,
             sidecar_plan: None,
         };
         super::super::sidecar_context(
