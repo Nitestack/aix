@@ -166,6 +166,8 @@ pub struct Profile {
 pub struct ProfileToolConfigs {
     #[serde(default)]
     pub codex: Option<CodexToolConfig>,
+    #[serde(default)]
+    pub opencode: Option<OpenCodeProfileConfig>,
 }
 
 /// A native Codex home selected for Codex launches using this profile.
@@ -175,6 +177,19 @@ pub struct CodexToolConfig {
     /// Existing directory supplied to Codex as `CODEX_HOME`. This also selects
     /// persistent Codex state; only codex-cli 0.157.0 has been checked here.
     pub config_dir: PathBuf,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OpenCodeProfileConfig {
+    pub config_file: Option<PathBuf>,
+    pub cli_config_file: Option<PathBuf>,
+}
+
+impl OpenCodeProfileConfig {
+    pub(crate) fn has_selection(&self) -> bool {
+        self.config_file.is_some() || self.cli_config_file.is_some()
+    }
 }
 
 #[derive(Debug)]
@@ -530,6 +545,19 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
     for name in sorted_names {
         let profile = &config.profiles[name];
         validate_models(&profile.models, &format!("profiles.{name}.models"))?;
+        if let Some(opencode) = &profile.tool_configs.opencode {
+            for path in [&opencode.config_file, &opencode.cli_config_file]
+                .into_iter()
+                .flatten()
+            {
+                if path.as_os_str().is_empty() {
+                    return Err(AixError::EmptyToolConfigPath {
+                        profile: name.to_string(),
+                        tool: "opencode",
+                    });
+                }
+            }
+        }
         match &profile.auth {
             ProfileAuth::ApiKey { .. }
                 if profile.base_url.is_none() && config.endpoint.base_url.is_none() =>
@@ -1009,6 +1037,88 @@ clear_env = ["OPENAI_API_KEY", "CODEX_API_KEY"]
             assert_eq!(binding.prepend_args, ["app-server", "--listen", "stdio://"]);
             assert_eq!(binding.clear_env, ["OPENAI_API_KEY", "CODEX_API_KEY"]);
         }
+    }
+
+    #[test]
+    fn profile_opencode_config_paths_parse_in_all_supported_formats() {
+        let configs = [
+            toml::from_str::<Config>(
+                r#"
+[endpoint]
+base_url = "https://example.com"
+[profiles.work]
+api_key = "key"
+[profiles.work.tool_configs.opencode]
+config_file = "../work/opencode.json"
+cli_config_file = "~/.config/opencode/cli.json"
+"#,
+            )
+            .unwrap(),
+            serde_yaml::from_str::<Config>(
+                "endpoint:\n  base_url: https://example.com\nprofiles:\n  work:\n    api_key: key\n    tool_configs:\n      opencode:\n        config_file: ../work/opencode.json\n        cli_config_file: ~/.config/opencode/cli.json\n",
+            )
+            .unwrap(),
+            serde_json::from_str::<Config>(
+                r#"{"endpoint":{"base_url":"https://example.com"},"profiles":{"work":{"api_key":"key","tool_configs":{"opencode":{"config_file":"../work/opencode.json","cli_config_file":"~/.config/opencode/cli.json"}}}}}"#,
+            )
+            .unwrap(),
+            json5::from_str::<Config>(
+                "{endpoint:{base_url:'https://example.com'},profiles:{work:{api_key:'key',tool_configs:{opencode:{config_file:'../work/opencode.json',cli_config_file:'~/.config/opencode/cli.json'}}}}}",
+            )
+            .unwrap(),
+        ];
+
+        for config in configs {
+            let opencode = config.profiles["work"]
+                .tool_configs
+                .opencode
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                opencode.config_file.as_deref(),
+                Some(Path::new("../work/opencode.json"))
+            );
+            assert_eq!(
+                opencode.cli_config_file.as_deref(),
+                Some(Path::new("~/.config/opencode/cli.json"))
+            );
+            validate(&config).unwrap();
+        }
+    }
+
+    #[test]
+    fn old_profile_configs_default_to_no_tool_specific_configuration() {
+        let config: Config = toml::from_str(
+            "[endpoint]\nbase_url='https://example.com'\n[profiles.work]\napi_key='key'\n",
+        )
+        .unwrap();
+        assert!(config.profiles["work"].tool_configs.opencode.is_none());
+    }
+
+    #[test]
+    fn profile_tool_config_rejects_unknown_tools_fields_and_empty_paths() {
+        for invalid in [
+            "[profiles.work.tool_configs.unknown]\nconfig_file='file'",
+            "[profiles.work.tool_configs.opencode]\ninline_config='{}'",
+        ] {
+            let source = format!(
+                "[endpoint]\nbase_url='https://example.com'\n[profiles.work]\napi_key='key'\n{invalid}\n"
+            );
+            assert!(
+                toml::from_str::<Config>(&source).is_err(),
+                "accepted {invalid}"
+            );
+        }
+
+        let config: Config = toml::from_str(
+            "[endpoint]\nbase_url='https://example.com'\n[profiles.work]\napi_key='key'\n[profiles.work.tool_configs.opencode]\nconfig_file=''\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            validate(&config),
+            Err(AixError::EmptyToolConfigPath { ref profile, tool: "opencode" })
+                if profile == "work"
+        ));
     }
 
     #[test]

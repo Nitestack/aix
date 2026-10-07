@@ -74,6 +74,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         explicit_profile,
         config_path,
         program: requested_program,
+        tool_args: command_args,
         allowed_models: &requested_models,
         policy_name: policy.as_deref(),
         require_litellm: lease,
@@ -161,6 +162,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     let mut child_args = resolved.prepend_args.clone();
     child_args.extend(command_args.iter().cloned());
     launch::validate_codex_config_args(&resolved, &child_args)?;
+    launch::prepare_opencode_launch(&mut resolved, &mut child_args, dry_run)?;
 
     if dry_run {
         launch::validate_executable(&resolved.program)?;
@@ -458,6 +460,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     if let Err(error) = store.write(&mut handle, &record) {
         eprintln!("{error:?}");
         if let Some(interruption) = interruption {
+            resolved.cleanup_opencode_config_stage();
             std::process::exit(interruption.exit_code());
         }
         if let Some(exit_code) = child_status
@@ -465,6 +468,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
             .and_then(std::process::ExitStatus::code)
             .filter(|code| *code != 0)
         {
+            resolved.cleanup_opencode_config_stage();
             std::process::exit(exit_code);
         }
         if let Some(error) = child_error {
@@ -474,6 +478,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     }
 
     if let Some(interruption) = interruption {
+        resolved.cleanup_opencode_config_stage();
         std::process::exit(interruption.exit_code());
     }
     if duration_expired {
@@ -492,9 +497,11 @@ pub async fn run(options: RunOptions) -> Result<()> {
     if let Some(status) = child_status {
         if let Some(exit_code) = status.code() {
             if exit_code != 0 {
+                resolved.cleanup_opencode_config_stage();
                 std::process::exit(exit_code);
             }
         } else {
+            resolved.cleanup_opencode_config_stage();
             std::process::exit(1);
         }
     } else if let Some(error) = child_error {

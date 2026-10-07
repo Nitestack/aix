@@ -289,6 +289,10 @@ pub enum Command {
     },
     /// Run an AI tool using configured launch wiring or the legacy credential-format fallback.
     /// Usage: aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]
+    /// For the logical `opencode` tool, profiles may select native
+    /// `tool_configs.opencode.config_file` and `cli_config_file` sources.
+    /// Profile-selected sources are checked against OpenCode v2.0.20; see the
+    /// Home Manager option descriptions for path and replacement behavior.
     #[command(external_subcommand)]
     Tool(Vec<String>),
 }

@@ -216,6 +216,18 @@ pub enum AixError {
     #[error("ChatGPT access-token environment variable CODEX_HOME conflicts with the selected Codex configuration directory")]
     CodexConfigEnvironmentConflict,
 
+    #[error("profile {profile:?} has an empty path for tool_configs.{tool}")]
+    EmptyToolConfigPath { profile: String, tool: &'static str },
+
+    #[error("OpenCode arguments must not select another config source or external server while profile-specific configuration is active")]
+    OpenCodeConfigArgumentConflict,
+
+    #[error("failed to stage profile-specific OpenCode configuration: {source}")]
+    OpenCodeConfigStage {
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("run policy names must not be empty")]
     EmptyRunPolicyName,
 
@@ -524,6 +536,8 @@ impl AixError {
             | Self::EmptyToolCommand { .. }
             | Self::CodexConfigArgumentConflict { .. }
             | Self::CodexConfigEnvironmentConflict
+            | Self::EmptyToolConfigPath { .. }
+            | Self::OpenCodeConfigArgumentConflict
             | Self::EmptyRunPolicyName
             | Self::InvalidRunPolicyBudget { .. }
             | Self::InvalidRunPolicyDuration { .. }
@@ -571,6 +585,7 @@ impl AixError {
             | Self::EnvFileLoad { .. }
             | Self::AuthStoreIo(_)
             | Self::AuthStoreMalformed => 3,
+            Self::OpenCodeConfigStage { .. } => 3,
             Self::GatewayError {
                 status: 401 | 403, ..
             }

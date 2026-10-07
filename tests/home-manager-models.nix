@@ -78,6 +78,12 @@ let
     assert builtins.all (assertion: assertion.assertion) evaluated.config.assertions;
     evaluated.config.xdg.configFile."aix/aix.toml".source;
 in
+assert
+  !(builtins.tryEval (
+    builtins.readFile (render {
+      workToolConfigs.unknown.configDir = "/tmp/unknown";
+    })
+  )).success;
 {
   configured = render {
     models = {
@@ -122,6 +128,10 @@ in
       aliases.fast = "company/model-fast";
     };
     workToolConfigs.codex.configDir = "/profiles/work/codex";
+    workToolConfigs.opencode = {
+      configFile = "/run/secrets/aix/opencode/work.json";
+      cliConfigFile = "../opencode/work-cli.json";
+    };
   };
 
   legacy = render { };

@@ -18,6 +18,8 @@ use uuid::Uuid;
 mod chatgpt;
 #[path = "launch/opencode.rs"]
 mod opencode;
+#[path = "launch/opencode_config.rs"]
+mod opencode_config;
 
 pub struct LaunchEnv {
     pub vars: Vec<(String, String)>,
@@ -59,6 +61,14 @@ pub struct ResolvedRunLaunch {
     pub codex_provider_overrides: Vec<String>,
     codex_config: Option<CodexConfigSelection>,
     sidecar_plan: Option<LaunchSidecarPlan>,
+    opencode_config_plan: Option<opencode_config::ProfileConfigPlan>,
+    _opencode_config_stage: Option<tempfile::TempDir>,
+}
+
+impl ResolvedRunLaunch {
+    pub(crate) fn cleanup_opencode_config_stage(&mut self) {
+        self._opencode_config_stage.take();
+    }
 }
 
 enum LaunchSidecarPlan {
@@ -131,6 +141,7 @@ struct LaunchRequest<'a> {
     config_path: Option<PathBuf>,
     format_override: Option<config::ApiFormat>,
     configured_tool_name: Option<&'a str>,
+    tool_args: &'a [String],
     tool_env_mode: ToolEnvMode,
     allowed_models: &'a [String],
     policy_name: Option<&'a str>,
@@ -212,6 +223,7 @@ pub fn resolve_launch_env(
         config_path,
         format_override,
         configured_tool_name: None,
+        tool_args: &[],
         tool_env_mode: ToolEnvMode::Resolve,
         allowed_models: &[],
         policy_name: None,
@@ -227,6 +239,7 @@ pub(crate) struct RunLaunchRequest<'a> {
     pub explicit_profile: Option<String>,
     pub config_path: Option<PathBuf>,
     pub program: &'a str,
+    pub tool_args: &'a [String],
     pub allowed_models: &'a [String],
     pub policy_name: Option<&'a str>,
     pub require_litellm: bool,
@@ -241,6 +254,7 @@ pub(crate) async fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<
         explicit_profile,
         config_path,
         program,
+        tool_args,
         allowed_models,
         policy_name,
         require_litellm,
@@ -255,6 +269,7 @@ pub(crate) async fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<
             config_path,
             format_override: None,
             configured_tool_name: Some(program),
+            tool_args,
             tool_env_mode: if dry_run {
                 ToolEnvMode::NamesOnly
             } else {
@@ -290,6 +305,21 @@ async fn resolve_tool_launch(
     validate_codex_config_selection_args(codex_config.as_ref(), request.native_args)?;
     request.codex_config = codex_config.clone();
     let tool_env_mode = request.tool_env_mode;
+    let opencode_config_plan = request
+        .configured_tool_name
+        .filter(|tool_name| *tool_name == "opencode")
+        .and(profile.tool_configs.opencode.as_ref())
+        .filter(|config| config.has_selection())
+        .map(|config| {
+            opencode_config::ProfileConfigPlan::resolve(
+                &context.profile_name,
+                &context.config_path,
+                config,
+            )
+        });
+    if let Some(plan) = &opencode_config_plan {
+        plan.validate_arguments(request.tool_args)?;
+    }
     let is_chatgpt = profile.auth.is_chatgpt();
     let mut resolution = if is_chatgpt {
         chatgpt::resolve_tool_launch(request, &context, profile, timeout).await?
@@ -326,6 +356,8 @@ async fn resolve_tool_launch(
         codex_provider_overrides: resolution.codex_provider_overrides,
         codex_config: resolution.codex_config,
         sidecar_plan: resolution.sidecar_plan,
+        opencode_config_plan,
+        _opencode_config_stage: None,
     })
 }
 
@@ -539,18 +571,25 @@ fn resolve_api_key_launch(
     let codex_config_active = codex_config
         .as_ref()
         .is_some_and(|selection| selection.is_active());
+    let opencode_profile_config_dry_run = dry_run
+        && configured_tool_name == Some("opencode")
+        && profile_entry
+            .tool_configs
+            .opencode
+            .as_ref()
+            .is_some_and(config::OpenCodeProfileConfig::has_selection);
     let skipped_env_names: &[&str] = if codex_config_active {
         &["CODEX_HOME"]
     } else {
         &[]
     };
     let (mut vars, mut display_only_vars, parent_gateway) =
-        if local_gateway_dry_run || codex_config_dry_run {
+        if local_gateway_dry_run || codex_config_dry_run || opencode_profile_config_dry_run {
             let mut vars: Vec<_> = collect_vars(profile_name, "", "", &api_format)
                 .into_iter()
                 .map(|(key, value)| (key.to_string(), value))
                 .collect();
-            if local_gateway_dry_run {
+            if local_gateway_dry_run || opencode_profile_config_dry_run {
                 vars.retain(|(name, _)| !is_gateway_managed_env_var(name));
             }
             let mut display_only_vars = Vec::new();
@@ -811,6 +850,7 @@ pub async fn run_named_tool(
             config_path,
             format_override: Some(fallback_format),
             configured_tool_name: Some(name),
+            tool_args: &args,
             tool_env_mode,
             allowed_models: &[],
             policy_name: None,
@@ -828,6 +868,7 @@ pub async fn run_named_tool(
         .chain(args)
         .collect::<Vec<_>>();
     validate_codex_config_args(&resolved, &args)?;
+    prepare_opencode_launch(&mut resolved, &mut args, dry_run)?;
     if dry_run {
         print_tool_config_dry_run(&resolved);
         print_sidecar_dry_run(&resolved);
@@ -837,7 +878,13 @@ pub async fn run_named_tool(
     let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None, None, None).await?
     else {
         args.extend(resolved.codex_provider_overrides.iter().cloned());
-        return run_command(&resolved.program, &args, &resolved.env, false);
+        let status = run_command_status(&resolved.program, &args, &resolved.env)?;
+        if !status.success() {
+            let exit_code = status.code().unwrap_or(1);
+            resolved.cleanup_opencode_config_stage();
+            std::process::exit(exit_code);
+        }
+        return Ok(());
     };
     args.extend(resolved.codex_provider_overrides.iter().cloned());
     let (interrupt_requested, terminated) = install_interrupt_handlers()?;
@@ -854,9 +901,11 @@ pub async fn run_named_tool(
         .await;
     let status = child_result?;
     if let Some(interruption) = interruption_reason(&interrupt_requested, &terminated) {
+        resolved.cleanup_opencode_config_stage();
         std::process::exit(interruption.exit_code());
     }
     if !status.success() {
+        resolved.cleanup_opencode_config_stage();
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
@@ -1069,6 +1118,18 @@ pub fn run_command(program: &str, args: &[String], env: &LaunchEnv, dry_run: boo
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
+    Ok(())
+}
+
+pub(crate) fn prepare_opencode_launch(
+    resolved: &mut ResolvedRunLaunch,
+    child_args: &mut Vec<String>,
+    dry_run: bool,
+) -> Result<(), AixError> {
+    let Some(mut plan) = resolved.opencode_config_plan.take() else {
+        return Ok(());
+    };
+    resolved._opencode_config_stage = plan.prepare(&mut resolved.env, child_args, dry_run)?;
     Ok(())
 }
 
@@ -1361,6 +1422,7 @@ clear_env = ["CODEX_API_KEY"]
             config_path: None,
             format_override: None,
             configured_tool_name: Some("opencode"),
+            tool_args: &[],
             tool_env_mode,
             allowed_models: &[],
             policy_name: None,
@@ -1503,6 +1565,7 @@ access_token_env = "ACCESS_TOKEN"
                 config_path: None,
                 format_override: None,
                 configured_tool_name: Some("opencode"),
+                tool_args: &[],
                 tool_env_mode: ToolEnvMode::Resolve,
                 allowed_models: &[],
                 policy_name: None,
@@ -1549,6 +1612,8 @@ access_token_env = "ACCESS_TOKEN"
             codex_provider_overrides: Vec::new(),
             codex_config: None,
             sidecar_plan: None,
+            opencode_config_plan: None,
+            _opencode_config_stage: None,
         };
         let run_id = Uuid::parse_str("4b9a85df-51d9-49a4-9a17-69d7f0dc91f1").unwrap();
         let run_id_string = run_id.to_string();

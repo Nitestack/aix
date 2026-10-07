@@ -125,6 +125,35 @@ let
     };
   };
 
+  opencodeProfileConfigType = lib.types.submodule {
+    options = {
+      configFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "~/.config/aix/opencode/work.json";
+        description = ''
+          Native OpenCode application config file for this profile. Absolute paths,
+          ~/ paths, and paths relative to the aix config file are supported. The
+          selected source replaces global application config; project config and
+          instructions remain native. The real-tool check is pinned to OpenCode
+          v2.0.20.
+        '';
+      };
+
+      cliConfigFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "~/.config/aix/opencode/work-cli.json";
+        description = ''
+          Native OpenCode cli.json file for this profile. Absolute paths, ~/ paths,
+          and paths relative to the aix config file are supported. It replaces only
+          global terminal configuration. The real-tool check is pinned to OpenCode
+          v2.0.20.
+        '';
+      };
+    };
+  };
+
   toolConfigType = lib.types.submodule {
     options = {
       command = lib.mkOption {
@@ -183,10 +212,18 @@ let
   };
 
   profileToolConfigsType = lib.types.submodule {
-    options.codex = lib.mkOption {
-      type = lib.types.nullOr codexToolConfigType;
-      default = null;
-      description = "Optional profile-specific native Codex home.";
+    options = {
+      codex = lib.mkOption {
+        type = lib.types.nullOr codexToolConfigType;
+        default = null;
+        description = "Optional profile-specific native Codex home.";
+      };
+
+      opencode = lib.mkOption {
+        type = lib.types.nullOr opencodeProfileConfigType;
+        default = null;
+        description = "Profile-specific native application and terminal configuration for the logical OpenCode tool.";
+      };
     };
   };
 
@@ -345,13 +382,44 @@ let
     // lib.optionalAttrs (hasModelConfig profile.models) {
       models = mkModelConfig profile.models;
     }
-    // lib.optionalAttrs (profile.toolConfigs.codex != null) {
-      tool_configs = {
-        codex = {
-          config_dir = profile.toolConfigs.codex.configDir;
+    //
+      lib.optionalAttrs
+        (
+          profile.toolConfigs.codex != null
+          || (
+            profile.toolConfigs.opencode != null
+            && (
+              profile.toolConfigs.opencode.configFile != null
+              || profile.toolConfigs.opencode.cliConfigFile != null
+            )
+          )
+        )
+        {
+          tool_configs =
+            lib.optionalAttrs (profile.toolConfigs.codex != null) {
+              codex = {
+                config_dir = profile.toolConfigs.codex.configDir;
+              };
+            }
+            //
+              lib.optionalAttrs
+                (
+                  profile.toolConfigs.opencode != null
+                  && (
+                    profile.toolConfigs.opencode.configFile != null
+                    || profile.toolConfigs.opencode.cliConfigFile != null
+                  )
+                )
+                {
+                  opencode =
+                    lib.optionalAttrs (profile.toolConfigs.opencode.configFile != null) {
+                      config_file = profile.toolConfigs.opencode.configFile;
+                    }
+                    // lib.optionalAttrs (profile.toolConfigs.opencode.cliConfigFile != null) {
+                      cli_config_file = profile.toolConfigs.opencode.cliConfigFile;
+                    };
+                };
         };
-      };
-    };
 
   mkEndpoint =
     ep:
@@ -564,7 +632,7 @@ in
             };
 
             toolConfigs = lib.mkOption {
-              description = "Profile-specific native tool configuration directories.";
+              description = "Native configuration selected by logical tool name for this profile.";
               default = { };
               type = profileToolConfigsType;
             };

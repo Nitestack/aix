@@ -415,6 +415,8 @@ mod tests {
             codex_provider_overrides: Vec::new(),
             codex_config: None,
             sidecar_plan: None,
+            opencode_config_plan: None,
+            _opencode_config_stage: None,
         };
         super::super::sidecar_context(
             &resolved,
@@ -600,6 +602,96 @@ mod tests {
         );
         assert!(config["providers"].get("openai").is_none());
         assert!(config.get("provider").is_none());
+    }
+
+    #[tokio::test]
+    async fn profile_selected_app_config_coexists_with_the_chatgpt_runtime_bridge() {
+        let root = TempDir::new().unwrap();
+        let source_dir = root.path().join("profile");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("opencode.json");
+        let source_contents = json!({
+            "$schema": "https://opencode.ai/config.json",
+            "providers": { "profile-provider": { "name": "Selected profile provider" } }
+        })
+        .to_string();
+        fs::write(&source, &source_contents).unwrap();
+        let config = crate::config::OpenCodeProfileConfig {
+            config_file: Some(source.clone()),
+            cli_config_file: None,
+        };
+        let mut plan = super::super::opencode_config::ProfileConfigPlan::resolve(
+            "personal",
+            &root.path().join("aix.toml"),
+            &config,
+        );
+        let mut env = LaunchEnv {
+            vars: vec![
+                (
+                    "XDG_CONFIG_HOME".to_string(),
+                    root.path()
+                        .join("xdg-config")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                (
+                    OPENCODE_CONFIG_ENV.to_string(),
+                    "inherited overlay".to_string(),
+                ),
+            ],
+            auth_vars: Vec::new(),
+            display_only_vars: Vec::new(),
+            clear_vars: Vec::new(),
+            remove_vars: Vec::new(),
+            profile_name: "personal".to_string(),
+        };
+        let mut args = vec![
+            "run".to_string(),
+            "--model".to_string(),
+            "gpt-6-luna".to_string(),
+        ];
+        let stage = plan.prepare(&mut env, &mut args, false).unwrap().unwrap();
+
+        assert_eq!(args, ["run", "--standalone", "--model", "gpt-6-luna"]);
+        assert!(env.clear_vars.contains(&OPENCODE_CONFIG_ENV.to_string()));
+        let stage_path = env
+            .vars
+            .iter()
+            .find(|(name, _)| name == "OPENCODE_CONFIG_DIR")
+            .map(|(_, value)| value)
+            .unwrap();
+        assert_eq!(stage_path, stage.path().to_string_lossy().as_ref());
+
+        let auth_dir = TempDir::new().unwrap();
+        let auth = auth_service(
+            &auth_dir,
+            Url::parse("https://auth.openai.com/api/accounts/oauth/token").unwrap(),
+            "profile-config-bridge-test-token",
+        );
+        let bridge = BridgeHandle::start_for_test(
+            launch_context(),
+            auth,
+            Url::parse("http://127.0.0.1:9/v1/").unwrap(),
+        )
+        .await
+        .unwrap();
+        bridge.configure_env(&mut env);
+
+        let inline = env
+            .vars
+            .iter()
+            .find(|(name, _)| name == OPENCODE_CONFIG_ENV)
+            .map(|(_, value)| value)
+            .unwrap();
+        let inline: Value = serde_json::from_str(inline).unwrap();
+        assert!(inline["providers"].get("aix-chatgpt").is_some());
+        assert!(inline["providers"].get("profile-provider").is_none());
+        let staged: Value =
+            serde_json::from_slice(&fs::read(stage.path().join("opencode.json")).unwrap()).unwrap();
+        assert!(staged["providers"].get("profile-provider").is_some());
+        assert_eq!(fs::read_to_string(source).unwrap(), source_contents);
+
+        bridge.stop().await;
     }
 
     #[tokio::test]

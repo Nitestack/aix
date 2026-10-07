@@ -112,6 +112,9 @@
             grep -Fxq 'fast = "company/model-fast"' ${homeManagerConfigs.configured}
             grep -Fxq '[profiles.work.tool_configs.codex]' ${homeManagerConfigs.configured}
             grep -Fxq 'config_dir = "/profiles/work/codex"' ${homeManagerConfigs.configured}
+            grep -Fxq '[profiles.work.tool_configs.opencode]' ${homeManagerConfigs.configured}
+            grep -Fxq 'config_file = "/run/secrets/aix/opencode/work.json"' ${homeManagerConfigs.configured}
+            grep -Fxq 'cli_config_file = "../opencode/work-cli.json"' ${homeManagerConfigs.configured}
             grep -Fxq '[tools.review]' ${homeManagerConfigs.configured}
             grep -Fxq 'command = "review-agent"' ${homeManagerConfigs.configured}
             grep -Fxq 'api_format = "both"' ${homeManagerConfigs.configured}
