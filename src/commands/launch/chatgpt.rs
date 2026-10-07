@@ -174,6 +174,7 @@ pub(super) async fn resolve_tool_launch(
         codex_provider_overrides: Vec::new(),
         sidecar_plan,
         codex_config: None,
+        pi_agent_config: None,
     })
 }
 

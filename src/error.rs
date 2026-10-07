@@ -127,6 +127,15 @@ pub enum AixError {
     #[error("model default in {scope} must be a non-empty model ID")]
     EmptyModelDefault { scope: String },
 
+    #[error("profiles.{profile}.tool_configs.pi.agent_dir must not be empty")]
+    EmptyPiAgentDir { profile: String },
+
+    #[error("Pi agent configuration selection conflicts with explicit {option}; remove it so the selected profile can control the Pi agent directory and connection")]
+    PiAgentConfigArgumentConflict { option: &'static str },
+
+    #[error("profile-specific Pi agent configuration requires API-key profile authentication; ChatGPT authentication is not supported")]
+    PiAgentConfigChatGptUnsupported,
+
     #[error("model alias name in {scope} must not be empty")]
     EmptyModelAliasName { scope: String },
 
@@ -523,6 +532,9 @@ impl AixError {
             | Self::AskStdinRead { .. }
             | Self::AskFileRead { .. }
             | Self::EmptyModelDefault { .. }
+            | Self::EmptyPiAgentDir { .. }
+            | Self::PiAgentConfigArgumentConflict { .. }
+            | Self::PiAgentConfigChatGptUnsupported
             | Self::EmptyModelAliasName { .. }
             | Self::EmptyModelAliasTarget { .. }
             | Self::AmbiguousSecretSource { .. }

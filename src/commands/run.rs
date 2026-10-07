@@ -163,6 +163,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     child_args.extend(command_args.iter().cloned());
     launch::validate_codex_config_args(&resolved, &child_args)?;
     launch::prepare_opencode_launch(&mut resolved, &mut child_args, dry_run)?;
+    resolved.validate_tool_arguments(&child_args)?;
 
     if dry_run {
         launch::validate_executable(&resolved.program)?;
@@ -386,6 +387,39 @@ pub async fn run(options: RunOptions) -> Result<()> {
             }
         }
     }
+
+    let tool_arguments = resolved
+        .prepare_tool_config()
+        .and_then(|()| resolved.add_tool_runtime_arguments(&child_args));
+    child_args = match tool_arguments {
+        Ok(args) => args,
+        Err(error) => {
+            if let Some(sidecar) = active_sidecar.take() {
+                sidecar.stop().await;
+            }
+            let mut cleanup_confirmed = true;
+            if let Some(active) = active_lease.as_mut() {
+                active.record.cleanup_status =
+                    run_lease::revoke_lease(&active.client, &active.key).await;
+                cleanup_confirmed = active.record.cleanup_status == LeaseCleanupStatus::Revoked;
+                if !cleanup_confirmed {
+                    run_lease::warn_unconfirmed_cleanup(
+                        &active.record.key_alias,
+                        &active.record.cleanup_status,
+                    );
+                }
+                record.lease = Some(active.record.clone());
+            }
+            finish_prelaunch_failure(&mut record);
+            if let Err(write_error) = store.write(&mut handle, &record) {
+                eprintln!("{write_error:?}");
+            }
+            if !cleanup_confirmed {
+                return Err(AixError::LeaseCleanupFailed.into());
+            }
+            return Err(error);
+        }
+    };
 
     let gateway_managed = active_sidecar.is_some();
     child_args.extend(resolved.codex_provider_overrides.iter().cloned());

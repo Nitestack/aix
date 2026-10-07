@@ -17,12 +17,12 @@ from pi_agent_config_replacement_support import (
     find_request,
     inspect_settings_and_keys,
     list_models,
+    native_project_session_dir,
     request_text,
     require,
     run_aix,
     run_process,
-    run_pi_from_aix_shell,
-    run_staged_pi,
+    run_configured_pi,
     sha256,
     tool_names,
 )
@@ -33,15 +33,11 @@ def verify_profile_configuration(proof: ProofContext) -> dict[Path, str]:
     aix_config = proof.aix_config
     profile_a_agent = proof.profile_a_agent
     profile_b_agent = proof.profile_b_agent
-    normal_session_dir = proof.normal_session_dir
     project = proof.project
     env = proof.env
     pi = proof.pi
     normal_agent = proof.normal_agent
-    stage_root = proof.stage_root
-    profile_a_url = proof.profile_a_url
     pi_package = proof.pi_package
-    wrapper = proof.wrapper
     selected_env = json.loads(
         run_process(
             [
@@ -60,26 +56,22 @@ def verify_profile_configuration(proof: ProofContext) -> dict[Path, str]:
         ).stdout
     )
     require(
-        selected_env.get("PI_CODING_AGENT_DIR") == str(profile_a_agent)
-        and selected_env.get("PI_CODING_AGENT_SESSION_DIR") == str(normal_session_dir),
-        f"aix did not select the profile config and shared session dirs: {selected_env}",
+        selected_env.get("PI_CODING_AGENT_DIR")
+        == str(proof.root / "profile-a-env-agent"),
+        f"aix env did not preserve the normal profile environment: {selected_env}",
     )
 
     # Prove the default global directory and each selected profile are distinct.
     global_models = list_models(pi, normal_agent, project, "normal-only-model")
-    selected_models = run_staged_pi(
+    selected_models = run_configured_pi(
         proof,
-        source_agent=profile_a_agent,
         profile="profile_a",
         args=["--list-models", "profile-a-model"],
-        api_key=PROFILE_A_KEY,
     ).stdout
-    leaked_models = run_staged_pi(
+    leaked_models = run_configured_pi(
         proof,
-        source_agent=profile_a_agent,
         profile="profile_a",
         args=["--list-models", "normal-only-model"],
-        api_key=PROFILE_A_KEY,
     ).stdout
     require("normal-only-model" in global_models, "normal fixture model was not found")
     require(
@@ -123,28 +115,15 @@ def verify_profile_configuration(proof: ProofContext) -> dict[Path, str]:
         "untrusted project settings were loaded",
     )
 
-    auth_result = run_staged_pi(
+    auth_result = run_configured_pi(
         proof,
-        source_agent=profile_a_agent,
         profile="profile_a",
         args=["auth", "print-api-key", "--provider", "openai"],
-        api_key=PROFILE_A_KEY,
     )
     require(
         auth_result.stdout.strip() == SAVED_AUTH_KEY,
         "saved auth was not shared into profile A",
     )
-    require(
-        (profile_a_agent / "auth.json").resolve()
-        == (normal_agent / "auth.json").resolve(),
-        "profile A auth does not point at the existing shared auth file",
-    )
-    require(
-        (profile_a_agent / "trust.json").resolve()
-        == (normal_agent / "trust.json").resolve(),
-        "profile A trust decisions are not shared with the original Pi home",
-    )
-
     source_paths = (
         normal_agent / "settings.json",
         normal_agent / "models.json",
@@ -177,14 +156,14 @@ def verify_sessions_and_launches(
     proof: ProofContext, source_hashes: dict[Path, str]
 ) -> None:
     verify_session_preservation(proof)
+    verify_project_session_dir_setting(proof)
     verify_launch_modes(proof)
-    verify_native_provider_switch_blocker(proof)
+    verify_native_provider_switch_allowed(proof)
     verify_concurrent_profiles(proof, source_hashes)
     verify_selector_guards(proof)
 
 
 def verify_session_preservation(proof: ProofContext) -> None:
-    profile_a_agent = proof.profile_a_agent
     normal_agent = proof.normal_agent
     normal_session_dir = proof.normal_session_dir
     profile_a_server = proof.profile_a_server
@@ -222,9 +201,8 @@ def verify_session_preservation(proof: ProofContext) -> None:
         "normal Pi session was not saved in the original store",
     )
 
-    direct_resume = run_staged_pi(
+    direct_resume = run_configured_pi(
         proof,
-        source_agent=profile_a_agent,
         profile="profile_a",
         args=[
             "--continue",
@@ -234,8 +212,6 @@ def verify_session_preservation(proof: ProofContext) -> None:
             "--approve",
             "profile-a-direct-resume-marker",
         ],
-        api_key=PROFILE_A_KEY,
-        session_dir=normal_session_dir,
     )
     direct_resume_request = find_request(
         profile_a_server, "profile-a-direct-resume-marker"
@@ -301,51 +277,80 @@ def verify_launch_modes(proof: ProofContext) -> None:
         "aix pi did not keep the profile connection authoritative",
     )
 
-    executed = run_aix_for_profile(
-        "profile_a",
-        "--provider",
-        "openai",
-        "--model",
-        "openai/profile-a-model",
-        "--print",
-        "--approve",
-        "profile-a-exec-marker",
-        mode="exec",
-    )
-    require("reply:profile-a" in executed.stdout, "aix exec launch failed")
-    exec_request = find_request(profile_a_server, "profile-a-exec-marker")
-    require(
-        exec_request["authorization"] == f"Bearer {PROFILE_A_KEY}",
-        "aix exec did not keep the profile connection authoritative",
-    )
-
-    shell_launch = run_pi_from_aix_shell(
-        proof,
+    run_request = run_aix_for_profile(
         "profile_a",
         "--model",
         "openai/profile-a-model",
         "--print",
         "--approve",
-        "profile-a-shell-marker",
+        "profile-a-run-marker",
+        mode="run",
     )
-    require("reply:profile-a" in shell_launch.stdout, "aix shell launch failed")
-    shell_request = find_request(profile_a_server, "profile-a-shell-marker")
+    require("reply:profile-a" in run_request.stdout, "aix run -- pi launch failed")
+    launched_request = find_request(profile_a_server, "profile-a-run-marker")
     require(
-        shell_request["authorization"] == f"Bearer {PROFILE_A_KEY}",
-        "aix shell did not keep the profile connection authoritative",
+        launched_request["authorization"] == f"Bearer {PROFILE_A_KEY}",
+        "aix run -- pi did not keep the profile connection authoritative",
     )
 
 
-def verify_native_provider_switch_blocker(proof: ProofContext) -> None:
-    profile_a_agent = proof.profile_a_agent
-    auth_env = proof.env.copy()
-    auth_env["PI_CODING_AGENT_DIR"] = str(profile_a_agent)
-    auth_env.pop("PI_CODING_AGENT_SESSION_DIR", None)
+def verify_project_session_dir_setting(proof: ProofContext) -> None:
+    project = proof.root / "project-session-dir"
+    project_config = project / ".pi" / "settings.json"
+    project_config.parent.mkdir(parents=True)
+    project_config.write_text(json.dumps({"sessionDir": "project-sessions"}))
+    custom_sessions = project / "project-sessions"
+    default_sessions = native_project_session_dir(proof.normal_agent, project)
+
+    result = run_process(
+        [
+            proof.aix,
+            "--config",
+            str(proof.aix_config),
+            "--profile",
+            "profile_a",
+            "--non-interactive",
+            "pi",
+            "--",
+            "--print",
+            "--no-approve",
+            "--model",
+            "openai/profile-a-model",
+            "project-session-dir-marker",
+        ],
+        cwd=project,
+        env=proof.env,
+    )
+    require("reply:profile-a" in result.stdout, "project sessionDir launch failed")
+    require(
+        list(custom_sessions.glob("*.jsonl")),
+        "Pi ignored the project settings.json sessionDir value",
+    )
+    require(
+        not list(default_sessions.glob("*.jsonl")),
+        "Pi wrote the project session to the default agent session directory",
+    )
+
+
+def verify_native_provider_switch_allowed(proof: ProofContext) -> None:
     run_aix_for_profile = partial(run_aix, proof)
     saved_auth = run_process(
-        [proof.pi, "auth", "print-api-key", "--provider", "anthropic"],
+        [
+            proof.aix,
+            "--config",
+            str(proof.aix_config),
+            "--profile",
+            "profile_a",
+            "--non-interactive",
+            "pi",
+            "--",
+            "auth",
+            "print-api-key",
+            "--provider",
+            "anthropic",
+        ],
         cwd=proof.project,
-        env=auth_env,
+        env=proof.env,
     )
     require(
         saved_auth.stdout.strip() == SAVED_ANTHROPIC_KEY,
@@ -359,7 +364,7 @@ def verify_native_provider_switch_blocker(proof: ProofContext) -> None:
         "--no-session",
         "--model",
         "openai/profile-a-model",
-        mode="exec",
+        mode="tool",
         input_text=(
             '{"id":"switch","type":"set_model",'
             '"provider":"anthropic","modelId":"saved-provider-model"}\n'
@@ -373,12 +378,12 @@ def verify_native_provider_switch_blocker(proof: ProofContext) -> None:
     response = next((item for item in responses if item.get("id") == "switch"), None)
     require(
         response is not None and response.get("success") is True,
-        "expected Pi RPC set_model to reproduce the provider-switch blocker",
+        "expected Pi RPC set_model to preserve native provider switching",
     )
     require(
         response["data"].get("provider") == "anthropic"
         and response["data"].get("baseUrl") == "http://saved-provider.invalid/v1",
-        f"Pi RPC did not switch to the configured secondary endpoint: {response}",
+        f"Pi RPC did not switch to the native secondary endpoint: {response}",
     )
 
 
@@ -491,47 +496,34 @@ def verify_concurrent_profiles(
 
 def verify_selector_guards(proof: ProofContext) -> None:
     env = proof.env
-    profile_a_agent = proof.profile_a_agent
-    profile_a_url = proof.profile_a_url
-    stage_root = proof.stage_root
-    pi = proof.pi
     root = proof.root
     project = proof.project
-    wrapper = proof.wrapper
-    # The wrapper's selector guard is tested without a gateway call. Run it
-    # directly with the AIX-selected environment, as an explicit API-key
-    # argument must never override the profile credential.
-    reject_env = env.copy()
-    reject_env.update(
-        {
-            "PI_CODING_AGENT_DIR": str(profile_a_agent),
-            "OPENAI_API_KEY": PROFILE_A_KEY,
-            "OPENAI_BASE_URL": f"{profile_a_url}/v1",
-            "AIX_PROFILE": "profile_a",
-            "AIX_PI_STAGE_ROOT": str(stage_root),
-            "AIX_PI_BINARY": pi,
-        }
-    )
+    # The production launcher rejects arguments that contradict its owned
+    # directory and credential selectors. Other native Pi options remain native.
     for conflict_args, conflict_name in (
         (["--api-key", "synthetic-contradictory-key"], "API key"),
         (["--api-key=synthetic-contradictory-key"], "API key"),
         (["--agent-dir", str(root / "other-agent")], "agent directory"),
-        (["--models", "openai/*"], "model-cycle selector"),
-        (["--extension", str(root / "other-provider.js")], "extension source"),
-        (["-e", str(root / "other-provider.js")], "extension source"),
-        (["--provider", "anthropic"], "provider"),
-        (["--model", "anthropic/claude"], "model provider"),
-        (["--model", "openai/unconfigured-model"], "model outside profile config"),
     ):
         rejected = subprocess.run(
-            [str(wrapper), *conflict_args],
+            [
+                proof.aix,
+                "--config",
+                str(proof.aix_config),
+                "--profile",
+                "profile_a",
+                "--non-interactive",
+                "pi",
+                "--",
+                *conflict_args,
+            ],
             cwd=project,
-            env=reject_env,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
         )
         require(
-            rejected.returncode == 64,
-            f"contradictory native {conflict_name} argument was not rejected",
+            rejected.returncode != 0 and "conflicts with explicit" in rejected.stderr,
+            f"contradictory native {conflict_name} argument was not rejected: {rejected.stderr}",
         )

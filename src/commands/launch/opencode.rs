@@ -417,6 +417,7 @@ mod tests {
             sidecar_plan: None,
             opencode_config_plan: None,
             _opencode_config_stage: None,
+            pi_agent_config: None,
         };
         super::super::sidecar_context(
             &resolved,
