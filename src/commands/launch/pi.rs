@@ -155,8 +155,18 @@ impl PiAgentConfigLaunch {
             eyre!("Pi profile configuration requires {key_name}, but the launch environment did not provide it")
         })?;
 
-        let mut result = Vec::with_capacity(args.len() + 2);
+        let has_model_selector = args
+            .iter()
+            .take_while(|arg| arg.as_str() != "--")
+            .any(|arg| matches!(arg.as_str(), "--model" | "--provider" | "--models"));
+        let mut result = Vec::with_capacity(args.len() + 4);
         result.extend(["--api-key".to_string(), api_key]);
+        if !has_model_selector {
+            // Pi 1.0.4 requires a CLI model selection alongside --api-key.
+            // A wildcard scope keeps Pi's defaultModel first-choice behavior
+            // while leaving its available model set unrestricted.
+            result.extend(["--models".to_string(), "*".to_string()]);
+        }
         result.extend_from_slice(args);
         Ok(result)
     }

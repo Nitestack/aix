@@ -261,6 +261,7 @@ def verify_session_preservation(proof: ProofContext) -> None:
 def verify_launch_modes(proof: ProofContext) -> None:
     profile_a_server = proof.profile_a_server
     run_aix_for_profile = partial(run_aix, proof)
+    verify_default_model_launches(proof)
     named = run_aix_for_profile(
         "profile_a",
         "--model",
@@ -292,6 +293,35 @@ def verify_launch_modes(proof: ProofContext) -> None:
         launched_request["authorization"] == f"Bearer {PROFILE_A_KEY}",
         "aix run -- pi did not keep the profile connection authoritative",
     )
+
+
+def verify_default_model_launches(proof: ProofContext) -> None:
+    run_aix_for_profile = partial(run_aix, proof)
+    for mode, marker in (
+        ("tool", "profile-a-default-model-named-marker"),
+        ("run", "profile-a-default-model-run-marker"),
+    ):
+        result = run_aix_for_profile(
+            "profile_a",
+            "--print",
+            "--approve",
+            marker,
+            mode=mode,
+        )
+        require(
+            "reply:profile-a" in result.stdout,
+            f"Pi did not launch with settings.json defaultModel via aix {mode}",
+        )
+        request = find_request(proof.profile_a_server, marker)
+        require(
+            request["body"].get("model") == "profile-a-model",
+            f"Pi did not preserve the profile's native default model via aix {mode}: "
+            f"{request['body'].get('model')!r}",
+        )
+        require(
+            request["authorization"] == f"Bearer {PROFILE_A_KEY}",
+            f"aix {mode} default-model launch did not use the profile key",
+        )
 
 
 def verify_project_session_dir_setting(proof: ProofContext) -> None:

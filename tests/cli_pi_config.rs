@@ -209,6 +209,40 @@ fn configured_tool_run_uses_profile_pi_directory_and_custom_command() {
 
 #[test]
 #[cfg(unix)]
+fn profile_key_launch_without_model_keeps_pi_default_model_available() {
+    let root = assert_fs::TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let source = root.path().join("profile-agent");
+    fs::create_dir_all(&source).unwrap();
+    let probe = script(
+        root.path(),
+        "pi-default-model-wrapper",
+        "printf 'args=%s\\n' \"$*\"",
+    );
+    let config = config_file(&pi_config(&source, &probe, ""));
+    let state = root.path().join("aix-state");
+
+    for launch_args in [vec!["pi"], vec!["run", "--", "pi"]] {
+        let output = cmd()
+            .env("HOME", &home)
+            .env("AIX_STATE_DIR", &state)
+            .env("AIX_CONFIG", config.path())
+            .args(["--profile", "work", "--non-interactive"])
+            .args(&launch_args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "args=--api-key profile-key --models *\n"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
 fn unavailable_directory_warns_and_preserves_existing_environment_selectors() {
     let root = assert_fs::TempDir::new().unwrap();
     let home = root.path().join("home");

@@ -108,6 +108,13 @@ through both `aix pi -- ...` and `aix run -- pi ...`; simultaneous runs reach
 separate local gateways with their own profile keys and model configuration. The
 read-only source files remain byte-for-byte unchanged.
 
+Pi 1.0.4 requires `--api-key` to accompany a CLI model selector, even when
+`settings.json` already defines a default model. If a profile-configured launch has
+no `--model`, `--provider`, or `--models` argument, aix adds `--models '*'`. Pi
+still selects the configured default model first, and the wildcard keeps the full
+available model set in scope. The pinned proof checks this behavior through both
+`aix pi` and `aix run -- pi`.
+
 Native provider switching is deliberately allowed. With a synthetic saved
 Anthropic credential and model in the existing Pi configuration, an RPC
 `set_model` switches to that provider and returns its original
