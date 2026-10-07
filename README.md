@@ -457,6 +457,29 @@ programs.aix.tools.review = {
 };
 ```
 
+#### Profile-specific Codex configuration
+
+Select a separate Codex home for launches using a named aix profile:
+
+```toml
+[profiles.work.tool_configs.codex]
+config_dir = "~/.config/codex/work"
+```
+
+The directory must already exist and be accessible. Absolute paths and `~` are
+supported; relative paths are resolved from the aix configuration file. If the
+directory is unavailable, aix warns and launches Codex with its standard
+configuration instead. The equivalent Home Manager option is
+`programs.aix.profiles.work.toolConfigs.codex.configDir`.
+
+This setting selects Codex's `CODEX_HOME`. That replaces the user configuration
+directory, but `CODEX_HOME` also selects Codex's persistent state. The selected
+home does not automatically share saved authentication, sessions, or history
+from the standard Codex home. You may need to sign in again, and your existing
+sessions and history will not automatically appear there. aix does not currently
+share or migrate state between Codex homes. This behavior was checked with
+`codex-cli 0.157.0`; other versions are unverified.
+
 #### Codex app-server with ChatGPT plan authentication
 
 OpenAI documents ChatGPT-plan token sharing for Codex app-server using a custom
