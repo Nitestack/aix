@@ -389,6 +389,7 @@ api_format = "openai"
 
     let output = cmd()
         .env("AIX_CONFIG", &config)
+        .env("AIX_STATE_DIR", dir.path().join("state"))
         .env("CODEX_HOME", "/ambient/codex-home")
         .args([
             "run",
