@@ -6,7 +6,6 @@ import hashlib
 import http.server
 import json
 import os
-import shlex
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -108,8 +107,6 @@ class ProofContext:
     profile_b_server: MockOpenAIServer
     profile_a_url: str
     profile_b_url: str
-    stage_root: Path
-    wrapper: Path
     aix_config: Path
     env: dict[str, str]
 
@@ -300,8 +297,6 @@ def run_aix(
         launch_args = ["run", "--", "pi", *pi_args]
     elif mode == "tool":
         launch_args = ["pi", "--", *pi_args]
-    elif mode == "exec":
-        launch_args = ["exec", "--", str(proof.wrapper), *pi_args]
     else:
         raise ValueError(f"unknown aix launch mode: {mode}")
     return run_process(
@@ -320,35 +315,6 @@ def run_aix(
     )
 
 
-def run_pi_from_aix_shell(
-    proof: ProofContext, profile: str, *pi_args: str
-) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        [
-            proof.aix,
-            "--config",
-            str(proof.aix_config),
-            "--profile",
-            profile,
-            "--non-interactive",
-            "shell",
-        ],
-        cwd=proof.project,
-        env=proof.env,
-        input=shlex.join(["pi", *pi_args]) + "\n",
-        capture_output=True,
-        text=True,
-        timeout=90,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"aix shell launch failed ({result.returncode})\n"
-            f"stdout:\n{result.stdout[-3000:]}\nstderr:\n{result.stderr[-3000:]}"
-        )
-    return result
-
-
 def list_models(pi: str, agent_dir: Path, cwd: Path, query: str) -> str:
     env = os.environ.copy()
     env.update(
@@ -363,36 +329,13 @@ def list_models(pi: str, agent_dir: Path, cwd: Path, query: str) -> str:
     return run_process([pi, "--list-models", query], cwd=cwd, env=env).stdout
 
 
-def run_staged_pi(
+def run_configured_pi(
     proof: ProofContext,
     *,
-    source_agent: Path,
     profile: str,
     args: list[str],
-    api_key: str,
-    session_dir: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    gateway_url = {
-        "profile_a": proof.profile_a_url,
-        "profile_b": proof.profile_b_url,
-    }[profile]
-    env = proof.env.copy()
-    env.update(
-        {
-            "PI_CODING_AGENT_DIR": str(source_agent),
-            "OPENAI_API_KEY": api_key,
-            "OPENAI_BASE_URL": f"{gateway_url}/v1",
-            "AIX_PROFILE": profile,
-            "AIX_PI_STAGE_ROOT": str(proof.stage_root),
-            "AIX_PI_BINARY": proof.pi,
-            "PI_OFFLINE": "1",
-            "PI_TELEMETRY": "0",
-            "PI_SKIP_VERSION_CHECK": "1",
-        }
-    )
-    if session_dir is not None:
-        env["PI_CODING_AGENT_SESSION_DIR"] = str(session_dir)
-    return run_process([str(proof.wrapper), *args], cwd=proof.project, env=env)
+    return run_aix(proof, profile, *args, mode="tool")
 
 
 def inspect_settings_and_keys(
@@ -467,11 +410,7 @@ def make_aix_config(
     aix_profile_b_url: str,
     profile_a_agent: Path,
     profile_b_agent: Path,
-    normal_session_dir: Path,
     wrapper: Path,
-    stage_root: Path,
-    shim_path: str,
-    pi: str,
 ) -> None:
     quote = json.dumps
     path.write_text(
@@ -484,27 +423,28 @@ def make_aix_config(
                 'api_key = { env = "AIX_TEST_PROFILE_A_KEY" }',
                 f"base_url = {quote(aix_profile_a_url)}",
                 "",
+                "[profiles.profile_a.tool_configs.pi]",
+                f"agent_dir = {quote(str(profile_a_agent))}",
+                "",
                 "[profiles.profile_a.env]",
-                f"PI_CODING_AGENT_DIR = {quote(str(profile_a_agent))}",
-                f"PI_CODING_AGENT_SESSION_DIR = {quote(str(normal_session_dir))}",
-                f"AIX_PI_STAGE_ROOT = {quote(str(stage_root))}",
-                f"AIX_PI_BINARY = {quote(pi)}",
-                f"PATH = {quote(shim_path)}",
+                f"PI_CODING_AGENT_DIR = {quote(str(path.parent / 'profile-a-env-agent'))}",
                 "",
                 "[profiles.profile_b]",
                 'api_key = { env = "AIX_TEST_PROFILE_B_KEY" }',
                 f"base_url = {quote(aix_profile_b_url)}",
                 "",
+                "[profiles.profile_b.tool_configs.pi]",
+                f"agent_dir = {quote(str(profile_b_agent))}",
+                "",
                 "[profiles.profile_b.env]",
-                f"PI_CODING_AGENT_DIR = {quote(str(profile_b_agent))}",
-                f"PI_CODING_AGENT_SESSION_DIR = {quote(str(normal_session_dir))}",
-                f"AIX_PI_STAGE_ROOT = {quote(str(stage_root))}",
-                f"AIX_PI_BINARY = {quote(pi)}",
-                f"PATH = {quote(shim_path)}",
+                f"PI_CODING_AGENT_DIR = {quote(str(path.parent / 'profile-b-env-agent'))}",
                 "",
                 "[tools.pi]",
                 f"command = {quote(str(wrapper))}",
                 'api_format = "openai"',
+                "",
+                "[tools.pi.env]",
+                f"PI_CODING_AGENT_DIR = {quote(str(path.parent / 'tool-env-agent'))}",
                 "",
             ]
         )

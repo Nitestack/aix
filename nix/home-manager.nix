@@ -154,6 +154,22 @@ let
     };
   };
 
+  piToolConfigType = lib.types.submodule {
+    options = {
+      agentDir = lib.mkOption {
+        type = lib.types.str;
+        example = "~/.config/pi/work-agent";
+        description = ''
+          Existing native Pi agent configuration directory. Accepts absolute,
+          home-relative (~), or config-file-relative paths. A string avoids
+          copying read-only Nix inputs into the store as runtime files.
+          API-key profiles only; ChatGPT profiles are rejected. Runtime behavior
+          is verified with Pi Coding Agent 1.0.4.
+        '';
+      };
+    };
+  };
+
   toolConfigType = lib.types.submodule {
     options = {
       command = lib.mkOption {
@@ -223,6 +239,12 @@ let
         type = lib.types.nullOr opencodeProfileConfigType;
         default = null;
         description = "Profile-specific native application and terminal configuration for the logical OpenCode tool.";
+      };
+
+      pi = lib.mkOption {
+        type = lib.types.nullOr piToolConfigType;
+        default = null;
+        description = "Optional native configuration for the logical Pi coding-agent tool.";
       };
     };
   };
@@ -383,6 +405,7 @@ let
               || profile.toolConfigs.opencode.cliConfigFile != null
             )
           )
+          || profile.toolConfigs.pi != null
         )
         {
           tool_configs =
@@ -408,7 +431,12 @@ let
                     // lib.optionalAttrs (profile.toolConfigs.opencode.cliConfigFile != null) {
                       cli_config_file = profile.toolConfigs.opencode.cliConfigFile;
                     };
-                };
+                }
+            // lib.optionalAttrs (profile.toolConfigs.pi != null) {
+              pi = {
+                agent_dir = profile.toolConfigs.pi.agentDir;
+              };
+            };
         };
 
   mkEndpoint =

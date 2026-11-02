@@ -168,6 +168,8 @@ pub struct ProfileToolConfigs {
     pub codex: Option<CodexToolConfig>,
     #[serde(default)]
     pub opencode: Option<OpenCodeProfileConfig>,
+    #[serde(default)]
+    pub pi: Option<PiToolConfig>,
 }
 
 /// A native Codex home selected for Codex launches using this profile.
@@ -190,6 +192,13 @@ impl OpenCodeProfileConfig {
     pub(crate) fn has_selection(&self) -> bool {
         self.config_file.is_some() || self.cli_config_file.is_some()
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PiToolConfig {
+    /// Native Pi coding-agent directory selected for launches using the logical `pi` tool.
+    pub agent_dir: PathBuf,
 }
 
 #[derive(Debug)]
@@ -547,6 +556,16 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
                 }
             }
         }
+        if profile
+            .tool_configs
+            .pi
+            .as_ref()
+            .is_some_and(|pi| pi.agent_dir.as_os_str().is_empty())
+        {
+            return Err(AixError::EmptyPiAgentDir {
+                profile: name.to_string(),
+            });
+        }
         match &profile.auth {
             ProfileAuth::ApiKey { .. }
                 if profile.base_url.is_none() && config.endpoint.base_url.is_none() =>
@@ -892,6 +911,7 @@ fast = "work-fast-model"
                 .map(String::as_str),
             Some("work-fast-model")
         );
+        assert!(cfg.profiles["work"].tool_configs.pi.is_none());
         assert!(matches!(
             &cfg.profiles["work"].auth,
             ProfileAuth::ApiKey { api_key } if matches!(api_key.0, SourceKind::Env(_))
@@ -1152,12 +1172,81 @@ cli_config_file = "~/.config/opencode/cli.json"
     }
 
     #[test]
+    fn profile_pi_agent_directory_is_optional_and_rejects_unknown_tool_config_names() {
+        let config: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://gateway.example/v1"
+
+[profiles.work]
+api_key = "test-key"
+
+[profiles.work.tool_configs.pi]
+agent_dir = "~/.config/pi/work-agent"
+"#,
+        )
+        .unwrap();
+        validate(&config).unwrap();
+        assert_eq!(
+            config.profiles["work"]
+                .tool_configs
+                .pi
+                .as_ref()
+                .unwrap()
+                .agent_dir,
+            PathBuf::from("~/.config/pi/work-agent")
+        );
+
+        for invalid in [
+            r#"[profiles.work]
+api_key = "test-key"
+[profiles.work.tool_configs.unknown]
+agent_dir = "/tmp/unknown"
+"#,
+            r#"[profiles.work]
+api_key = "test-key"
+[profiles.work.tool_configs.pi]
+agent_dir = "/tmp/pi"
+command = "pi"
+"#,
+        ] {
+            assert!(
+                toml::from_str::<Config>(invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_pi_agent_directory_must_not_be_empty() {
+        let config: Config = toml::from_str(
+            r#"
+[endpoint]
+base_url = "https://gateway.example/v1"
+
+[profiles.work]
+api_key = "test-key"
+
+[profiles.work.tool_configs.pi]
+agent_dir = ""
+"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            validate(&config),
+            Err(AixError::EmptyPiAgentDir { profile }) if profile == "work"
+        ));
+    }
+
+    #[test]
     fn old_profile_configs_default_to_no_tool_specific_configuration() {
         let config: Config = toml::from_str(
             "[endpoint]\nbase_url='https://example.com'\n[profiles.work]\napi_key='key'\n",
         )
         .unwrap();
         assert!(config.profiles["work"].tool_configs.opencode.is_none());
+        assert!(config.profiles["work"].tool_configs.pi.is_none());
     }
 
     #[test]

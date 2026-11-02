@@ -482,6 +482,28 @@ sessions and history will not automatically appear there. aix does not currently
 share or migrate state between Codex homes. This behavior was checked with
 `codex-cli 0.157.0`; other versions are unverified.
 
+#### Profile-specific Pi configuration
+
+```toml
+[profiles.work.tool_configs.pi]
+agent_dir = "~/.config/pi/work-agent"
+
+[tools.pi]
+api_format = "openai"
+```
+
+This opt-in setting applies to `aix pi` and `aix run -- pi` with API-key
+profiles. aix stages the selected native configuration without editing it,
+preserves its default model, and shares Pi's existing auth, trust, sessions,
+and package stores. Those stores are not isolated per profile. The equivalent
+Home Manager option is `programs.aix.profiles.work.toolConfigs.pi.agentDir`.
+
+To override saved native credentials, the launcher passes the selected key via
+Pi's `--api-key` argument; it is visible to process-argument inspection. Native
+provider switching remains available. Staging requires symlink support, which
+may require Windows Developer Mode or privileges. See the
+[Pi 1.0.4 proof and compatibility limits](tests/manual/pi_agent_config_replacement.md).
+
 #### Codex app-server with ChatGPT plan authentication
 
 OpenAI documents ChatGPT-plan token sharing for Codex app-server using a custom

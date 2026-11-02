@@ -90,6 +90,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     child_args.extend(command_args.iter().cloned());
     launch::validate_codex_config_args(&resolved, &child_args)?;
     launch::prepare_opencode_launch(&mut resolved, &mut child_args, dry_run)?;
+    resolved.validate_tool_arguments(&child_args)?;
 
     if dry_run {
         launch::validate_executable(&resolved.program)?;
@@ -178,6 +179,25 @@ pub async fn run(options: RunOptions) -> Result<()> {
         policy_record.as_ref(),
     );
 
+    let tool_arguments = resolved
+        .prepare_tool_config()
+        .and_then(|()| resolved.add_tool_runtime_arguments(&child_args));
+    child_args = match tool_arguments {
+        Ok(args) => args,
+        Err(error) => {
+            if let Some(sidecar) = active_sidecar.take() {
+                sidecar.stop().await;
+            }
+            record.finished_at_unix_ms = Some(RunRecord::now_unix_ms());
+            record.duration_ms = Some(0);
+            record.status = RunStatus::Failed;
+            if let Err(write_error) = store.write(&mut handle, &record) {
+                eprintln!("{write_error:?}");
+            }
+            return Err(error);
+        }
+    };
+
     let gateway_managed = active_sidecar.is_some();
     child_args.extend(resolved.codex_provider_overrides.iter().cloned());
     let started = Instant::now();
@@ -232,7 +252,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     if let Err(error) = store.write(&mut handle, &record) {
         eprintln!("{error:?}");
         if let Some(interruption) = interruption {
-            resolved.cleanup_opencode_config_stage();
+            resolved.cleanup_tool_config_stages();
             std::process::exit(interruption.exit_code());
         }
         if let Some(exit_code) = child_status
@@ -240,7 +260,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
             .and_then(std::process::ExitStatus::code)
             .filter(|code| *code != 0)
         {
-            resolved.cleanup_opencode_config_stage();
+            resolved.cleanup_tool_config_stages();
             std::process::exit(exit_code);
         }
         if let Some(error) = child_error {
@@ -250,7 +270,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
     }
 
     if let Some(interruption) = interruption {
-        resolved.cleanup_opencode_config_stage();
+        resolved.cleanup_tool_config_stages();
         std::process::exit(interruption.exit_code());
     }
     if duration_expired {
@@ -269,11 +289,11 @@ pub async fn run(options: RunOptions) -> Result<()> {
     if let Some(status) = child_status {
         if let Some(exit_code) = status.code() {
             if exit_code != 0 {
-                resolved.cleanup_opencode_config_stage();
+                resolved.cleanup_tool_config_stages();
                 std::process::exit(exit_code);
             }
         } else {
-            resolved.cleanup_opencode_config_stage();
+            resolved.cleanup_tool_config_stages();
             std::process::exit(1);
         }
     } else if let Some(error) = child_error {

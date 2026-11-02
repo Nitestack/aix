@@ -2,22 +2,25 @@
 
 ## Result
 
-**Partial proof; the full feasibility gate is not satisfied.** Pi can replace its
-complete user-level agent directory with the directory selected by an aix profile
-while reusing the original session, trust, and authentication stores. A launch
-adapter can stage read-only/generated configuration and make the selected aix
-connection win for requests using the profile's OpenAI-compatible models. Pi's
-native RPC model-switch command can still select another configured provider from
-the preserved auth/config stores, so this proof does not claim connection authority
-after arbitrary native provider switches.
+The production aix launcher replaces Pi's complete user-level agent configuration
+with the directory selected by the active profile, while sharing the existing
+session, trust, package, and authentication stores. The version-pinned proof runs
+the real Pi 1.0.4 executable through both `aix pi` and `aix run -- pi`; the configured
+tool command is a wrapper that simply execs Pi.
 
-The reproducible proof is [`pi_agent_config_replacement.py`](pi_agent_config_replacement.py).
-Its adapter, checks, and shared test fixtures are
-[`pi_agent_config_overlay.py`](pi_agent_config_overlay.py),
-[`pi_agent_config_replacement_checks.py`](pi_agent_config_replacement_checks.py),
-and [`pi_agent_config_replacement_support.py`](pi_agent_config_replacement_support.py).
-The runner uses synthetic credentials and local mock OpenAI-compatible gateways; it
-does not need a real model account or send requests to an external service.
+Pi's native provider and RPC model-switch commands remain available. Following the
+product decision for issue #35, native switching is allowed; the proof therefore
+makes no claim that aix controls requests after a user switches to another provider.
+
+The reproducible proof is [`pi_agent_config_replacement.py`](pi_agent_config_replacement.py),
+with checks and shared fixtures in
+[`pi_agent_config_replacement_checks.py`](pi_agent_config_replacement_checks.py) and
+[`pi_agent_config_replacement_support.py`](pi_agent_config_replacement_support.py).
+It uses synthetic credentials and local mock OpenAI-compatible gateways; no real
+model account or external model request is needed.
+
+The TOML option is `[profiles.<name>.tool_configs.pi].agent_dir`. It accepts an
+absolute path, a `~` home-relative path, or a path relative to the aix config file.
 
 ## Tested versions and invocation
 
@@ -45,8 +48,9 @@ pi_version=1.0.4
 config_replacement=settings+models+keybindings+resources=passed
 project_rules_and_trust=passed
 session_history_and_saved_auth=passed
-aix_shell_run_named_tool_exec_and_concurrent_profiles=passed
-connection_authority=blocked_by_native_rpc_model_switch
+aix_named_and_run_launches_with_concurrent_profiles=passed
+native_project_session_dir=passed
+native_provider_switch=allowed_without_aix_authority_claim
 read_only_sources_and_relative_resources=passed
 ```
 
@@ -75,101 +79,93 @@ without an override, while `--no-approve` overrides it as Pi specifies.
 
 ### Preserve existing sessions and saved credentials
 
-Changing only `PI_CODING_AGENT_DIR` changes Pi's default session directory too.
-The profile must set `PI_CODING_AGENT_SESSION_DIR` (or pass Pi's native
-`--session-dir`) to the existing per-project session directory, not merely the
-parent `sessions/` directory. Pi's default path is
-`<agent-dir>/sessions/--<resolved-cwd-with-separators-replaced-by-hyphens>--/`.
-The test creates history under the normal agent home, resumes it under a selected
-profile, and checks that the earlier prompt is in the next model request.
-Concurrent runs write new session files to that same original per-project
-directory.
+The launcher links the staged agent's `sessions/` directory to the normal Pi
+agent's store. Pi's default per-project session path therefore resolves to the
+existing history without injecting `PI_CODING_AGENT_SESSION_DIR` or overriding Pi's
+native `sessionDir` settings. The proof creates history under the normal agent
+home, resumes it through the selected profile, and checks that the earlier prompt
+is present in the next model request. Concurrent profile launches add sessions to
+that same store. A separate launch confirms a relative project-level `sessionDir`
+continues to select its own directory.
 
-Pi reads saved provider credentials from `<agent-dir>/auth.json`. The selected
-profile's native directory and staged overlay therefore share the existing auth
-file rather than copying it; the test confirms the saved synthetic key remains
-available. The profile also shares the existing `trust.json` and session leaf.
-Pi's documented credential order is runtime `--api-key`, stored
-`auth.json`, a `models.json` key, then provider environment variables. Therefore
-injecting aix's key only as `OPENAI_API_KEY` is insufficient when saved Pi auth is
-present. The adapter supplies the selected aix key through Pi's one-shot
-`--api-key` option. It rejects a user-supplied `--api-key`, which would contradict
-the selected aix profile. Native `--provider openai` and model selection remain
-available for model IDs declared by that profile. The adapter supplies an exact
-`--models` scope for the selected profile's OpenAI catalog, and rejects user
-`--models`, other-provider CLI selectors, unconfigured models, and explicit
-`--extension` sources. That scope limits startup lookup and model cycling, but it
-does not constrain Pi's RPC `set_model` command.
+Pi reads saved provider credentials from `<agent-dir>/auth.json`. The staged
+directory links the normal `auth.json`, `mcp-auth.json`, and `trust.json` rather
+than copying them; the proof confirms the saved synthetic keys remain available.
+Pi's documented credential order gives runtime `--api-key` priority over saved
+auth, so the launcher supplies the selected aix key through Pi's one-shot
+`--api-key` option for normal launches. It rejects explicit `--api-key` and
+`--agent-dir` arguments when profile selection is active. Native provider/model
+selection remains available; the configured provider's endpoint is rewritten to
+the aix endpoint, while other native providers retain their own configuration.
 
-### Connection-authority blocker
+### Configured endpoint and native switching policy
 
-Pi stores compatible provider endpoints in `models.json`. The adapter stages a
-temporary copy of the selected profile's model configuration, sets both the
-OpenAI provider and each selected model's `baseUrl` from aix's generated
-`OPENAI_BASE_URL`, scopes model cycling to those OpenAI models, and passes aix's
-`OPENAI_API_KEY` with `--api-key`. The proof runs all four aix launch forms:
-`aix shell` followed by `pi ...` through a temporary `PATH` shim,
-`aix run -- pi ...`, the configured named-tool form `aix pi -- ...`, and generic
-`aix exec -- <adapter> ...`. Two concurrent
-`aix run -- pi ...` launches reach separate local gateways with their own profile
-keys and model configuration.
-The read-only source files remain byte-for-byte unchanged. The proof demonstrates
-that ordinary CLI model selection within the AIX profile's OpenAI catalog routes
-to the selected gateway in all four launch forms. It also demonstrates a blocker:
-with a synthetic saved Anthropic credential and an Anthropic model in the existing
-Pi `models.json`, Pi 1.0.4 accepts an RPC `set_model` to that model even when
-launched with `--models openai/profile-a-model`. The returned model has
-`baseUrl: http://saved-provider.invalid/v1`, not the AIX-selected endpoint. This
-test sends no request to that model or URL.
+Pi stores compatible provider endpoints in `models.json`. The production launcher
+stages a temporary copy of the selected profile's native directory and rewrites
+the provider and model `baseUrl` values for the configured aix API format. It passes
+the selected profile key with `--api-key`. The proof runs the real Pi process
+through both `aix pi -- ...` and `aix run -- pi ...`; simultaneous runs reach
+separate local gateways with their own profile keys and model configuration. The
+read-only source files remain byte-for-byte unchanged.
 
-The behavior is consistent with Pi's documented/source behavior: `--models`
-provides a startup/cycling scope (`docs/cli.md`), while `dist/modes/rpc/rpc-mode.js`
-implements `set_model` by searching `session.modelRuntime.getAvailableSnapshot()`
-without checking the scope. The test preserves the existing `auth.json`, so an
-authenticated non-OpenAI model remains available. Deciding whether aix profiles
-must disable these native provider switches, map every Pi provider through the
-profile, or explicitly permit them requires a product decision; this proof does
-not weaken that contract or claim the gate is complete.
+Pi 1.0.4 requires `--api-key` to accompany a CLI model selector, even when
+`settings.json` already defines a default model. If a profile-configured launch has
+no `--model`, `--provider`, or `--models` argument, aix adds `--models '*'`. Pi
+still selects the configured default model first, and the wildcard keeps the full
+available model set in scope. The pinned proof checks this behavior through both
+`aix pi` and `aix run -- pi`.
 
-The adapter rejects conflicting API-key, provider, extension, and agent-directory
-arguments. Explicit project/profile extensions still load under Pi trust rules;
-as arbitrary in-process code they are not a security sandbox.
+Native provider switching is deliberately allowed. With a synthetic saved
+Anthropic credential and model in the existing Pi configuration, an RPC
+`set_model` switches to that provider and returns its original
+`http://saved-provider.invalid/v1` endpoint. The test sends no request to that
+provider. This is the agreed behavior for issue #35: ordinary requests using the
+configured aix provider use the profile endpoint and key, but aix does not claim
+connection authority after a user explicitly switches to another native provider.
+The launcher rejects explicit `--api-key` and `--agent-dir` arguments while custom
+profile configuration is active. Other native Pi options and project extensions
+remain available under Pi's trust rules; extensions are not a security sandbox.
 
 ### Relative and project resources
 
 Pi resolves resource paths in user settings relative to the selected agent
-directory. The proof loads a profile extension and skill referenced via `../shared`
-from outside that directory. Its staging layout mirrors the relative base and
-symlinks the unchanged shared resource directory, so references keep resolving to
-the intended source. This pattern also works for read-only generated settings and
-keybindings. The staged overlay rewrites `settings.json` only to set the default
-provider to OpenAI and `models.json` to replace provider- and model-level endpoints;
-the source files themselves remain unchanged.
+directory. The launcher converts relative file resources to their original source
+paths before staging, so extensions and skills referenced via `../shared` continue
+to resolve outside that directory. This works with read-only settings and
+keybindings; the source files themselves remain unchanged. The stage rewrites
+`settings.json` only for relative resource references and `models.json` only for
+configured-provider endpoints.
 
-The test covers file-based extensions and skills, not npm/git package installation.
-Pi stores package-manager state below the agent directory (`npm`, `git`, and
-temporary extension directories); a production adapter must keep those paths
-available or share the selected profile's existing stores. Package installation
-and updates need a writable store even when declarative configuration sources are
-read-only.
+The proof covers file-based extensions and skills, not npm/git package installation.
+The launcher shares the original agent's `npm` and `git` stores; package
+installation or updates may need those stores to be writable even when declarative
+configuration sources are read-only.
 
 ## Compatibility limits and follow-up
 
 - The proof pins Pi 1.0.4. Recheck selectors, credential priority, config paths,
   and package loading when supporting another Pi version.
-- The proof exercises API-key auth. Pi's saved OAuth credentials also live in
-  `auth.json`, but an OAuth refresh flow was not run; production must preserve the
-  same file and Pi's locking/permissions behavior.
+- Profile-specific Pi directory selection requires an API-key profile. ChatGPT
+  authentication is rejected before launch; no unrelated authentication mode is
+  added by this feature.
+- The proof exercises API-key auth. Saved OAuth credentials also live in `auth.json`,
+  but an OAuth refresh flow was not run.
+- With profile-specific selection enabled, Pi receives the selected key through
+  its `--api-key` argument so saved native auth cannot override it. The key is
+  therefore visible to tools and users that can inspect process arguments;
+  aix does not log it, and dry runs never resolve or print it.
 - Project trust-gated settings/resources and context discovery are verified on
   Linux. No Windows or macOS run was performed.
-- Temporary staging is required when aix must override a native model endpoint
-  without editing its source. Relative external resource paths must be mirrored
-  or made absolute in the stage; silently copying only `settings.json` breaks
-  native relative-path semantics.
-- Replacement, session/history preservation, and saved-auth preservation are
-  demonstrated through existing aix launch modes. Overall connection authority
-  remains blocked by the native RPC provider switch above. No production schema or
-  launcher changes are made.
+- This opt-in feature needs filesystem symlink support. On Windows, symlink
+  creation may require Developer Mode or elevated privileges; there is no
+  copy-based fallback for shared auth, session, or package stores.
+- Temporary staging lets aix override a native model endpoint without editing its
+  source. The production launcher resolves relative resources to their source path
+  and shares user data by link rather than copying it.
+- Replacement, session/history preservation, saved-auth preservation, and both
+  configured launch modes are demonstrated through the production schema and
+  launcher. Native provider switches remain an explicit supported limitation, not
+  a claim of aix connection authority.
 
 ## Authoritative Pi sources
 
@@ -183,7 +179,8 @@ read-only.
   compatible endpoint configuration.
 - [Providers](https://pi.dev/docs/latest/providers): provider environment variables
   and `auth.json` behavior.
-- [Settings](https://pi.dev/docs/latest/settings): resource path bases.
+- [Settings](https://pi.dev/docs/latest/settings): resource path bases and
+  `sessionDir` precedence.
 - [Pi packages](https://pi.dev/docs/latest/packages): native package sources,
   relative paths, and package stores.
 - [Security / project trust](https://pi.dev/docs/latest/security): project trust,

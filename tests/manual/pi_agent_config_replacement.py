@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -74,11 +75,6 @@ def main() -> None:
         )
         add_alternate_provider_model(profile_a_agent)
         create_normal_agent(normal_agent, "normal-session-model", f"{profile_a_url}/v1")
-        for agent in (profile_a_agent, profile_b_agent):
-            (agent / "auth.json").symlink_to(normal_agent / "auth.json")
-        stage_root = root / "staging"
-        stage_root.mkdir()
-
         project = root / "project"
         project.mkdir()
         normal_session_dir = native_project_session_dir(normal_agent, project)
@@ -95,13 +91,10 @@ def main() -> None:
         trust_path = normal_agent / "trust.json"
         write_json(trust_path, {str(project.resolve()): True})
         trust_path.chmod(0o444)
-        for agent in (profile_a_agent, profile_b_agent):
-            (agent / "trust.json").symlink_to(trust_path)
 
-        wrapper = Path(__file__).with_name("pi_agent_config_overlay.py").resolve()
-        shim_dir = root / "pi-shim"
-        shim_dir.mkdir()
-        (shim_dir / "pi").symlink_to(wrapper)
+        wrapper = root / "pi-wrapper"
+        wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(pi)} "$@"\n')
+        wrapper.chmod(0o755)
         aix_config = root / "aix.toml"
         make_aix_config(
             aix_config,
@@ -109,18 +102,13 @@ def main() -> None:
             aix_profile_b_url=profile_b_url,
             profile_a_agent=profile_a_agent,
             profile_b_agent=profile_b_agent,
-            normal_session_dir=normal_session_dir,
             wrapper=wrapper,
-            stage_root=stage_root,
-            shim_path=f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-            pi=pi,
         )
 
         env = os.environ.copy()
         env.update(
             {
-                "PI_CODING_AGENT_DIR": str(root / "wrong-inherited-agent"),
-                "PI_CODING_AGENT_SESSION_DIR": str(root / "wrong-inherited-sessions"),
+                "PI_CODING_AGENT_DIR": str(normal_agent),
                 "OPENAI_API_KEY": "synthetic-inherited-key-must-not-win",
                 "OPENAI_BASE_URL": "http://127.0.0.1:1/should-not-win",
                 "AIX_TEST_PROFILE_A_KEY": PROFILE_A_KEY,
@@ -132,6 +120,7 @@ def main() -> None:
                 "SHELL": "/bin/sh",
             }
         )
+        env.pop("PI_CODING_AGENT_SESSION_DIR", None)
         for proxy_name in (
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -156,8 +145,6 @@ def main() -> None:
             profile_b_server=profile_b_server,
             profile_a_url=profile_a_url,
             profile_b_url=profile_b_url,
-            stage_root=stage_root,
-            wrapper=wrapper,
             aix_config=aix_config,
             env=env,
         )
@@ -168,8 +155,9 @@ def main() -> None:
         print("config_replacement=settings+models+keybindings+resources=passed")
         print("project_rules_and_trust=passed")
         print("session_history_and_saved_auth=passed")
-        print("aix_shell_run_named_tool_exec_and_concurrent_profiles=passed")
-        print("connection_authority=blocked_by_native_rpc_model_switch")
+        print("aix_named_and_run_launches_with_concurrent_profiles=passed")
+        print("native_project_session_dir=passed")
+        print("native_provider_switch=allowed_without_aix_authority_claim")
         print("read_only_sources_and_relative_resources=passed")
     finally:
         for server in servers:

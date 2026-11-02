@@ -73,6 +73,12 @@
           lib = pkgs.lib;
           aixModule = ./nix/home-manager.nix;
         };
+
+        homeManagerPiConfigs = import ./tests/home-manager-pi-config.nix {
+          inherit pkgs;
+          lib = pkgs.lib;
+          aixModule = ./nix/home-manager.nix;
+        };
       in
       {
         packages = {
@@ -159,6 +165,14 @@
             grep -Fxq '[run_policies.research]' ${homeManagerPolicyConfigs.configured}
             grep -Fxq 'max_duration = "1h"' ${homeManagerPolicyConfigs.configured}
             ! grep -q 'run_policies' ${homeManagerPolicyConfigs.legacy}
+            touch $out
+          '';
+          aix-home-manager-pi-config = pkgs.runCommand "aix-home-manager-pi-config-check" { } ''
+            grep -Fxq '[profiles.work.tool_configs.pi]' ${homeManagerPiConfigs.configured}
+            grep -Fxq 'agent_dir = "~/.config/pi/work-agent"' ${homeManagerPiConfigs.configured}
+            grep -Fxq '[tools.pi]' ${homeManagerPiConfigs.configured}
+            grep -Fxq 'api_format = "openai"' ${homeManagerPiConfigs.configured}
+            ! grep -q 'tool_configs' ${homeManagerPiConfigs.legacy}
             touch $out
           '';
         };

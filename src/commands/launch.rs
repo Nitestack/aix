@@ -20,6 +20,8 @@ mod chatgpt;
 mod opencode;
 #[path = "launch/opencode_config.rs"]
 mod opencode_config;
+#[path = "launch/pi.rs"]
+mod pi;
 
 pub struct LaunchEnv {
     pub vars: Vec<(String, String)>,
@@ -63,11 +65,34 @@ pub struct ResolvedRunLaunch {
     sidecar_plan: Option<LaunchSidecarPlan>,
     opencode_config_plan: Option<opencode_config::ProfileConfigPlan>,
     _opencode_config_stage: Option<tempfile::TempDir>,
+    pi_agent_config: Option<pi::PiAgentConfigLaunch>,
 }
 
 impl ResolvedRunLaunch {
-    pub(crate) fn cleanup_opencode_config_stage(&mut self) {
+    pub(crate) fn cleanup_tool_config_stages(&mut self) {
         self._opencode_config_stage.take();
+        self.pi_agent_config.take();
+    }
+
+    pub(crate) fn validate_tool_arguments(&self, args: &[String]) -> Result<()> {
+        if let Some(pi_config) = &self.pi_agent_config {
+            pi_config.validate_arguments(args)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_tool_config(&mut self) -> Result<()> {
+        if let Some(pi_config) = &mut self.pi_agent_config {
+            pi_config.prepare(&mut self.env)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn add_tool_runtime_arguments(&self, args: &[String]) -> Result<Vec<String>> {
+        match &self.pi_agent_config {
+            Some(pi_config) => pi_config.add_runtime_arguments(args, &self.env),
+            None => Ok(args.to_vec()),
+        }
     }
 }
 
@@ -80,7 +105,7 @@ enum LaunchSidecarPlan {
 pub(crate) struct StartedLaunchSidecar(ServerHandle);
 
 impl StartedLaunchSidecar {
-    async fn stop(self) {
+    pub(crate) async fn stop(self) {
         self.0.stop().await;
     }
 
@@ -114,6 +139,7 @@ struct LaunchResolution {
     codex_provider_overrides: Vec<String>,
     sidecar_plan: Option<LaunchSidecarPlan>,
     codex_config: Option<CodexConfigSelection>,
+    pi_agent_config: Option<pi::PiAgentConfigLaunch>,
 }
 
 struct LaunchContext {
@@ -315,6 +341,14 @@ async fn resolve_tool_launch(
         plan.validate_arguments(request.tool_args)?;
     }
     let is_chatgpt = profile.auth.is_chatgpt();
+    let configured_tool_name = request.configured_tool_name;
+    if configured_tool_name == Some("pi")
+        && context.cfg.tools.contains_key("pi")
+        && profile.tool_configs.pi.is_some()
+        && is_chatgpt
+    {
+        return Err(AixError::PiAgentConfigChatGptUnsupported.into());
+    }
     let mut resolution = if is_chatgpt {
         chatgpt::resolve_tool_launch(request, &context, profile, timeout).await?
     } else {
@@ -339,6 +373,19 @@ async fn resolve_tool_launch(
         }
         resolution.codex_config = Some(codex_config);
     }
+    if configured_tool_name == Some("pi") {
+        if let (Some(tool), Some(pi_config)) = (
+            context.cfg.tools.get("pi"),
+            profile.tool_configs.pi.as_ref(),
+        ) {
+            resolution.pi_agent_config = Some(pi::PiAgentConfigLaunch::resolve(
+                &context.profile_name,
+                &context.config_path,
+                pi_config,
+                tool.api_format,
+            )?);
+        }
+    }
     Ok(ResolvedRunLaunch {
         env: resolution.env,
         program: resolution.program,
@@ -352,6 +399,7 @@ async fn resolve_tool_launch(
         sidecar_plan: resolution.sidecar_plan,
         opencode_config_plan,
         _opencode_config_stage: None,
+        pi_agent_config: resolution.pi_agent_config,
     })
 }
 
@@ -550,49 +598,56 @@ fn resolve_api_key_launch(
             .opencode
             .as_ref()
             .is_some_and(config::OpenCodeProfileConfig::has_selection);
+    let pi_config_dry_run = dry_run
+        && configured_tool_name == Some("pi")
+        && configured_tool.is_some()
+        && profile_entry.tool_configs.pi.is_some();
     let skipped_env_names: &[&str] = if codex_config_active {
         &["CODEX_HOME"]
     } else {
         &[]
     };
-    let (mut vars, mut display_only_vars, parent_gateway) =
-        if local_gateway_dry_run || codex_config_dry_run || opencode_profile_config_dry_run {
-            let mut vars: Vec<_> = collect_vars(profile_name, "", "", &api_format)
-                .into_iter()
-                .map(|(key, value)| (key.to_string(), value))
-                .collect();
-            if local_gateway_dry_run || opencode_profile_config_dry_run {
-                vars.retain(|(name, _)| !is_gateway_managed_env_var(name));
-            }
-            let mut display_only_vars = Vec::new();
-            append_configured_env_excluding(
-                &profile_entry.env,
-                ToolEnvMode::NamesOnly,
-                &mut vars,
-                &mut display_only_vars,
-                skipped_env_names,
-            )?;
-            if local_gateway_dry_run {
-                display_only_vars.extend(ApiKeyGatewayHandle::dry_run_variable_names(api_format));
-            }
-            (vars, display_only_vars, None)
-        } else {
-            let api_key = profile_entry.resolve_api_key()?;
-            let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
-            let vars = collect_profile_vars_excluding(
-                profile_name,
-                api_key.expose_secret(),
-                base_url.expose_secret(),
-                &api_format,
-                profile_entry,
-                skipped_env_names,
-            )?;
-            (
-                vars,
-                Vec::new(),
-                Some(ParentGatewayCredentials { base_url, api_key }),
-            )
-        };
+    let (mut vars, mut display_only_vars, parent_gateway) = if local_gateway_dry_run
+        || codex_config_dry_run
+        || opencode_profile_config_dry_run
+        || pi_config_dry_run
+    {
+        let mut vars: Vec<_> = collect_vars(profile_name, "", "", &api_format)
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect();
+        if local_gateway_dry_run || opencode_profile_config_dry_run {
+            vars.retain(|(name, _)| !is_gateway_managed_env_var(name));
+        }
+        let mut display_only_vars = Vec::new();
+        append_configured_env_excluding(
+            &profile_entry.env,
+            ToolEnvMode::NamesOnly,
+            &mut vars,
+            &mut display_only_vars,
+            skipped_env_names,
+        )?;
+        if local_gateway_dry_run {
+            display_only_vars.extend(ApiKeyGatewayHandle::dry_run_variable_names(api_format));
+        }
+        (vars, display_only_vars, None)
+    } else {
+        let api_key = profile_entry.resolve_api_key()?;
+        let base_url = config::resolve_base_url(profile_entry, &cfg.endpoint)?;
+        let vars = collect_profile_vars_excluding(
+            profile_name,
+            api_key.expose_secret(),
+            base_url.expose_secret(),
+            &api_format,
+            profile_entry,
+            skipped_env_names,
+        )?;
+        (
+            vars,
+            Vec::new(),
+            Some(ParentGatewayCredentials { base_url, api_key }),
+        )
+    };
     let clear_vars = if configured_tool.is_some() {
         match api_format {
             config::ApiFormat::Anthropic => {
@@ -660,6 +715,7 @@ fn resolve_api_key_launch(
         codex_provider_overrides,
         sidecar_plan,
         codex_config: None,
+        pi_agent_config: None,
     })
 }
 
@@ -811,42 +867,62 @@ pub async fn run_named_tool(
         .collect::<Vec<_>>();
     validate_codex_config_args(&resolved, &args)?;
     prepare_opencode_launch(&mut resolved, &mut args, dry_run)?;
+    resolved.validate_tool_arguments(&args)?;
     if dry_run {
         print_tool_config_dry_run(&resolved);
         print_sidecar_dry_run(&resolved);
         return run_command(&resolved.program, &args, &resolved.env, true);
     }
 
-    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None, None).await? else {
-        args.extend(resolved.codex_provider_overrides.iter().cloned());
+    let mut sidecar = start_launch_sidecar(&mut resolved, timeout, None, None).await?;
+    if let Err(error) = resolved.prepare_tool_config() {
+        if let Some(sidecar) = sidecar.take() {
+            sidecar.stop().await;
+        }
+        resolved.cleanup_tool_config_stages();
+        return Err(error);
+    }
+    args = match resolved.add_tool_runtime_arguments(&args) {
+        Ok(args) => args,
+        Err(error) => {
+            if let Some(sidecar) = sidecar.take() {
+                sidecar.stop().await;
+            }
+            resolved.cleanup_tool_config_stages();
+            return Err(error);
+        }
+    };
+    args.extend(resolved.codex_provider_overrides.iter().cloned());
+    if sidecar.is_none() && resolved.pi_agent_config.is_none() {
         let status = run_command_status(&resolved.program, &args, &resolved.env)?;
         if !status.success() {
             let exit_code = status.code().unwrap_or(1);
-            resolved.cleanup_opencode_config_stage();
+            resolved.cleanup_tool_config_stages();
             std::process::exit(exit_code);
         }
         return Ok(());
-    };
-    args.extend(resolved.codex_provider_overrides.iter().cloned());
+    }
     let (interrupt_requested, terminated) = install_interrupt_handlers()?;
-    let child_result = sidecar
-        .run_child(|| {
-            run_command_status_interruptible(
-                &resolved.program,
-                &args,
-                &resolved.env,
-                &interrupt_requested,
-                &terminated,
-            )
-        })
-        .await;
+    let run_child = || {
+        run_command_status_interruptible(
+            &resolved.program,
+            &args,
+            &resolved.env,
+            &interrupt_requested,
+            &terminated,
+        )
+    };
+    let child_result = match sidecar {
+        Some(sidecar) => sidecar.run_child(run_child).await,
+        None => run_child(),
+    };
     let status = child_result?;
     if let Some(interruption) = interruption_reason(&interrupt_requested, &terminated) {
-        resolved.cleanup_opencode_config_stage();
+        resolved.cleanup_tool_config_stages();
         std::process::exit(interruption.exit_code());
     }
     if !status.success() {
-        resolved.cleanup_opencode_config_stage();
+        resolved.cleanup_tool_config_stages();
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
@@ -972,6 +1048,9 @@ pub(crate) fn print_sidecar_dry_run(resolved: &ResolvedRunLaunch) {
 pub(crate) fn print_tool_config_dry_run(resolved: &ResolvedRunLaunch) {
     if let Some(selection) = &resolved.codex_config {
         selection.print_dry_run();
+    }
+    if let Some(pi_config) = &resolved.pi_agent_config {
+        pi_config.print_dry_run();
     }
 }
 
@@ -1548,6 +1627,7 @@ access_token_env = "ACCESS_TOKEN"
             sidecar_plan: None,
             opencode_config_plan: None,
             _opencode_config_stage: None,
+            pi_agent_config: None,
         };
         let run_id = Uuid::parse_str("4b9a85df-51d9-49a4-9a17-69d7f0dc91f1").unwrap();
         let run_id_string = run_id.to_string();
