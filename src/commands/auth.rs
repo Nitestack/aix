@@ -104,6 +104,7 @@ fn print_status(status: &AuthStatus, json: bool) -> Result<()> {
 fn auth_label(auth_type: &str) -> &'static str {
     match auth_type {
         "chatgpt" => "ChatGPT",
+        "native" => "native tool sign-in",
         _ => "API key",
     }
 }

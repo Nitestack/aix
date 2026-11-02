@@ -26,6 +26,12 @@ pub enum AixError {
     #[error("this command requires an API-key profile; ChatGPT authentication is not supported by this command")]
     ChatGptAuthUnsupported,
 
+    #[error("native profile {name:?} must not configure base_url because the launched tool chooses its own endpoint")]
+    NativeProfileBaseUrl { name: String },
+
+    #[error("this command requires gateway credentials; native profiles leave authentication to the launched tool (use `aix <tool>`, `aix run`, `aix exec`, or `aix shell`)")]
+    NativeAuthUnsupported,
+
     #[error("tool {tool:?} is not configured to consume ChatGPT-plan credentials; configure [tools.{tool}.chatgpt] with access_token_env")]
     ChatGptToolNotConfigured { tool: String },
 
@@ -35,7 +41,7 @@ pub enum AixError {
     #[error("LiteLLM lease and run-policy flows require an API-key profile; ChatGPT plan usage is not a LiteLLM lease")]
     ChatGptRunLeaseUnsupported,
 
-    #[error("monetary budget enforcement unavailable for this transport; ChatGPT subscription traffic has no authoritative incurred-dollar meter")]
+    #[error("monetary budget enforcement unavailable for this transport; ChatGPT and native-tool subscription traffic has no authoritative incurred-dollar meter")]
     RunPolicyBudgetUnavailable,
 
     #[error(
@@ -507,6 +513,8 @@ impl AixError {
             | Self::MissingEndpointUrl
             | Self::ChatGptProfileBaseUrl { .. }
             | Self::ChatGptAuthUnsupported
+            | Self::NativeProfileBaseUrl { .. }
+            | Self::NativeAuthUnsupported
             | Self::ChatGptToolNotConfigured { .. }
             | Self::ChatGptLocalGatewayUnsupported { .. }
             | Self::ChatGptRunLeaseUnsupported

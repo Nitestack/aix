@@ -194,8 +194,13 @@ impl OpenCodeProfileConfig {
 
 #[derive(Debug)]
 pub enum ProfileAuth {
-    ApiKey { api_key: SecretSource },
+    ApiKey {
+        api_key: SecretSource,
+    },
     ChatGpt,
+    /// The launched tool authenticates with its own sign-in (for example a
+    /// Claude Code subscription login); aix injects no gateway credentials.
+    Native,
 }
 
 impl ProfileAuth {
@@ -203,18 +208,27 @@ impl ProfileAuth {
         matches!(self, Self::ChatGpt)
     }
 
-    pub fn can_query_litellm_usage(&self) -> bool {
+    pub fn is_native(&self) -> bool {
+        matches!(self, Self::Native)
+    }
+
+    pub fn is_api_key(&self) -> bool {
         matches!(self, Self::ApiKey { .. })
     }
 
+    pub fn can_query_litellm_usage(&self) -> bool {
+        self.is_api_key()
+    }
+
     pub fn local_usage_cost_is_not_applicable(&self) -> bool {
-        matches!(self, Self::ChatGpt)
+        !self.is_api_key()
     }
 
     pub fn auth_type(&self) -> &'static str {
         match self {
             Self::ApiKey { .. } => "api_key",
             Self::ChatGpt => "chatgpt",
+            Self::Native => "native",
         }
     }
 }
@@ -249,25 +263,31 @@ struct ProfileAuthConfig {
 #[serde(rename_all = "snake_case")]
 enum ProfileAuthKind {
     Chatgpt,
+    Native,
 }
 
 impl<'de> Deserialize<'de> for Profile {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let config = ProfileConfig::deserialize(deserializer)?;
-        let auth = match (config.api_key, config.auth) {
-            (Some(api_key), None) => ProfileAuth::ApiKey { api_key },
-            (
-                None,
-                Some(ProfileAuthConfig {
-                    kind: ProfileAuthKind::Chatgpt,
-                }),
-            ) => ProfileAuth::ChatGpt,
-            _ => {
-                return Err(serde::de::Error::custom(
-                    "profile must configure exactly one of api_key or ChatGPT auth",
-                ))
-            }
-        };
+        let auth =
+            match (config.api_key, config.auth) {
+                (Some(api_key), None) => ProfileAuth::ApiKey { api_key },
+                (
+                    None,
+                    Some(ProfileAuthConfig {
+                        kind: ProfileAuthKind::Chatgpt,
+                    }),
+                ) => ProfileAuth::ChatGpt,
+                (
+                    None,
+                    Some(ProfileAuthConfig {
+                        kind: ProfileAuthKind::Native,
+                    }),
+                ) => ProfileAuth::Native,
+                _ => return Err(serde::de::Error::custom(
+                    "profile must configure exactly one of api_key, ChatGPT auth, or native auth",
+                )),
+            };
         Ok(Self {
             label: config.label,
             auth,
@@ -284,6 +304,7 @@ impl Profile {
         match &self.auth {
             ProfileAuth::ApiKey { api_key } => api_key.resolve(),
             ProfileAuth::ChatGpt => Err(AixError::ChatGptAuthUnsupported),
+            ProfileAuth::Native => Err(AixError::NativeAuthUnsupported),
         }
     }
 }
@@ -418,6 +439,9 @@ pub fn resolve_base_url(
 ) -> Result<crate::secrets::SecretString, AixError> {
     if profile.auth.is_chatgpt() {
         return Err(AixError::ChatGptAuthUnsupported);
+    }
+    if profile.auth.is_native() {
+        return Err(AixError::NativeAuthUnsupported);
     }
     match &profile.base_url {
         Some(base_url) => base_url.resolve(),
@@ -566,6 +590,11 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
             }
             ProfileAuth::ChatGpt if profile.base_url.is_some() => {
                 return Err(AixError::ChatGptProfileBaseUrl {
+                    name: name.to_string(),
+                });
+            }
+            ProfileAuth::Native if profile.base_url.is_some() => {
+                return Err(AixError::NativeProfileBaseUrl {
                     name: name.to_string(),
                 });
             }
@@ -973,10 +1002,31 @@ fast = "work-fast-model"
     }
 
     #[test]
+    fn native_profile_parses_in_all_supported_formats_without_an_endpoint() {
+        let configs = [
+            toml::from_str::<Config>("[profiles.sub]\nauth = { type = 'native' }\n").unwrap(),
+            serde_yaml::from_str::<Config>("profiles:\n  sub:\n    auth:\n      type: native\n")
+                .unwrap(),
+            serde_json::from_str::<Config>(r#"{"profiles":{"sub":{"auth":{"type":"native"}}}}"#)
+                .unwrap(),
+            json5::from_str::<Config>("{profiles:{sub:{auth:{type:'native'}}}}").unwrap(),
+        ];
+
+        for config in configs {
+            validate(&config).unwrap();
+            let auth = &config.profiles["sub"].auth;
+            assert!(matches!(auth, ProfileAuth::Native));
+            assert_eq!(auth.auth_type(), "native");
+            assert!(!auth.can_query_litellm_usage());
+        }
+    }
+
+    #[test]
     fn profile_requires_exactly_one_supported_auth_source() {
         for invalid in [
             "[profiles.work]",
             "[profiles.work]\napi_key = 'key'\nauth = { type = 'chatgpt' }",
+            "[profiles.work]\napi_key = 'key'\nauth = { type = 'native' }",
             "[profiles.work]\nauth = { type = 'oauth' }",
         ] {
             assert!(

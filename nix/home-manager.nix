@@ -362,9 +362,9 @@ let
 
   mkProfile =
     _name: profile:
-    lib.optionalAttrs (profile.auth == "chatgpt") {
+    lib.optionalAttrs (profile.auth != "api_key") {
       auth = {
-        type = "chatgpt";
+        type = profile.auth;
       };
     }
     // lib.optionalAttrs (profile.apiKey != null) {
@@ -585,9 +585,10 @@ in
               type = lib.types.enum [
                 "api_key"
                 "chatgpt"
+                "native"
               ];
               default = "api_key";
-              description = "Use a gateway API key or aix-owned Sign in with ChatGPT credentials.";
+              description = "Use a gateway API key, aix-owned Sign in with ChatGPT credentials, or the launched tool's own sign-in.";
             };
 
             apiKey = lib.mkOption {
@@ -651,11 +652,11 @@ in
     ]
     ++ lib.mapAttrsToList (name: profile: {
       assertion =
-        if profile.auth == "chatgpt" then
-          profile.apiKey == null && profile.baseUrl == null
+        if profile.auth == "api_key" then
+          profile.apiKey != null && (profile.baseUrl != null || cfg.endpoint.baseUrl != null)
         else
-          profile.apiKey != null && (profile.baseUrl != null || cfg.endpoint.baseUrl != null);
-      message = "programs.aix.profiles.${name}: API-key profiles require apiKey and an effective base URL; ChatGPT profiles must omit apiKey and baseUrl.";
+          profile.apiKey == null && profile.baseUrl == null;
+      message = "programs.aix.profiles.${name}: API-key profiles require apiKey and an effective base URL; ChatGPT and native profiles must omit apiKey and baseUrl.";
     }) cfg.profiles
     ++ lib.mapAttrsToList (name: policy: {
       assertion = policy.maxBudget == null || policy.maxBudget > 0;

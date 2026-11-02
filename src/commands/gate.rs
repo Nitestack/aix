@@ -195,6 +195,9 @@ async fn preflight(options: GateOptions) -> PreflightReport {
     let chatgpt_profile = resolved_profile
         .as_ref()
         .is_some_and(|(_, profile)| profile.auth.is_chatgpt());
+    let native_profile = resolved_profile
+        .as_ref()
+        .is_some_and(|(_, profile)| profile.auth.is_native());
     let (api_key, base_url) = match &resolved_profile {
         Some((profile_name, profile)) if profile.auth.is_chatgpt() => {
             let auth_status = crate::auth::AuthService::new(timeout)
@@ -232,6 +235,14 @@ async fn preflight(options: GateOptions) -> PreflightReport {
                     GateFailureCategory::Secret,
                 ),
             }
+            (None, None)
+        }
+        Some((_, profile)) if profile.auth.is_native() => {
+            report.pass(
+                "credentials",
+                "native profile leaves authentication to the launched tool",
+                Some(json!({ "auth_type": "native" })),
+            );
             (None, None)
         }
         Some((_, profile)) => {
@@ -319,6 +330,21 @@ async fn preflight(options: GateOptions) -> PreflightReport {
                 .map(|model| (*model).to_string())
                 .collect(),
         )
+    } else if native_profile {
+        if chatgpt_model_enforcement_required {
+            report.fail(
+                "gateway",
+                "native profiles cannot enforce model restrictions because traffic bypasses aix",
+                None,
+                GateFailureCategory::Config,
+            );
+        } else {
+            report.not_applicable(
+                "gateway",
+                "native profiles do not use the configured gateway",
+            );
+        }
+        ModelDiscovery::Unavailable
     } else if local_model_enforcement_required {
         report.pass(
             "gateway",
@@ -507,10 +533,16 @@ async fn preflight(options: GateOptions) -> PreflightReport {
         };
     }
 
-    if chatgpt_profile && policy.is_some_and(|policy| policy.max_budget.is_some()) {
+    if (chatgpt_profile || native_profile)
+        && policy.is_some_and(|policy| policy.max_budget.is_some())
+    {
         report.not_applicable(
             "litellm",
-            "ChatGPT subscription traffic does not use LiteLLM",
+            if native_profile {
+                "native-tool traffic does not use LiteLLM"
+            } else {
+                "ChatGPT subscription traffic does not use LiteLLM"
+            },
         );
         report.not_applicable(
             "budget_info",

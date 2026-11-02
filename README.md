@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Not IBM AIX.** This project has no relation to IBM's AIX operating system.
 
-Profile-aware CLI for AI tools and AI gateway utilities. Profiles can use gateway API keys or aix-managed Sign in with ChatGPT credentials. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway, and `aix ask` plus configured `aix prompt` presets provide domain-agnostic one-shot inference for API-key profiles.
+Profile-aware CLI for AI tools and AI gateway utilities. Profiles can use gateway API keys, aix-managed Sign in with ChatGPT credentials, or leave authentication to the launched tool's own sign-in. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway, and `aix ask` plus configured `aix prompt` presets provide domain-agnostic one-shot inference for API-key profiles.
 
 `aix` reads a config file, resolves API keys and gateway URLs from various secret sources, and either exports them as shell variables, runs a command with those variables pre-set, or sends a one-shot text request to the gateway. ChatGPT sign-in credentials are stored separately with owner-only filesystem permissions; they are not exported to subprocesses.
 
@@ -16,6 +16,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Profiles can use gatewa
 - [Config path resolution](#config-path-resolution)
 - [Config format](#config-format)
 - [ChatGPT authentication](#chatgpt-authentication)
+- [Native tool authentication](#native-tool-authentication)
 - [Secret sources](#secret-sources)
 - [Environment variables emitted](#environment-variables-emitted)
 - [Shell integration](#shell-integration)
@@ -615,6 +616,41 @@ Every secret-backed field (`api_key`, `base_url`, profile `env`, and tool `env` 
 | File | `{ file = "/path/to/file" }` | Read file contents; `~` is expanded; trailing newline stripped. |
 | Command | `{ command = "some-cli read secret/path" }` | Run command via shell; stdout becomes the secret; trailing newline stripped. |
 
+### Native tool authentication
+
+A native profile injects no gateway credentials. The launched tool uses its own
+sign-in instead, for example a Claude Pro/Max subscription login in Claude Code:
+
+```toml
+[profiles.claude-sub]
+label = "Claude subscription"
+auth = { type = "native" }
+
+# Optional: keep the subscription login separate from other Claude Code state.
+# Literal env values are not tilde-expanded, so use an absolute path.
+[profiles.claude-sub.env]
+CLAUDE_CONFIG_DIR = "/home/me/.claude-sub"
+```
+
+```sh
+aix claude claude-sub                  # then run /login once inside Claude Code
+aix exec claude-sub -- claude -p "hi"  # same environment for any command
+```
+
+`aix <tool>`, `aix run`, `aix exec`, and `aix shell` start the child with
+`AIX_PROFILE`, profile and tool `env` entries, and remove inherited
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LITELLM_API_KEY`, and `LITELLM_BASE_URL`,
+so a key exported by your shell cannot override the tool's sign-in. A
+`[profiles.<name>.tool_configs.codex] config_dir` still selects `CODEX_HOME`.
+
+Native profiles must not set `base_url`. Commands that need gateway credentials
+(`aix env`, `ask`, `prompt`, `models`, `spend`, `status`, `doctor`, `lease`)
+reject them, as do `local_gateway` tools, run policies with `max_budget` or
+`allowed_models`, and LiteLLM usage history. Traffic bypasses aix, so local
+usage reports carry no cost. Declare the profile in Home Manager with
+`programs.aix.profiles.<name>.auth = "native";`.
+
 Only one source per field is allowed. Mixing sources in the same field is a config validation error.
 
 ---
@@ -622,7 +658,7 @@ Only one source per field is allowed. Mixing sources in the same field is a conf
 ## Environment variables emitted
 
 For API-key profiles, `aix env` and `aix exec` always inject all seven variables.
-These commands reject ChatGPT profiles instead of exporting OAuth credentials.
+These commands reject ChatGPT profiles instead of exporting OAuth credentials. `aix env` rejects native profiles; `aix exec` runs them without gateway credentials (see [Native tool authentication](#native-tool-authentication)).
 
 | Variable | Value |
 |---|---|

@@ -16,6 +16,8 @@ use uuid::Uuid;
 
 #[path = "launch/chatgpt.rs"]
 mod chatgpt;
+#[path = "launch/native.rs"]
+mod native;
 #[path = "launch/opencode.rs"]
 mod opencode;
 #[path = "launch/opencode_config.rs"]
@@ -323,6 +325,8 @@ async fn resolve_tool_launch(
     let is_chatgpt = profile.auth.is_chatgpt();
     let mut resolution = if is_chatgpt {
         chatgpt::resolve_tool_launch(request, &context, profile, timeout).await?
+    } else if profile.auth.is_native() {
+        native::resolve_tool_launch(request, &context, profile)?
     } else {
         resolve_api_key_launch(request, &context, profile)?
     };
@@ -364,6 +368,9 @@ async fn resolve_tool_launch(
 fn resolve_launch_env_inner(request: LaunchRequest<'_>) -> Result<LaunchResolution> {
     let context = load_launch_context(&request)?;
     let profile = context.profile()?;
+    if profile.auth.is_native() {
+        return native::resolve_tool_launch(request, &context, profile);
+    }
     resolve_api_key_launch(request, &context, profile)
 }
 
@@ -407,7 +414,7 @@ fn load_launch_context(request: &LaunchRequest<'_>) -> Result<LaunchContext> {
             available_hint: config::format_available_profiles(&cfg),
         })?;
     let budget_requested = policy.is_some_and(|policy| policy.max_budget.is_some());
-    if budget_requested && profile.auth.is_chatgpt() {
+    if budget_requested && !profile.auth.is_api_key() {
         return Err(AixError::RunPolicyBudgetUnavailable.into());
     }
     if (request.require_litellm || budget_requested) && explicit_non_litellm_gateway {

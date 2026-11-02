@@ -130,7 +130,7 @@ impl AuthService {
         auth: &ProfileAuth,
     ) -> Result<AuthStatus, AixError> {
         match auth {
-            ProfileAuth::ApiKey { .. } => Ok(AuthStatus {
+            ProfileAuth::ApiKey { .. } | ProfileAuth::Native => Ok(AuthStatus {
                 profile: profile_name.to_owned(),
                 auth_type: auth.auth_type().to_owned(),
                 state: "configured",

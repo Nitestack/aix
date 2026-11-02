@@ -166,6 +166,12 @@ async fn diagnose(
     {
         return Err(AixError::ChatGptAuthUnsupported.into());
     }
+    if selected_profile
+        .as_ref()
+        .is_some_and(|profile| profile.auth.is_native())
+    {
+        return Err(AixError::NativeAuthUnsupported.into());
+    }
 
     let (api_key, base_url) = match (selected_profile, config.as_ref(), env_files_loaded) {
         (Some(profile), Some(cfg), true) => {
