@@ -2,6 +2,7 @@ use crate::commands::env::{collect_profile_vars_excluding, collect_vars, resolve
 use crate::commands::ProfileSelection;
 use crate::config;
 use crate::error::AixError;
+use crate::herdr;
 use crate::local_gateway::{
     ApiKeyGatewayHandle, ChatGptResponsesHandle, LaunchContext as LocalGatewayContext, ServerHandle,
 };
@@ -873,6 +874,7 @@ pub async fn run_named_tool(
         print_sidecar_dry_run(&resolved);
         return run_command(&resolved.program, &args, &resolved.env, true);
     }
+    herdr::label_pane(name, &resolved.env.profile_name);
 
     let mut sidecar = start_launch_sidecar(&mut resolved, timeout, None, None).await?;
     if let Err(error) = resolved.prepare_tool_config() {
