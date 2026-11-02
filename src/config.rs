@@ -203,10 +203,6 @@ impl ProfileAuth {
         matches!(self, Self::ChatGpt)
     }
 
-    pub fn can_query_litellm_usage(&self) -> bool {
-        matches!(self, Self::ApiKey { .. })
-    }
-
     pub fn local_usage_cost_is_not_applicable(&self) -> bool {
         matches!(self, Self::ChatGpt)
     }
@@ -310,7 +306,6 @@ pub struct PromptPreset {
 #[serde(deny_unknown_fields)]
 pub struct RunPolicy {
     pub profile: Option<String>,
-    pub max_budget: Option<f64>,
     pub max_duration: String,
     pub allowed_models: Option<Vec<String>>,
     #[serde(default)]
@@ -506,12 +501,6 @@ pub fn validate(config: &Config) -> Result<(), AixError> {
         let policy = &config.run_policies[name];
         if name.trim().is_empty() {
             return Err(AixError::EmptyRunPolicyName);
-        }
-        if policy
-            .max_budget
-            .is_some_and(|budget| !budget.is_finite() || budget <= 0.0)
-        {
-            return Err(AixError::InvalidRunPolicyBudget { name: name.clone() });
         }
         if crate::duration::parse_litellm_duration(&policy.max_duration).is_none() {
             return Err(AixError::InvalidRunPolicyDuration { name: name.clone() });
@@ -939,6 +928,82 @@ fast = "work-fast-model"
     fn parse_json5() {
         let cfg: Config = json5::from_str(JSON5).unwrap();
         assert_standard(&cfg);
+    }
+
+    #[test]
+    fn run_policies_accept_current_fields_and_reject_removed_budget_field() {
+        let valid_toml = r#"
+[endpoint]
+base_url = "https://example.com"
+[profiles.work]
+api_key = "test-key"
+[run_policies.implement]
+profile = "work"
+max_duration = "2h"
+allowed_models = ["smart", "fast"]
+tags = ["phase:implement"]
+"#;
+        let configs = [
+            toml::from_str::<Config>(valid_toml).unwrap(),
+            serde_yaml::from_str::<Config>(
+                "endpoint:\n  base_url: https://example.com\nprofiles:\n  work:\n    api_key: test-key\nrun_policies:\n  implement:\n    profile: work\n    max_duration: 2h\n    allowed_models: [smart, fast]\n    tags: [phase:implement]\n",
+            )
+            .unwrap(),
+            serde_json::from_str::<Config>(
+                r#"{"endpoint":{"base_url":"https://example.com"},"profiles":{"work":{"api_key":"test-key"}},"run_policies":{"implement":{"profile":"work","max_duration":"2h","allowed_models":["smart","fast"],"tags":["phase:implement"]}}}"#,
+            )
+            .unwrap(),
+            json5::from_str::<Config>(
+                "{endpoint:{base_url:'https://example.com'},profiles:{work:{api_key:'test-key'}},run_policies:{implement:{profile:'work',max_duration:'2h',allowed_models:['smart','fast'],tags:['phase:implement']}}}",
+            )
+            .unwrap(),
+        ];
+
+        for config in &configs {
+            validate(config).unwrap();
+            let policy = &config.run_policies["implement"];
+            assert_eq!(policy.profile.as_deref(), Some("work"));
+            assert_eq!(policy.max_duration, "2h");
+            assert_eq!(
+                policy
+                    .allowed_models
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                vec!["smart", "fast"]
+            );
+            assert_eq!(policy.tags, ["phase:implement"]);
+        }
+
+        let removed_budget_configs = [
+            toml::from_str::<Config>(
+                "[run_policies.legacy]\nmax_duration = '1h'\nmax_budget = 3.0\n",
+            )
+            .err()
+            .map(|error| error.to_string()),
+            serde_yaml::from_str::<Config>(
+                "run_policies:\n  legacy:\n    max_duration: 1h\n    max_budget: 3.0\n",
+            )
+            .err()
+            .map(|error| error.to_string()),
+            serde_json::from_str::<Config>(
+                r#"{"run_policies":{"legacy":{"max_duration":"1h","max_budget":3.0}}}"#,
+            )
+            .err()
+            .map(|error| error.to_string()),
+            json5::from_str::<Config>("{run_policies:{legacy:{max_duration:'1h',max_budget:3.0}}}")
+                .err()
+                .map(|error| error.to_string()),
+        ];
+        for error in removed_budget_configs {
+            let error = error.expect("removed max_budget must be rejected");
+            assert!(
+                error.contains("max_budget"),
+                "expected an explicit unknown-field error, got: {error}"
+            );
+        }
     }
 
     #[test]

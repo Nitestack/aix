@@ -1,14 +1,13 @@
 use crate::cache::Cache;
 use crate::commands::env::resolve_profile;
-use crate::commands::spend::{format_age, has_spend_data, spend_summary};
+use crate::commands::spend::format_age;
 use crate::commands::GatewayRequestOptions;
 use crate::config::{self, Gateway, KnownGateway, KnownProvider, Provider};
 use crate::error::AixError;
-use crate::gateway::{openai::OpenAiClient, LiteLlmAdminClient};
+use crate::gateway::{openai::OpenAiClient, BudgetClient, BudgetInfo, BudgetLayer};
 use crate::output;
 use color_eyre::Result;
 use serde::Serialize;
-use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -91,17 +90,12 @@ async fn load_spend(
     refresh: bool,
     timeout: Duration,
 ) -> std::result::Result<SpendData, AixError> {
-    if matches!(cfg.endpoint.gateway.as_ref(), Some(Gateway::Custom(_))) {
-        return Ok(SpendData::unavailable(SpendAvailability::Unsupported));
-    }
-
     let cache = Cache::from_config(&cfg.cache);
     if !refresh {
         if let Some((data, fetched_at)) = cache.get(base_url, api_key) {
-            if has_spend_data(&data, api_key) {
+            if let Some(budget) = BudgetInfo::from_cache_value(&data) {
                 return Ok(SpendData::available(
-                    &data,
-                    api_key,
+                    &budget,
                     SpendSource::Cache,
                     Some(fetched_at),
                 ));
@@ -109,41 +103,22 @@ async fn load_spend(
         }
     }
 
-    match LiteLlmAdminClient::with_timeout(base_url, api_key, timeout)
-        .user_info()
+    match BudgetClient::with_timeout(base_url, api_key, timeout)
+        .key_info()
         .await
     {
-        Ok(data) => {
-            if !has_spend_data(&data, api_key) {
-                return Ok(SpendData::unavailable(SpendAvailability::Unavailable));
-            }
-            cache.put(base_url, api_key, &data);
-            Ok(SpendData::available(
-                &data,
-                api_key,
-                SpendSource::Live,
-                None,
-            ))
-        }
-        Err(AixError::BudgetExceeded { spend, max_budget }) => {
-            let data = json!({
-                "spend": spend,
-                "max_budget": max_budget,
-                "_aix_budget_exceeded": true
-            });
-            cache.put(base_url, api_key, &data);
-            Ok(SpendData::available(
-                &data,
-                api_key,
-                SpendSource::Live,
-                None,
-            ))
+        Ok(budget) => {
+            cache.put(base_url, api_key, &budget.to_cache_value());
+            Ok(SpendData::available(&budget, SpendSource::Live, None))
         }
         Err(AixError::GatewayError {
             status: 404 | 405 | 501,
             ..
         }) => Ok(SpendData::unavailable(SpendAvailability::Unsupported)),
         Err(AixError::HttpError(error)) if error.is_timeout() => Err(AixError::HttpError(error)),
+        Err(AixError::GatewayProtocolError(message)) => {
+            Err(AixError::GatewayProtocolError(message))
+        }
         Err(_) => Ok(SpendData::unavailable(SpendAvailability::Unavailable)),
     }
 }
@@ -196,34 +171,24 @@ struct SpendCacheData {
 #[derive(Serialize)]
 struct SpendData {
     status: SpendAvailability,
-    spend: Option<f64>,
-    max_budget: Option<f64>,
-    remaining_budget: Option<f64>,
-    percent_used: Option<f64>,
+    key_spent_usd: Option<f64>,
+    remaining_usd: Option<f64>,
+    limited_by: Option<String>,
+    layers: Option<Vec<BudgetLayer>>,
+    expires_at: Option<String>,
     cache: SpendCacheData,
 }
 
 impl SpendData {
-    fn available(
-        data: &Value,
-        api_key: &str,
-        source: SpendSource,
-        fetched_at: Option<u64>,
-    ) -> Self {
-        let summary = spend_summary(data, api_key);
-        let remaining_budget = summary.max_budget.map(|budget| budget - summary.spend);
-        let percent_used = summary
-            .max_budget
-            .filter(|budget| *budget > 0.0)
-            .map(|budget| summary.spend / budget * 100.0);
+    fn available(budget: &BudgetInfo, source: SpendSource, fetched_at: Option<u64>) -> Self {
         let age_seconds = fetched_at.map(|time| crate::cache::now_secs().saturating_sub(time));
-
         Self {
             status: SpendAvailability::Available,
-            spend: Some(summary.spend),
-            max_budget: summary.max_budget,
-            remaining_budget,
-            percent_used,
+            key_spent_usd: Some(budget.key_spent_usd),
+            remaining_usd: budget.remaining_usd,
+            limited_by: budget.limited_by.clone(),
+            layers: Some(budget.layers.clone()),
+            expires_at: budget.expires_at.clone(),
             cache: SpendCacheData {
                 source,
                 age_seconds,
@@ -234,10 +199,11 @@ impl SpendData {
     fn unavailable(status: SpendAvailability) -> Self {
         Self {
             status,
-            spend: None,
-            max_budget: None,
-            remaining_budget: None,
-            percent_used: None,
+            key_spent_usd: None,
+            remaining_usd: None,
+            limited_by: None,
+            layers: None,
+            expires_at: None,
             cache: SpendCacheData {
                 source: SpendSource::None,
                 age_seconds: None,
@@ -319,27 +285,19 @@ fn print_spend_human(spend: &SpendData) {
         SpendSource::None => String::new(),
     };
 
-    match (spend.spend, spend.max_budget) {
-        (Some(amount), Some(budget)) => {
-            let percent = spend
-                .percent_used
-                .map(|percent| format!(" · {percent:.0}% used"))
-                .unwrap_or_default();
-            if let Some(remaining) = spend.remaining_budget.filter(|value| *value < 0.0) {
-                println!(
-                    "Spend       ${amount:.2} / ${budget:.2} · over budget by ${:.2}{percent}{cache_suffix}",
-                    -remaining
-                );
-            } else {
-                let remaining = spend.remaining_budget.unwrap_or_default();
-                println!(
-                    "Spend       ${amount:.2} / ${budget:.2} · ${remaining:.2} remaining{percent}{cache_suffix}"
-                );
-            }
-        }
-        (Some(amount), None) => {
-            println!("Spend       ${amount:.2} · no budget set{cache_suffix}");
-        }
-        _ => println!("Spend       unavailable"),
+    let Some(key_spent_usd) = spend.key_spent_usd else {
+        println!("Spend       unavailable");
+        return;
+    };
+    println!();
+    for line in crate::commands::spend::display::budget_lines(
+        key_spent_usd,
+        spend.remaining_usd,
+        spend.limited_by.as_deref(),
+        spend.layers.as_deref().unwrap_or_default(),
+        spend.expires_at.as_deref(),
+        &cache_suffix,
+    ) {
+        println!("{line}");
     }
 }

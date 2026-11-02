@@ -10,6 +10,8 @@ These scenarios need real shells or locally installed tools and are not fully co
 - [ ] **`aix shell`** — run `aix shell <profile>` in a real shell; confirm the child receives `AIX_PROFILE` and the seven generated credential variables (not `AIX_API_KEY`/`AIX_BASE_URL`).
 - [ ] **Configured named tool** — configure a generic `[tools.<name>]` entry with an executable alias and non-default `api_format`; confirm `aix <name>` launches that executable with tool env. Also confirm unconfigured `claude` and another tool retain their legacy fallbacks.
 - [ ] **Managed run** — run an interactive child with `aix run -- ...`; confirm streams stay attached, `AIX_RUN_ID` reaches the child, and `aix runs show` displays metadata without command arguments or output.
+- [ ] **Local usage** — run `aix usage` for an API-key or ChatGPT profile with no usable gateway/key secret; confirm it reports local events without contacting the gateway.
+- [ ] **Native key budget** — against a gateway implementing `GET /v1/key/info`, confirm spend/status use the authenticated key's native budget response and expose no other credential data.
 - [ ] **PowerShell env output** — run `aix env <profile> --format powershell` in a real PowerShell session and pipe to `Invoke-Expression`; confirm `$env:AIX_PROFILE` is set.
 - [ ] **Nushell env loading** — run `aix env <profile> --format nu` in a real Nushell session and source the output; confirm `$env.AIX_PROFILE` is set.
 - [ ] **cmd.exe env output** — run `aix env <profile> --format cmd > "%TEMP%\aix-env.cmd" && call "%TEMP%\aix-env.cmd"` in a real cmd.exe session; confirm `%AIX_PROFILE%` is set.

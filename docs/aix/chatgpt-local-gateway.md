@@ -44,8 +44,8 @@ for an eligible aix ChatGPT profile, so no live request was attempted.
 
 ## Reproducible live smoke test
 
-Use an eligible ChatGPT profile already signed in through aix. Configure a
-no-budget run policy that allows the exact model to test; for example:
+Use an eligible ChatGPT profile already signed in through aix. Configure a run
+policy that allows the exact model and bounds the run duration; for example:
 
 Replace `MODEL_ID` below with an exact model ID enabled for that account.
 

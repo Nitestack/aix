@@ -704,43 +704,15 @@ fn plain_managed_run_uses_chatgpt_binding_without_persisting_credentials() {
 }
 
 #[test]
-fn chatgpt_profiles_reject_leased_runs_before_gateway_or_auth_network_access() {
-    let dir = assert_fs::TempDir::new().unwrap();
-    let config = write_config(&dir, TOOL_CONFIG);
-    let auth_dir = dir.path().join("auth");
-
-    cmd()
-        .env("AIX_CONFIG", &config)
-        .env("AIX_AUTH_DIR", &auth_dir)
-        .args([
-            "--profile",
-            "personal",
-            "run",
-            "--lease",
-            "--budget",
-            "1",
-            "--dry-run",
-            "--",
-            "codex",
-        ])
-        .assert()
-        .code(2)
-        .stderr(predicates::str::contains(
-            "LiteLLM lease and run-policy flows require an API-key profile",
-        ));
-    assert!(!auth_dir.exists());
-}
-
-#[test]
-fn chatgpt_run_policy_with_budget_fails_with_explicit_unavailable_capability() {
+fn chatgpt_run_policy_duration_dry_run_needs_no_auth_state() {
     let dir = assert_fs::TempDir::new().unwrap();
     let config_text = format!(
-        "{TOOL_CONFIG}\n[run_policies.bounded]\nprofile = 'personal'\nmax_budget = 3.0\nmax_duration = '1h'\n"
+        "{TOOL_CONFIG}\n[run_policies.bounded]\nprofile = 'personal'\nmax_duration = '1h'\n"
     );
     let config = write_config(&dir, &config_text);
     let auth_dir = dir.path().join("auth");
 
-    cmd()
+    let output = cmd()
         .env("AIX_CONFIG", &config)
         .env("AIX_AUTH_DIR", &auth_dir)
         .args([
@@ -749,20 +721,23 @@ fn chatgpt_run_policy_with_budget_fails_with_explicit_unavailable_capability() {
             "run",
             "--policy",
             "bounded",
+            "--duration",
+            "30m",
+            "--dry-run",
             "--",
             "codex",
         ])
         .assert()
-        .code(2)
-        .stderr(predicates::str::contains(
-            "monetary budget enforcement unavailable for this transport",
-        ));
+        .success()
+        .get_output()
+        .clone();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duration: 30m"));
     assert!(!auth_dir.exists());
 }
 
 #[test]
 #[cfg(unix)]
-fn chatgpt_opencode_run_policy_without_budget_launches_and_records_no_budget() {
+fn chatgpt_opencode_run_policy_launches_with_local_enforcement() {
     let dir = assert_fs::TempDir::new().unwrap();
     let state_dir = dir.path().join("state");
     let config_text = format!(

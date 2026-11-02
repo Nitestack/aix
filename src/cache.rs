@@ -2,6 +2,7 @@ use crate::config::CacheConfig;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -14,19 +15,15 @@ pub struct Cache {
     disabled: bool,
 }
 
-const CACHE_VERSION: u8 = 1;
-const KEY_DATA_SANITIZATION_VERSION: u8 = 1;
+const CACHE_VERSION: u8 = 2;
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CacheEntry {
-    #[serde(default)]
     version: u8,
-    #[serde(default)]
-    key_data_version: u8,
     fetched_at: u64,
     data: Value,
-    #[serde(default, rename = "key_suffix")]
-    key_identity: Option<String>,
+    key_hash: String,
 }
 
 impl Cache {
@@ -57,32 +54,11 @@ impl Cache {
         (|| {
             let dir = self.endpoint_dir(base_url);
             let index = load_index(&dir);
-            let identities = key_identities(api_key);
-            let user_id = identities
-                .iter()
-                .find_map(|identity| index.get(identity))?
-                .clone();
+            let identity = key_identity(api_key);
+            let user_id = index.get(&identity)?.clone();
             let content = std::fs::read_to_string(dir.join(format!("{user_id}.json"))).ok()?;
             let entry: CacheEntry = serde_json::from_str(&content).ok()?;
-            if entry.version != CACHE_VERSION {
-                return None;
-            }
-            if entry.key_data_version < KEY_DATA_SANITIZATION_VERSION
-                && data_has_key_entries(&entry.data)
-            {
-                // Old cached key lists could contain the full value of a short key.
-                // Refresh once to store the new opaque key names instead.
-                return None;
-            }
-            // Responses without a keys list are scoped to the key that fetched them.
-            // Entries written by older versions have no scope marker, so they miss and
-            // refresh instead of reusing a possibly wrong per-key response.
-            if data_is_key_scoped(&entry.data)
-                && !entry
-                    .key_identity
-                    .as_deref()
-                    .is_some_and(|cached| identities.iter().any(|identity| identity == cached))
-            {
+            if entry.version != CACHE_VERSION || entry.key_hash != identity {
                 return None;
             }
             if self.ttl_secs > 0 {
@@ -103,34 +79,19 @@ impl Cache {
             let dir = self.endpoint_dir(base_url);
             create_private_dir_all(&self.base_dir)?;
             create_private_dir_all(&dir)?;
-            let key_scoped = data_is_key_scoped(data);
-            let user_id = if key_scoped {
-                format!("key:{}", fnv1a_hex(api_key.as_bytes()))
-            } else {
-                derive_user_id(api_key, data)
-            };
+            let identity = key_identity(api_key);
+            let user_id = format!("key-{identity}");
             // Load index BEFORE writing data file to narrow the TOCTOU window
             let mut index = load_index(&dir);
-            let identity = key_identity(api_key);
             let entry = CacheEntry {
                 version: CACHE_VERSION,
-                key_data_version: KEY_DATA_SANITIZATION_VERSION,
                 fetched_at: now_secs(),
                 data: data.clone(),
-                key_identity: key_scoped.then_some(identity),
+                key_hash: identity.clone(),
             };
             let json = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
             write_atomic(&dir.join(format!("{user_id}.json")), &json)?;
-            for identity in key_identities(api_key) {
-                index.insert(identity, user_id.clone());
-            }
-            if let Some(keys) = data.get("keys").and_then(|v| v.as_array()) {
-                for k in keys {
-                    if let Some(kn) = k.get("key_name").and_then(|v| v.as_str()) {
-                        index.insert(key_identity_from_name(kn), user_id.clone());
-                    }
-                }
-            }
+            index.insert(identity, user_id);
             save_index(&dir, &index)
         })();
     }
@@ -179,83 +140,13 @@ impl Cache {
 }
 
 pub(crate) fn key_identity(api_key: &str) -> String {
-    let characters = api_key.chars().collect::<Vec<_>>();
-    if is_short_key(api_key) {
-        return hashed_identity("short", api_key);
-    }
-    characters[characters.len() - 4..].iter().collect()
-}
-
-pub(crate) fn sanitized_key_name(api_key: &str) -> String {
-    let masked_suffix = api_key.strip_prefix("sk-...");
-    let identity_source = masked_suffix.unwrap_or(api_key);
-    let identity = if masked_suffix.is_some() && is_short_key(identity_source) {
-        hashed_identity("suffix", identity_source)
-    } else {
-        key_identity(identity_source)
-    };
-    if is_short_key(identity_source) {
-        format!("sk-short-{identity}")
-    } else {
-        format!("sk-...{identity}")
-    }
-}
-
-pub(crate) fn key_identity_matches_name(api_key: &str, key_name: &str) -> bool {
-    if let Some(name_identity) = key_name.strip_prefix("sk-short-") {
-        if is_short_key(api_key) {
-            name_identity == key_identity(api_key)
-                || name_identity == hashed_identity("suffix", api_key)
-        } else {
-            name_identity == hashed_identity("suffix", &key_identity(api_key))
-        }
-    } else {
-        key_name.ends_with(&key_identity(api_key))
-    }
-}
-
-fn key_identity_from_name(key_name: &str) -> String {
-    key_name
-        .strip_prefix("sk-short-")
-        .map(str::to_owned)
-        .unwrap_or_else(|| key_identity(key_name))
-}
-
-fn key_identities(api_key: &str) -> Vec<String> {
-    let identity = key_identity(api_key);
-    if is_short_key(api_key) {
-        return vec![identity, hashed_identity("suffix", api_key)];
-    }
-    vec![identity.clone(), hashed_identity("suffix", &identity)]
-}
-
-fn hashed_identity(domain: &str, value: &str) -> String {
-    let mut input = Vec::with_capacity(domain.len() + value.len() + 1);
-    input.extend_from_slice(domain.as_bytes());
-    input.push(b':');
-    input.extend_from_slice(value.as_bytes());
-    fnv1a_hex(&input)
-}
-
-fn is_short_key(api_key: &str) -> bool {
-    api_key.chars().count() <= 4
-}
-
-fn derive_user_id(api_key: &str, data: &Value) -> String {
-    if let Some(uid) = data.get("user_id").and_then(|v| v.as_str()) {
-        return uid.to_string();
-    }
-    format!("key:{}", fnv1a_hex(api_key.as_bytes()))
-}
-
-fn data_is_key_scoped(data: &Value) -> bool {
-    data.get("keys").and_then(|v| v.as_array()).is_none()
-}
-
-fn data_has_key_entries(data: &Value) -> bool {
-    data.get("keys")
-        .and_then(Value::as_array)
-        .is_some_and(|keys| !keys.is_empty())
+    let digest = Sha256::digest(api_key.as_bytes());
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    digest
+        .iter()
+        .flat_map(|byte| [HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 0x0f)]])
+        .map(char::from)
+        .collect()
 }
 
 fn load_index(dir: &Path) -> HashMap<String, String> {
@@ -345,6 +236,8 @@ mod tests {
     use super::*;
     use assert_fs::TempDir;
 
+    const BASE_URL: &str = "https://api.example.com";
+
     fn test_cache(dir: &TempDir) -> Cache {
         Cache {
             base_dir: dir.path().to_path_buf(),
@@ -353,28 +246,44 @@ mod tests {
         }
     }
 
+    fn sample_data(spend: f64) -> Value {
+        serde_json::json!({
+            "key_spent_usd": spend,
+            "remaining_usd": null,
+            "limited_by": null,
+            "layers": [],
+            "expires_at": null
+        })
+    }
+
+    fn cache_file(cache: &Cache, base_url: &str, api_key: &str) -> PathBuf {
+        let dir = cache.endpoint_dir(base_url);
+        let user_id = load_index(&dir)
+            .get(&key_identity(api_key))
+            .unwrap()
+            .clone();
+        dir.join(format!("{user_id}.json"))
+    }
+
     #[test]
     fn failed_atomic_write_preserves_the_previous_cache_entry() {
         let dir = TempDir::new().unwrap();
         let cache = test_cache(&dir);
-        let base_url = "https://api.example.com";
         let api_key = "sk-preserve-entry";
-        let previous = serde_json::json!({ "spend": 12.5 });
-        cache.put(base_url, api_key, &previous);
+        let previous = sample_data(12.5);
+        cache.put(BASE_URL, api_key, &previous);
 
-        let endpoint_dir = cache.endpoint_dir(base_url);
-        let user_id = load_index(&endpoint_dir)
-            .get(&key_identity(api_key))
-            .unwrap()
-            .clone();
-        let entry_path = endpoint_dir.join(format!("{user_id}.json"));
-        let result = write_atomic_with(&entry_path, "partial replacement", |file, _| {
-            file.write_all(b"partial")?;
-            Err(std::io::Error::other("simulated cache write failure"))
-        });
+        let result = write_atomic_with(
+            &cache_file(&cache, BASE_URL, api_key),
+            "partial replacement",
+            |file, _| {
+                file.write_all(b"partial")?;
+                Err(std::io::Error::other("simulated cache write failure"))
+            },
+        );
 
         assert!(result.is_err());
-        assert_eq!(cache.get(base_url, api_key).unwrap().0["spend"], 12.5);
+        assert_eq!(cache.get(BASE_URL, api_key).unwrap().0, previous);
     }
 
     #[cfg(unix)]
@@ -384,13 +293,9 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let cache = test_cache(&dir);
-        cache.put(
-            "https://api.example.com",
-            "sk-private-cache",
-            &serde_json::json!({ "spend": 1.0 }),
-        );
+        cache.put(BASE_URL, "sk-private-cache", &sample_data(1.0));
 
-        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
+        let endpoint_dir = cache.endpoint_dir(BASE_URL);
         assert_eq!(
             std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
             0o700
@@ -412,251 +317,129 @@ mod tests {
     }
 
     #[test]
-    fn key_identity_uses_last_4_characters() {
-        assert_eq!(key_identity("sk-abcdefgh"), "efgh");
+    fn key_identity_hashes_the_full_key_without_persisting_a_suffix() {
+        let first = "sk-first-1234";
+        let second = "sk-second-1234";
+        let first_identity = key_identity(first);
+        let second_identity = key_identity(second);
+
+        assert_eq!(first_identity.len(), 64);
+        assert_ne!(first_identity, second_identity);
+        assert!(!first_identity.contains("1234"));
+        assert!(!first_identity.contains(first));
+        assert!(!key_identity("abcd").contains("abcd"));
     }
 
     #[test]
-    fn short_key_identity_is_hashed() {
-        assert_eq!(key_identity("ab"), fnv1a_hex(b"short:ab"));
-    }
-
-    #[test]
-    fn four_character_key_identity_is_hashed() {
-        assert_eq!(key_identity("abcd"), fnv1a_hex(b"short:abcd"));
-    }
-
-    #[test]
-    fn sanitized_short_key_name_preserves_a_stable_cache_identity() {
-        let name = sanitized_key_name("ab");
-        assert_eq!(key_identity_from_name(&name), key_identity("ab"));
-        assert!(!name.contains("ab"));
-    }
-
-    #[test]
-    fn masked_short_key_names_are_sanitized_and_match_short_and_long_credentials() {
-        let name = sanitized_key_name("sk-...abcd");
-
-        assert_ne!(name, sanitized_key_name("abcd"));
-        assert!(!name.contains("abcd"));
-        assert!(key_identity_matches_name("sk-user-abcd", &name));
-        assert!(key_identity_matches_name("abcd", &name));
-    }
-
-    #[test]
-    fn derive_user_id_uses_response_field() {
-        let data = serde_json::json!({ "user_id": "u-123", "spend": 1.0 });
-        assert_eq!(derive_user_id("sk-any", &data), "u-123");
-    }
-
-    #[test]
-    fn derive_user_id_falls_back_to_deterministic_hash() {
-        let data = serde_json::json!({ "spend": 1.0 });
-        let id = derive_user_id("sk-mykey", &data);
-        assert!(id.starts_with("key:"), "got: {id}");
-        assert_eq!(
-            derive_user_id("sk-mykey", &data),
-            id,
-            "must be deterministic"
-        );
-        assert_ne!(
-            derive_user_id("sk-other", &data),
-            id,
-            "different key → different id"
-        );
-    }
-
-    #[test]
-    fn fnv1a_hex_is_deterministic_and_unique() {
-        assert_eq!(fnv1a_hex(b"hello"), fnv1a_hex(b"hello"));
-        assert_ne!(fnv1a_hex(b"hello"), fnv1a_hex(b"world"));
-        assert_eq!(fnv1a_hex(b"hello").len(), 16);
-    }
-
-    #[test]
-    fn get_returns_none_on_empty_cache() {
+    fn put_then_get_returns_data_and_fetch_time() {
         let dir = TempDir::new().unwrap();
         let cache = test_cache(&dir);
-        assert!(cache.get("https://api.example.com", "sk-abc123").is_none());
-    }
+        let data = sample_data(2.5);
 
-    #[test]
-    fn put_then_get_returns_data() {
-        let dir = TempDir::new().unwrap();
-        let cache = test_cache(&dir);
-        let data = serde_json::json!({
-            "user_id": "u-test",
-            "spend": 2.5,
-            "keys": [{ "key_name": "sk-...X1Y2" }]
-        });
-        cache.put("https://api.example.com", "sk-X1Y2", &data);
-        let (result, fetched_at) = cache.get("https://api.example.com", "sk-X1Y2").unwrap();
-        assert_eq!(result["user_id"], "u-test");
-        assert_eq!(result["spend"], 2.5);
+        cache.put(BASE_URL, "sk-X1Y2", &data);
+        let (result, fetched_at) = cache.get(BASE_URL, "sk-X1Y2").unwrap();
+        assert_eq!(result, data);
         assert!(fetched_at > 0);
     }
 
     #[test]
-    fn key_scoped_entries_do_not_share_a_user_file() {
+    fn cache_filenames_use_only_portable_characters() {
         let dir = TempDir::new().unwrap();
         let cache = test_cache(&dir);
-        let first = serde_json::json!({ "user_id": "u-shared", "spend": 1.0 });
-        let second = serde_json::json!({ "user_id": "u-shared", "spend": 2.0 });
+        let api_key = "sk-portable-cache";
+        let data = sample_data(2.5);
+        cache.put(BASE_URL, api_key, &data);
 
-        cache.put("https://api.example.com", "sk-first1", &first);
-        cache.put("https://api.example.com", "sk-second", &second);
-
-        assert_eq!(
-            cache.get("https://api.example.com", "sk-first1").unwrap().0["spend"],
-            1.0
-        );
-        assert_eq!(
-            cache.get("https://api.example.com", "sk-second").unwrap().0["spend"],
-            2.0
-        );
+        assert_eq!(cache.get(BASE_URL, api_key).unwrap().0, data);
+        for entry in std::fs::read_dir(cache.endpoint_dir(BASE_URL)).unwrap() {
+            let name = entry.unwrap().file_name();
+            let name = name.to_str().unwrap();
+            assert!(
+                name.bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte)),
+                "cache filename is not portable: {name}"
+            );
+        }
     }
 
     #[test]
-    fn legacy_key_scoped_entry_without_marker_is_not_reused() {
+    fn keys_with_the_same_suffix_never_share_cached_budget_data() {
         let dir = TempDir::new().unwrap();
         let cache = test_cache(&dir);
-        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
+        let first_key = "sk-first-1111";
+        let second_key = "sk-second-1111";
+        let first = sample_data(1.0);
+        let second = sample_data(2.0);
+
+        cache.put(BASE_URL, first_key, &first);
+        cache.put(BASE_URL, second_key, &second);
+
+        assert_eq!(cache.get(BASE_URL, first_key).unwrap().0, first);
+        assert_eq!(cache.get(BASE_URL, second_key).unwrap().0, second);
+    }
+
+    #[test]
+    fn cache_files_do_not_persist_raw_key_or_upstream_key_metadata() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let api_key = "sk-private-credential-6789";
+        cache.put(BASE_URL, api_key, &sample_data(1.0));
+
+        for entry in std::fs::read_dir(cache.endpoint_dir(BASE_URL)).unwrap() {
+            let content = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            for private in [api_key, "6789", "key_id", "key_name", "metadata"] {
+                assert!(!content.contains(private), "persisted {private}: {content}");
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_cache_versions_and_suffix_indexes_are_not_reused() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let api_key = "sk-legacy-cache-1234";
+        let endpoint_dir = cache.endpoint_dir(BASE_URL);
         std::fs::create_dir_all(&endpoint_dir).unwrap();
-        std::fs::write(
-            endpoint_dir.join("index.json"),
-            serde_json::json!({ "1111": "shared", "2222": "shared" }).to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            endpoint_dir.join("shared.json"),
-            serde_json::json!({
-                "fetched_at": now_secs(),
-                "data": { "user_id": "u-shared", "spend": 1.0 }
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        assert!(cache
-            .get("https://api.example.com", "sk-first1111")
-            .is_none());
-        assert!(cache
-            .get("https://api.example.com", "sk-second2222")
-            .is_none());
-    }
-
-    #[test]
-    fn put_warms_sibling_keys_from_response() {
-        let dir = TempDir::new().unwrap();
-        let cache = test_cache(&dir);
-        let data = serde_json::json!({
-            "user_id": "u-shared",
-            "spend": 1.0,
-            "keys": [
-                { "key_name": sanitized_key_name("sk-...A1B2") },
-                { "key_name": sanitized_key_name("sk-...C3D4") }
-            ]
-        });
-        cache.put("https://api.example.com", "sk-A1B2", &data);
-        assert!(
-            cache.get("https://api.example.com", "sk-C3D4").is_some(),
-            "sibling key from response should be cached"
-        );
-    }
-
-    #[test]
-    fn put_warms_short_sibling_keys_without_storing_them_raw() {
-        let dir = TempDir::new().unwrap();
-        let cache = test_cache(&dir);
-        let data = serde_json::json!({
-            "user_id": "u-short-keys",
-            "spend": 1.0,
-            "keys": [{ "key_name": sanitized_key_name("xy") }]
-        });
-        cache.put("https://api.example.com", "sk-source", &data);
-
-        assert!(cache.get("https://api.example.com", "xy").is_some());
-        let content = std::fs::read_to_string(
-            cache
-                .endpoint_dir("https://api.example.com")
-                .join("u-short-keys.json"),
-        )
-        .unwrap();
-        assert!(!content.contains("xy"));
-    }
-
-    #[test]
-    fn put_warms_masked_short_suffix_for_short_key_lookup() {
-        let dir = TempDir::new().unwrap();
-        let cache = test_cache(&dir);
-        let data = serde_json::json!({
-            "user_id": "u-masked-short-key",
-            "spend": 1.0,
-            "keys": [{ "key_name": sanitized_key_name("sk-...abcd") }]
-        });
-        cache.put("https://api.example.com", "sk-source", &data);
-
-        assert!(cache.get("https://api.example.com", "abcd").is_some());
-    }
-
-    #[test]
-    fn get_rejects_legacy_aggregate_key_lists_that_may_contain_raw_short_keys() {
-        let dir = TempDir::new().unwrap();
-        let cache = test_cache(&dir);
-        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
-        std::fs::create_dir_all(&endpoint_dir).unwrap();
-        let current_key = "sk-current-1234";
         let mut index = serde_json::Map::new();
-        index.insert(
-            key_identity(current_key),
-            Value::String("legacy-aggregate".to_string()),
-        );
+        index.insert("1234".to_string(), serde_json::json!("legacy"));
+        index.insert(key_identity(api_key), serde_json::json!("legacy"));
         std::fs::write(
             endpoint_dir.join("index.json"),
             Value::Object(index).to_string(),
         )
         .unwrap();
         std::fs::write(
-            endpoint_dir.join("legacy-aggregate.json"),
+            endpoint_dir.join("legacy.json"),
             serde_json::json!({
-                "version": CACHE_VERSION,
+                "version": 1,
                 "fetched_at": now_secs(),
-                "data": {
-                    "user_id": "u-legacy",
-                    "keys": [{ "key_name": "sk-...abcd", "spend": 1.0 }]
-                }
+                "data": { "spend": 1.0, "max_budget": 5.0 },
+                "key_suffix": "1234"
             })
             .to_string(),
         )
         .unwrap();
 
-        assert!(cache.get("https://api.example.com", current_key).is_none());
+        assert!(cache.get(BASE_URL, api_key).is_none());
     }
 
     #[test]
-    fn get_does_not_reuse_legacy_short_key_indexes() {
+    fn cache_rejects_entries_scoped_to_a_different_key() {
         let dir = TempDir::new().unwrap();
         let cache = test_cache(&dir);
-        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
-        std::fs::create_dir_all(&endpoint_dir).unwrap();
-        std::fs::write(
-            endpoint_dir.join("index.json"),
-            serde_json::json!({ "ab": "legacy-short-key" }).to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            endpoint_dir.join("legacy-short-key.json"),
-            serde_json::json!({
-                "version": CACHE_VERSION,
-                "fetched_at": now_secs(),
-                "data": { "spend": 1.0 },
-                "key_suffix": "ab"
-            })
-            .to_string(),
-        )
-        .unwrap();
+        let first_key = "sk-first-1234";
+        let second_key = "sk-second-1234";
+        cache.put(BASE_URL, first_key, &sample_data(1.0));
 
-        assert!(cache.get("https://api.example.com", "ab").is_none());
+        let endpoint_dir = cache.endpoint_dir(BASE_URL);
+        let mut index = load_index(&endpoint_dir);
+        index.insert(
+            key_identity(second_key),
+            index[&key_identity(first_key)].clone(),
+        );
+        save_index(&endpoint_dir, &index).unwrap();
+
+        assert!(cache.get(BASE_URL, second_key).is_none());
     }
 
     #[test]
@@ -664,16 +447,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut cache = test_cache(&dir);
         cache.ttl_secs = 1;
-        let data = serde_json::json!({ "user_id": "u-old", "spend": 0.0, "keys": [] });
-        cache.put("https://api.example.com", "sk-old1", &data);
-        let entry_path = cache
-            .endpoint_dir("https://api.example.com")
-            .join("u-old.json");
-        let mut raw: serde_json::Value =
+        let api_key = "sk-old-key";
+        cache.put(BASE_URL, api_key, &sample_data(0.0));
+        let entry_path = cache_file(&cache, BASE_URL, api_key);
+        let mut raw: Value =
             serde_json::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
         raw["fetched_at"] = serde_json::json!(0u64);
         std::fs::write(&entry_path, serde_json::to_string(&raw).unwrap()).unwrap();
-        assert!(cache.get("https://api.example.com", "sk-old1").is_none());
+
+        assert!(cache.get(BASE_URL, api_key).is_none());
     }
 
     #[test]
@@ -681,26 +463,26 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut cache = test_cache(&dir);
         cache.ttl_secs = 0;
-        let data = serde_json::json!({ "user_id": "u-inf", "spend": 0.0, "keys": [] });
-        cache.put("https://api.example.com", "sk-inf1", &data);
-        let entry_path = cache
-            .endpoint_dir("https://api.example.com")
-            .join("u-inf.json");
-        let mut raw: serde_json::Value =
+        let api_key = "sk-infinite-ttl";
+        cache.put(BASE_URL, api_key, &sample_data(0.0));
+        let entry_path = cache_file(&cache, BASE_URL, api_key);
+        let mut raw: Value =
             serde_json::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
         raw["fetched_at"] = serde_json::json!(0u64);
         std::fs::write(&entry_path, serde_json::to_string(&raw).unwrap()).unwrap();
-        assert!(cache.get("https://api.example.com", "sk-inf1").is_some());
+
+        assert!(cache.get(BASE_URL, api_key).is_some());
     }
 
     #[test]
     fn get_returns_none_when_disabled() {
         let dir = TempDir::new().unwrap();
         let mut cache = test_cache(&dir);
-        let data = serde_json::json!({ "user_id": "u-dis", "spend": 0.0, "keys": [] });
-        cache.put("https://api.example.com", "sk-dis1", &data);
+        let api_key = "sk-disabled-cache";
+        cache.put(BASE_URL, api_key, &sample_data(0.0));
         cache.disabled = true;
-        assert!(cache.get("https://api.example.com", "sk-dis1").is_none());
+
+        assert!(cache.get(BASE_URL, api_key).is_none());
     }
 
     #[test]
@@ -708,29 +490,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut cache = test_cache(&dir);
         cache.disabled = true;
-        let data = serde_json::json!({ "user_id": "u-skip", "spend": 0.0, "keys": [] });
-        cache.put("https://api.example.com", "sk-skip", &data);
-        let endpoint_dir = cache.endpoint_dir("https://api.example.com");
-        assert!(
-            !endpoint_dir.exists(),
-            "no files should be written when disabled"
-        );
+        cache.put(BASE_URL, "sk-disabled-cache", &sample_data(0.0));
+
+        assert!(!cache.endpoint_dir(BASE_URL).exists());
     }
 
     #[test]
     fn clear_removes_all_files_and_returns_count() {
         let dir = TempDir::new().unwrap();
         let cache = test_cache(&dir);
-        let data = serde_json::json!({ "user_id": "u-clr", "spend": 0.0, "keys": [] });
-        cache.put("https://api.example.com", "sk-clr1", &data);
-        cache.put("https://other.example.com", "sk-clr2", &data);
-        // Two endpoints → two subdirs, each with index.json + u-clr.json = 4 files
-        let count = cache.clear().unwrap();
-        assert_eq!(count, 4);
-        assert!(
-            dir.path().read_dir().unwrap().next().is_none(),
-            "base_dir should be empty after clear"
+        cache.put(BASE_URL, "sk-clear-one", &sample_data(0.0));
+        cache.put(
+            "https://other.example.com",
+            "sk-clear-two",
+            &sample_data(0.0),
         );
+
+        assert_eq!(cache.clear().unwrap(), 4);
+        assert!(dir.path().read_dir().unwrap().next().is_none());
     }
 
     #[test]

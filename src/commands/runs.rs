@@ -208,9 +208,8 @@ fn compact_count(count: u64) -> String {
 
 fn print_policy(policy: &RunPolicyRecord) {
     println!("Policy: {:?}", policy.name);
-    match policy.effective_budget {
-        Some(budget) => println!("Effective budget: ${budget:.2}"),
-        None => println!("Effective budget: (none)"),
+    if let Some(budget) = policy.effective_budget {
+        println!("Effective budget: ${budget:.2}");
     }
     println!("Effective duration: {:?}", policy.effective_duration);
     println!(

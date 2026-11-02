@@ -152,13 +152,12 @@
           aix-home-manager-policies = pkgs.runCommand "aix-home-manager-policies-check" { } ''
             grep -Fxq '[run_policies.implement]' ${homeManagerPolicyConfigs.configured}
             grep -Fxq 'profile = "work"' ${homeManagerPolicyConfigs.configured}
-            grep -q '^max_budget = 3' ${homeManagerPolicyConfigs.configured}
             grep -Fxq 'max_duration = "2h"' ${homeManagerPolicyConfigs.configured}
             grep -q 'allowed_models' ${homeManagerPolicyConfigs.configured}
             grep -q 'phase:implement' ${homeManagerPolicyConfigs.configured}
+            ! grep -Eq '^[[:space:]]*max_budget[[:space:]]*=' ${homeManagerPolicyConfigs.configured}
             grep -Fxq '[run_policies.research]' ${homeManagerPolicyConfigs.configured}
             grep -Fxq 'max_duration = "1h"' ${homeManagerPolicyConfigs.configured}
-            test "$(grep -A2 -F '[run_policies.research]' ${homeManagerPolicyConfigs.configured} | grep -c '^max_budget =')" -eq 0
             ! grep -q 'run_policies' ${homeManagerPolicyConfigs.legacy}
             touch $out
           '';

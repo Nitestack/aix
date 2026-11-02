@@ -124,3 +124,25 @@ without error. This is a known gap; validation of secret contents is left to cal
 - Duplicate profile labels cause a non-zero exit before any secret is read.
 - The selected profile name appears as the `AIX_PROFILE` value.
 - Child process exit codes are propagated unchanged.
+
+---
+
+## Current CLI compatibility: local usage and run policies
+
+`aix usage` now reads locally observed usage events only. It does not query
+upstream activity endpoints or resolve a profile's API key or gateway URL.
+Date-range and model, protocol, tool, and run filters continue to apply to the
+local event store. Use `aix spend` for the gateway's current-key budget
+information, read from its native `GET /v1/key/info` endpoint.
+
+Gateway-key lease creation, inspection, revocation, and `aix run --lease` /
+`--budget` flows are no longer supported. An upgrade does not contact the
+gateway, discover or revoke previously exported keys, or delete local run
+history. Older run records remain available offline, including their historical
+lease metadata. Any exported key remains a gateway-side credential and is not
+changed by upgrading aix.
+
+Run policies continue to support profile, maximum-duration, allowed-model, and
+tag constraints. The former `max_budget` policy field is rejected as an
+unknown config field; remove it from old policy entries rather than assuming a
+spend limit is still enforced.

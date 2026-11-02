@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Not IBM AIX.** This project has no relation to IBM's AIX operating system.
 
-Profile-aware CLI for AI tools and AI gateway utilities. Profiles can use gateway API keys or aix-managed Sign in with ChatGPT credentials. Spend reporting uses LiteLLM's admin API; model discovery works with any OpenAI-compatible gateway, and `aix ask` plus configured `aix prompt` presets provide domain-agnostic one-shot inference for API-key profiles.
+Profile-aware CLI for AI tools and AI gateway utilities. Profiles can use gateway API keys or aix-managed Sign in with ChatGPT credentials. Spend reporting uses the gateway's native current-key budget endpoint; usage reports locally observed activity only. Model discovery works with any OpenAI-compatible gateway, and `aix ask` plus configured `aix prompt` presets provide domain-agnostic one-shot inference for API-key profiles.
 
 `aix` reads a config file, resolves API keys and gateway URLs from various secret sources, and either exports them as shell variables, runs a command with those variables pre-set, or sends a one-shot text request to the gateway. ChatGPT sign-in credentials are stored separately with owner-only filesystem permissions; they are not exported to subprocesses.
 
@@ -24,7 +24,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Profiles can use gatewa
 - [Spend and budget](#spend-and-budget)
 - [Gateway status](#gateway-status)
 - [Diagnostics](#diagnostics)
-- [Historical usage](#historical-usage)
+- [Local usage](#local-usage)
 - [One-shot inference](#one-shot-inference)
   - [Reusable prompt presets](#reusable-prompt-presets)
 - [Managed runs](#managed-runs)
@@ -37,7 +37,7 @@ Profile-aware CLI for AI tools and AI gateway utilities. Profiles can use gatewa
 
 ## How it works
 
-`aix` manages named profiles pairing API keys with gateway URLs. It injects credentials into subprocesses and shells, reads gateway status and usage, discovers model IDs, sends one-shot inference requests, and can record metadata-only history around arbitrary commands.
+`aix` manages named profiles pairing API keys with gateway URLs. It injects credentials into subprocesses and shells, reads gateway status and current-key budget information, reports locally observed usage, discovers model IDs, sends one-shot inference requests, and can record metadata-only history around arbitrary commands.
 
 ```
 config file → profile selection → secret resolution → env vars → your tool
@@ -236,7 +236,8 @@ env_files = ["~/.env.aix"]
 [endpoint]
 # The gateway base URL — accepts any secret source (see below).
 base_url = { env = "AIX_BASE_URL" }
-# Optional metadata. `aix spend` and `aix usage` accept an unset gateway or "litellm" only.
+# Optional gateway metadata. `aix spend` uses the gateway's native key-info endpoint;
+# `aix usage` reads local events and does not contact the gateway.
 gateway = "litellm"
 # `provider` is optional metadata for other consumers.
 provider = "litellm"
@@ -306,7 +307,8 @@ named tool have an explicit `[tools.<name>.chatgpt]` binding. The binding names
 the one environment variable that receives the current short-lived access
 token. `aix env`, `aix shell`, `aix exec`, `aix ask`, and unconfigured tools do
 not receive OAuth credentials. `aix run -- <configured-tool>` uses the same
-binding, while LiteLLM leases and run policies remain API-key-only.
+binding. Declarative run policies remain available for profile, duration, model,
+and tag constraints; they do not create gateway keys or enforce spend caps.
 
 The refresh token, retained ID token, and issued OAuth client ID stay in aix's
 owner-only auth store; they are never passed to the child or written to run
@@ -596,7 +598,7 @@ variables), while an unconfigured `aix run` command receives both formats.
 ### Cache config
 
 ```toml
-# Optional: cache aix spend/status LiteLLM responses on disk (default: 1-hour TTL, enabled)
+# Optional: cache aix spend/status native gateway budget responses (default: 1-hour TTL, enabled)
 [cache]
 ttl_secs = 3600  # seconds before a cached response is considered stale; 0 = never expires
 disabled = false # set to true to always fetch fresh data
@@ -896,13 +898,38 @@ Human output contains one sorted model ID per line. If no IDs match a filter, th
 
 ## Spend and budget
 
-`aix spend` fetches live spend and budget data from your LiteLLM gateway and displays it as a human-readable progress bar.
+`aix spend` fetches the selected key's current spend and budget information from
+the gateway's native `GET /v1/key/info` endpoint and presents the values the
+gateway reports. It does not create or select another key.
+
+Key spend (`key_spent_usd`) is separate from effective remaining budget
+(`remaining_usd`). `layers` reports each key, personal, project, or tenant limit;
+`limited_by` identifies the limiting scope. A null remaining amount means
+unlimited, not zero. aix does not combine key spend with another layer's
+remaining balance to invent a maximum budget.
+
+Human output keeps the colored progress bars and aligns each layer's spend,
+limit, and remaining balance in a table. `*` marks the limiting budget. Uncapped
+layers show `unlimited` without a misleading percentage; small nonzero spend is
+shown with extra precision instead of rounding to zero. For example:
+
+```text
+Key spend   $41.53 · live
+Available   $12.00 · limited by project
+
+Budget     Spent / Limit    Remaining
+Key        $41.53 / $100.00  $58.47
+  [█████████████████░░░░░░░░░░░░░░░░░░░░░░░░░]  42% used
+Project *  $8.00 / $20.00    $12.00
+  [████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░]  40% used
+* Limiting budget
+```
 
 ```bash
 # Show spend for the default or selected profile
 aix spend work
 
-# JSON envelope containing aix's spend and optional max_budget fields
+# JSON envelope containing current-key budget information
 aix spend work --json
 
 # The global flag is also accepted before the command
@@ -912,51 +939,45 @@ aix --json spend work
 aix spend work --no-cache
 ```
 
-**Example output:**
-
-```
-$41.53 of $500.00  ·  $458.47 available (92%)  ·  cached 5m ago
-[████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  8% used
-```
-
-Responses are cached locally for 1 hour by default (configurable via `[cache]`). The `·  cached N ago` suffix appears when the result was served from cache. Use `--no-cache` to bypass the cache for a single call; the fresh response is still written to cache for subsequent calls.
-
-`aix spend` requires a LiteLLM-compatible gateway. If `gateway` is set in your config to a non-LiteLLM value, `aix spend` will refuse to run with a clear error. Leaving `gateway` unset (or setting it to `"litellm"`) is accepted.
+Responses are cached locally for 1 hour by default (configurable via `[cache]`).
+Use `--no-cache` to bypass the cache for one call; the fresh response is still
+written to cache for subsequent calls. The endpoint is a gateway capability and
+does not require a `gateway = "litellm"` metadata value.
 
 ---
 
 ## Gateway status
 
-`aix status` gives a one-screen overview of the selected profile, a live authenticated gateway probe, and available LiteLLM spend data:
+`aix status` gives a one-screen overview of the selected profile, a live
+authenticated gateway probe, and any available current-key budget information
+from `GET /v1/key/info`:
 
 ```bash
 # Use the default profile or select one explicitly
 aix status
 aix status work
 
-# Refresh spend data instead of using the spend cache
+# Refresh budget data instead of using the cache
 aix status work --refresh
 
 # Emit the shared JSON envelope
 aix --json status work
 ```
 
-The OpenAI-compatible `GET /v1/models` probe is always live, including when spend data comes from cache. `--refresh` bypasses only the spend cache; a successful probe reports its latency and authenticated state. The output shows configured gateway/provider metadata and only the API key's final four characters (short keys are fully redacted). The resolved gateway URL and full key are never printed.
-
-```text
-Profile     work · Work
-Gateway     litellm · provider=litellm · reachable · authenticated · 84ms
-Key         sk-...7fa2
-Spend       $41.53 / $500.00 · $458.47 remaining · 8% used · cached 5m ago
-```
-
-For a non-LiteLLM gateway, or when the LiteLLM management endpoint is unsupported, status still succeeds after a healthy gateway probe and reports spend as unsupported. Other spend lookup failures are reported as unavailable; they do not hide a successful connectivity/authentication result.
+The OpenAI-compatible `GET /v1/models` probe is always live, including when
+budget data comes from cache. `--refresh` bypasses only the budget cache; a
+successful probe reports its latency and authenticated state. The output shows
+configured gateway/provider metadata and only the API key's final four
+characters (short keys are fully redacted). The resolved gateway URL and full
+key are never printed. If native budget information is unsupported or
+unavailable, status reports that separately without hiding a successful
+connectivity/authentication result.
 
 ---
 
 ## Diagnostics
 
-`aix doctor [PROFILE]` runs read-only checks for config discovery and validation, profile and secret resolution, gateway authentication and model discovery, LiteLLM management access, and cache-directory writability. It never opens the profile picker. If no profile is available from the positional argument, `--profile`/`AIX_PROFILE`, or `default_profile`, the profile check fails instead of prompting.
+`aix doctor [PROFILE]` runs read-only checks for config discovery and validation, profile and secret resolution, gateway authentication and model discovery, native budget information, and cache-directory writability. It never opens the profile picker. If no profile is available from the positional argument, `--profile`/`AIX_PROFILE`, or `default_profile`, the profile check fails instead of prompting.
 
 ```bash
 # Human-readable checks
@@ -979,7 +1000,7 @@ Each row has one of four statuses: `PASS` means the check succeeded; `FAIL` incl
 | `base_url` | The profile or endpoint base-URL source resolves to a non-empty value. The value is never displayed. |
 | `gateway_auth` | An authenticated OpenAI-compatible request to the gateway succeeds. |
 | `model_discovery` | `/v1/models` returns a parseable model list with non-empty string IDs. |
-| `litellm_admin` | When `endpoint.gateway` is unset or `litellm`, the same safe `/key/info` management capability used by spend is reachable. An explicitly non-LiteLLM gateway is `N/A`. |
+| `budget_info` | The gateway's native `GET /v1/key/info` endpoint returns valid current-key budget information. |
 | `cache_directory` | The configured/default cache directory can be created and a temporary write probe succeeds; existing data is not deleted. |
 
 Checks that do not require the network have `duration_ms: null`; network checks report elapsed milliseconds. `doctor --json` uses the shared JSON envelope with an ordered `data.checks` array. Successful reports go to stdout; if any check fails, the report goes to stderr so failed commands leave stdout empty. Scripts can inspect failed checks from stderr. The process exits `0` only when every applicable check passes; otherwise it uses the exit category for the first failing layer (config `2`, secret `3`, authentication `4`, gateway/network `5`, cache/internal `1`, or budget/policy `6`). Skipped and not-applicable checks do not fail the command by themselves.
@@ -988,9 +1009,12 @@ Neither mode prints API keys, resolved secret-backed URLs, secret-file contents,
 
 ---
 
-## Historical usage
+## Local usage
 
-`aix usage` is the historical counterpart to `aix spend`. `spend` is the quick current-budget check: it reads LiteLLM's key information and caches the response for an hour by default. `usage` queries LiteLLM's `/user/daily/activity` accounting endpoint for daily spend, tokens, request counts, and model breakdowns. It does not estimate costs locally and does not use the `spend` cache.
+`aix usage` reports locally observed request and token activity for the selected
+profile. It reads aix's local usage-event store only: it does not contact a
+gateway, resolve API keys or gateway URLs, or fetch upstream history. For current
+gateway-reported budget information, use `aix spend`.
 
 ```bash
 # Default: the last 30 local calendar dates, including today
@@ -1002,16 +1026,29 @@ aix usage work --since 7d
 # Inclusive explicit date range
 aix usage work --start 2026-09-01 --end 2026-09-30
 
-# Filter and aggregate metrics for an exact model ID returned by LiteLLM
+# Filter observed events by model, protocol, tool, or managed run ID
 aix usage work --model gpt-6-luna
+aix usage work --protocol openai_responses
+aix usage work --tool opencode
+aix usage work --run RUN_ID
 
 # Stable JSON envelope
 aix usage work --json
 ```
 
-`--since Nd` requires a positive whole number of days and cannot be combined with `--start`/`--end`. Explicit dates must both be supplied as inclusive `YYYY-MM-DD` dates, with the end on or after the start. An unset `gateway` is accepted for compatibility; an explicitly non-LiteLLM gateway is rejected. If the gateway or LiteLLM version does not provide the daily activity endpoint, `aix usage` reports that history is unavailable. Authentication failures remain separate errors.
+`--since Nd` requires a positive whole number of days and cannot be combined
+with `--start`/`--end`. Explicit dates must both be supplied as inclusive
+`YYYY-MM-DD` dates, with the end on or after the start. Model, protocol, tool,
+and run filters match exact IDs/names. The default range is the last 30 local
+calendar dates, including today.
 
-JSON output uses the shared envelope. `usage.data` contains `start_date`, `end_date`, aggregate `spend`, `prompt_tokens`, `completion_tokens`, `total_tokens`, and `request_count`, plus `daily` and spend-sorted `models` arrays. `model_filter` is included when `--model` is applied. Only aix-owned fields are emitted; upstream API-key breakdowns and arbitrary response fields are discarded.
+JSON output uses the shared envelope. `usage.data` contains the selected date
+range, local request/token metrics, daily and model/tool/protocol/run
+breakdowns, and billing status. A cost is shown only when observed events carry
+an authoritative cost; unknown cost is reported as unavailable, and ChatGPT
+plan usage is not treated as USD spend. The `model_filter` field is included
+when `--model` is applied. Local reports contain no prompts, secret values, or
+upstream response fields.
 
 ---
 
@@ -1074,6 +1111,29 @@ command arguments, prompts, stdin/stdout/stderr, API keys, base URLs, or secret
 environment values. Listing is local and does not contact the gateway. `aix`
 does not manage worktrees, tasks, retries, or orchestration.
 
+Declarative run policies continue to constrain the selected profile, maximum
+duration, allowed models, and run tags. For example:
+
+```toml
+[run_policies.review]
+profile = "work"
+max_duration = "30m"
+allowed_models = ["fast"]
+tags = ["verification"]
+```
+
+Apply one with `aix run --policy review -- review-tool`. Spend limits are not a
+run-policy field; old `max_budget` entries are rejected as unknown configuration
+rather than silently ignored. Existing run-history files remain local and
+available offline, including older records that contain lease metadata. An
+upgrade does not contact the gateway or revoke keys exported by an older
+version.
+
+Allowed-model restrictions require a configured local-gateway tool capable of
+enforcing them; otherwise the run fails before launch. `--duration` can shorten
+the policy limit, `--allow-model` can narrow its model set, and `--dry-run`
+validates the policy without launching the child. These flags require `--policy`.
+
 ---
 
 ## Global options
@@ -1104,34 +1164,12 @@ JSON mode writes exactly one JSON document to stdout on success. Errors and diag
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` contains the selected key's `spend` and optional `max_budget` when a key matches, or the gateway's user totals otherwise. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` contains stable profile, gateway/probe, key-suffix, spend/budget, and cache fields. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; failed doctor reports go to stderr so automation can inspect the findings there. Optional metadata and unavailable spend values are represented as `null` with an explicit spend status; cache source is `live`, `cache`, or `none`. `usage.data` contains the historical date range, aggregates, daily series, and model aggregates described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose raw upstream responses, credentials, API-key breakdowns, or unrelated upstream fields.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` and the spend portion of `status.data` report current-key budget information obtained from the gateway's native `/v1/key/info` endpoint, with cache metadata. The shared envelope is stable; inner budget fields follow the gateway's contract and are not defined here as a cross-gateway schema. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` also includes profile and gateway-probe information. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; failed doctor reports go to stderr so automation can inspect the findings there. Cache source is `live`, `cache`, or `none`. `usage.data` contains a local date range, observed request/token metrics, daily and attribution breakdowns, and billing status as described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose credentials, prompts, or raw upstream inference responses.
 
-```json
-{
-  "schema_version": 1,
-  "command": "status",
-  "data": {
-    "profile": { "name": "work", "label": "Work" },
-    "gateway": {
-      "gateway": "litellm",
-      "provider": "litellm",
-      "status": "reachable",
-      "authentication_status": "authenticated",
-      "latency_ms": 84
-    },
-    "key_suffix": "7fa2",
-    "spend": {
-      "status": "available",
-      "spend": 41.53,
-      "max_budget": 500.0,
-      "remaining_budget": 458.47,
-      "percent_used": 8.306,
-      "cache": { "source": "cache", "age_seconds": 300 }
-    }
-  }
-}
-```
-When LiteLLM reports a budget-exceeded response, `aix spend` returns exit code `6`. Both human and JSON modes leave stdout empty and report the error on stderr.
+The gateway's native budget response is normalized and sanitized by aix; the
+field set is gateway-defined and is not repeated here as a fixed example.
+Gateway-reported budget exhaustion uses exit code `6`; failed JSON commands
+leave stdout empty and report the error on stderr.
 
 Process exit codes are stable:
 
@@ -1143,13 +1181,13 @@ Process exit codes are stable:
 | `3` | Secret resolution failure |
 | `4` | Authentication or authorization failure |
 | `5` | Network or gateway failure |
-| `6` | Budget or policy failure |
+| `6` | Gateway-reported budget or policy failure |
 
 ---
 
 ## Cache
 
-`aix spend` and `aix status` cache LiteLLM spend responses in the platform cache directory to avoid redundant management requests. `aix status` still performs its gateway probe on every invocation:
+`aix spend` and `aix status` cache native gateway budget information in the platform cache directory to avoid redundant requests. `aix status` still performs its gateway probe on every invocation:
 
 | Platform | Default cache directory |
 |----------|------------------------|

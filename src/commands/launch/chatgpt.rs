@@ -17,7 +17,6 @@ pub(super) async fn resolve_tool_launch(
         configured_tool_name,
         tool_env_mode,
         policy_name,
-        require_litellm,
         allowed_models,
         codex_config,
         ..
@@ -27,12 +26,6 @@ pub(super) async fn resolve_tool_launch(
         cfg, profile_name, ..
     } = context;
     let policy = super::resolve_run_policy(cfg, policy_name)?;
-    if policy.is_some_and(|policy| policy.max_budget.is_some()) {
-        return Err(AixError::RunPolicyBudgetUnavailable.into());
-    }
-    if require_litellm {
-        return Err(AixError::ChatGptRunLeaseUnsupported.into());
-    }
 
     let tool_name = configured_tool_name.unwrap_or_default();
     let tool = cfg
@@ -166,7 +159,6 @@ pub(super) async fn resolve_tool_launch(
         allowed_models: resolved_allowed_models,
         policy: policy.map(|policy| super::ResolvedRunPolicy {
             name: policy_name.unwrap_or_default().to_string(),
-            max_budget: policy.max_budget,
             max_duration: policy.max_duration.clone(),
             tags: policy.tags.clone(),
         }),

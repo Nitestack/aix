@@ -22,6 +22,7 @@ pub enum RunStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+// Retained only to read run history written before key-management support was removed.
 pub enum LeaseCleanupStatus {
     Revoked,
     ExpiredOrUnverified,
@@ -29,6 +30,7 @@ pub enum LeaseCleanupStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Legacy history data, never used to create or revoke credentials.
 pub struct RunLeaseRecord {
     pub key_alias: String,
     pub budget: f64,
@@ -42,6 +44,7 @@ pub struct RunLeaseRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunPolicyRecord {
     pub name: String,
+    // Read old records without reintroducing monetary enforcement for new runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_budget: Option<f64>,
     pub effective_duration: String,
@@ -82,7 +85,7 @@ pub struct RunRecord {
     pub status: RunStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<RunPolicyRecord>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<RunLeaseRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<RunUsageRecord>,

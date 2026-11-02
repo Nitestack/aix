@@ -2,11 +2,10 @@ mod report;
 
 use crate::commands::env::resolve_profile;
 use crate::commands::gate::report::GateReport;
-use crate::commands::spend::{parent_budget, ParentBudget};
 use crate::commands::ProfileSelection;
-use crate::config::{self, Config, Gateway, KnownGateway};
+use crate::config::{self, Config};
 use crate::error::{AixError, GateFailureCategory};
-use crate::gateway::{LiteLlmAdminClient, OpenAiClient};
+use crate::gateway::OpenAiClient;
 use color_eyre::Result;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -290,7 +289,7 @@ async fn preflight(options: GateOptions) -> PreflightReport {
     };
 
     let local_model_enforcement_required =
-        policy.is_some_and(|policy| policy.max_budget.is_none() && policy.allowed_models.is_some());
+        policy.is_some_and(|policy| policy.allowed_models.is_some());
     let chatgpt_model_enforcement_required =
         policy.is_some_and(|policy| policy.allowed_models.is_some());
     let discovered_models = if chatgpt_profile {
@@ -320,14 +319,21 @@ async fn preflight(options: GateOptions) -> PreflightReport {
                 .collect(),
         )
     } else if local_model_enforcement_required {
-        report.pass(
-            "gateway",
-            "profile credentials resolve for local request-time model enforcement",
-            None,
-        );
-        match &model_requirement {
-            ModelRequirement::Required(required) => ModelDiscovery::Configured(required.clone()),
-            _ => ModelDiscovery::Unavailable,
+        if api_key.is_some() && base_url.is_some() {
+            report.pass(
+                "gateway",
+                "profile credentials resolve for local request-time model enforcement",
+                None,
+            );
+            match &model_requirement {
+                ModelRequirement::Required(required) => {
+                    ModelDiscovery::Configured(required.clone())
+                }
+                _ => ModelDiscovery::Unavailable,
+            }
+        } else {
+            report.skipped("gateway", "profile credentials did not resolve");
+            ModelDiscovery::Unavailable
         }
     } else {
         match (&api_key, &base_url) {
@@ -487,156 +493,6 @@ async fn preflight(options: GateOptions) -> PreflightReport {
         );
     }
 
-    let litellm_compatible = is_litellm_or_unset(&cfg);
-    if policy.is_some_and(|policy| policy.max_budget.is_none()) {
-        report.not_applicable(
-            "litellm",
-            "policy does not request monetary budget enforcement",
-        );
-        report.not_applicable(
-            "budget_info",
-            "policy does not request monetary budget enforcement",
-        );
-        report.not_applicable(
-            "budget",
-            "policy does not request monetary budget enforcement",
-        );
-        return PreflightReport {
-            report,
-            json: json_output,
-        };
-    }
-
-    if chatgpt_profile && policy.is_some_and(|policy| policy.max_budget.is_some()) {
-        report.not_applicable(
-            "litellm",
-            "ChatGPT subscription traffic does not use LiteLLM",
-        );
-        report.not_applicable(
-            "budget_info",
-            "no authoritative monetary meter is available",
-        );
-        report.fail(
-            "budget",
-            "monetary budget enforcement unavailable for this transport",
-            None,
-            GateFailureCategory::Budget,
-        );
-        return PreflightReport {
-            report,
-            json: json_output,
-        };
-    }
-
-    if litellm_compatible {
-        report.pass(
-            "litellm",
-            "gateway is LiteLLM-compatible for scoped leases",
-            None,
-        );
-    } else {
-        report.fail(
-            "litellm",
-            "configured gateway is not LiteLLM-compatible for scoped leases",
-            None,
-            GateFailureCategory::Config,
-        );
-    }
-
-    let budget = match (litellm_compatible, &api_key, &base_url) {
-        (false, _, _) => {
-            report.skipped("budget_info", "LiteLLM compatibility check did not pass");
-            None
-        }
-        (true, Some(api_key), Some(base_url)) => {
-            let client = LiteLlmAdminClient::with_timeout(
-                base_url.expose_secret(),
-                api_key.expose_secret(),
-                timeout,
-            );
-            match client.user_info().await {
-                Ok(data) => match parent_budget(&data, api_key.expose_secret()) {
-                    Some(budget) => {
-                        report.pass(
-                            "budget_info",
-                            "parent spend and budget information are available",
-                            Some(budget_details(budget)),
-                        );
-                        Some(budget)
-                    }
-                    None => {
-                        report.fail(
-                            "budget_info",
-                            "LiteLLM did not provide readable parent spend and budget information",
-                            None,
-                            GateFailureCategory::Budget,
-                        );
-                        None
-                    }
-                },
-                Err(AixError::BudgetExceeded { spend, max_budget }) => {
-                    let budget = ParentBudget {
-                        spend,
-                        max_budget: Some(max_budget),
-                    };
-                    report.pass(
-                        "budget_info",
-                        "parent spend and finite budget information are available",
-                        Some(budget_details(budget)),
-                    );
-                    Some(budget)
-                }
-                Err(error) => {
-                    let (category, message, details) = admin_failure(&error);
-                    report.fail("budget_info", message, details, category);
-                    None
-                }
-            }
-        }
-        (true, _, _) => {
-            report.skipped("budget_info", "profile credentials did not resolve");
-            None
-        }
-    };
-
-    match (policy.and_then(|policy| policy.max_budget), budget) {
-        (None, _) => report.skipped("budget", "named run policy has no monetary budget"),
-        (Some(_), None) => report.skipped(
-            "budget",
-            "parent spend and budget information was unavailable",
-        ),
-        (Some(required_budget), Some(parent)) => match parent.max_budget {
-            None => report.pass(
-                "budget",
-                "parent budget is unlimited",
-                Some(json!({ "required": required_budget, "remaining": null })),
-            ),
-            Some(max_budget) => {
-                let remaining = max_budget - parent.spend;
-                let details = json!({
-                    "required": required_budget,
-                    "remaining": remaining,
-                    "spend": parent.spend,
-                    "max_budget": max_budget
-                });
-                if remaining >= required_budget {
-                    report.pass(
-                        "budget",
-                        "remaining parent budget covers the policy maximum",
-                        Some(details),
-                    );
-                } else {
-                    report.fail(
-                        "budget",
-                        "remaining parent budget is below the policy maximum",
-                        Some(details),
-                        GateFailureCategory::Budget,
-                    );
-                }
-            }
-        },
-    }
-
     PreflightReport {
         report,
         json: json_output,
@@ -651,9 +507,6 @@ fn skip_after_config(report: &mut GateReport) {
     report.skipped("models", "config did not pass");
     report.skipped("duration", "config did not pass");
     report.skipped("local_gateway", "config did not pass");
-    report.skipped("litellm", "config did not pass");
-    report.skipped("budget_info", "config did not pass");
-    report.skipped("budget", "config did not pass");
 }
 
 fn has_chatgpt_local_responses_adapter(config: &Config) -> bool {
@@ -670,13 +523,6 @@ fn has_api_key_local_gateway_tool(config: &Config) -> bool {
     })
 }
 
-fn is_litellm_or_unset(config: &Config) -> bool {
-    matches!(
-        config.endpoint.gateway.as_ref(),
-        None | Some(Gateway::Known(KnownGateway::Litellm))
-    )
-}
-
 fn gateway_failure(error: &AixError) -> (GateFailureCategory, String, Option<Value>) {
     match error {
         AixError::GatewayError { status, .. } | AixError::GatewayRequestFailed { status } => {
@@ -688,7 +534,11 @@ fn gateway_failure(error: &AixError) -> (GateFailureCategory, String, Option<Val
                 )
             } else {
                 (
-                    GateFailureCategory::Network,
+                    if *status == 402 {
+                        GateFailureCategory::Budget
+                    } else {
+                        GateFailureCategory::Network
+                    },
                     format!("gateway returned HTTP {status}"),
                     Some(json!({ "http_status": status })),
                 )
@@ -707,36 +557,15 @@ fn gateway_failure(error: &AixError) -> (GateFailureCategory, String, Option<Val
     }
 }
 
-fn admin_failure(error: &AixError) -> (GateFailureCategory, String, Option<Value>) {
-    match error {
-        AixError::GatewayError { status, .. } | AixError::GatewayRequestFailed { status } => {
-            if matches!(status, 401 | 403) {
-                (
-                    GateFailureCategory::Authentication,
-                    format!("LiteLLM management request was rejected (HTTP {status})"),
-                    Some(json!({ "http_status": status })),
-                )
-            } else {
-                (
-                    GateFailureCategory::Network,
-                    format!("LiteLLM management request returned HTTP {status}"),
-                    Some(json!({ "http_status": status })),
-                )
-            }
-        }
-        AixError::HttpError(error) if error.is_timeout() => (
-            GateFailureCategory::Network,
-            "LiteLLM management request timed out".to_string(),
-            None,
-        ),
-        _ => (
-            GateFailureCategory::Network,
-            "LiteLLM management request failed".to_string(),
-            None,
-        ),
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn budget_details(budget: ParentBudget) -> Value {
-    json!({ "spend": budget.spend, "max_budget": budget.max_budget })
+    #[test]
+    fn budget_rejection_from_gateway_retains_budget_exit_category() {
+        let (category, message, _) =
+            gateway_failure(&AixError::GatewayRequestFailed { status: 402 });
+        assert!(matches!(category, GateFailureCategory::Budget));
+        assert!(message.contains("402"));
+    }
 }

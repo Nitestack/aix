@@ -89,10 +89,19 @@ async fn mount_healthy_gateway(server: &MockServer, include_admin: bool) {
 
     if include_admin {
         Mock::given(method("GET"))
-            .and(path("/key/info"))
+            .and(path("/v1/key/info"))
             .and(header("Authorization", format!("Bearer {API_KEY}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "info": { "spend": 1.23, "max_budget": 20.0 }
+                "key_spent_usd": "1.23",
+                "remaining_usd": "18.77",
+                "limited_by": "key",
+                "layers": [{
+                    "scope": "key",
+                    "budget_usd": "20.00",
+                    "spent_usd": "1.23",
+                    "remaining_usd": "18.77",
+                    "period_start": "2026-11-01T00:00:00Z"
+                }]
             })))
             .expect(1)
             .mount(server)
@@ -127,7 +136,7 @@ async fn doctor_reports_all_checks_pass_for_a_healthy_litellm_config() {
         "base_url",
         "gateway_auth",
         "model_discovery",
-        "litellm_admin",
+        "budget_info",
         "cache_directory",
     ] {
         assert_eq!(check(&report, name)["status"], "pass", "{name}: {report}");
@@ -221,7 +230,7 @@ api_key = "doctor-env-file-secret"
     assert_eq!(check(&report, "base_url")["status"], "skipped");
     assert_eq!(check(&report, "gateway_auth")["status"], "skipped");
     assert_eq!(check(&report, "model_discovery")["status"], "skipped");
-    assert_eq!(check(&report, "litellm_admin")["status"], "skipped");
+    assert_eq!(check(&report, "budget_info")["status"], "skipped");
     assert_eq!(check(&report, "cache_directory")["status"], "pass");
 }
 
@@ -243,7 +252,7 @@ fn doctor_reports_unknown_profile_and_skips_secret_and_gateway_checks() {
     assert_eq!(check(&report, "base_url")["status"], "skipped");
     assert_eq!(check(&report, "gateway_auth")["status"], "skipped");
     assert_eq!(check(&report, "model_discovery")["status"], "skipped");
-    assert_eq!(check(&report, "litellm_admin")["status"], "not_applicable");
+    assert_eq!(check(&report, "budget_info")["status"], "skipped");
 }
 
 #[test]
@@ -303,7 +312,7 @@ api_key = {{ command = "{command}" }}
     assert_eq!(check(&report, "base_url")["status"], "pass");
     assert_eq!(check(&report, "gateway_auth")["status"], "skipped");
     assert_eq!(check(&report, "model_discovery")["status"], "skipped");
-    assert_eq!(check(&report, "litellm_admin")["status"], "skipped");
+    assert_eq!(check(&report, "budget_info")["status"], "skipped");
     let streams = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -393,7 +402,7 @@ fn doctor_reports_unreachable_gateway_and_skips_model_discovery() {
     let report = json_report(&output);
     assert_eq!(check(&report, "gateway_auth")["status"], "fail");
     assert_eq!(check(&report, "model_discovery")["status"], "skipped");
-    assert_eq!(check(&report, "litellm_admin")["status"], "not_applicable");
+    assert_eq!(check(&report, "budget_info")["status"], "fail");
     let streams = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -415,10 +424,13 @@ async fn doctor_separates_gateway_success_from_malformed_models_payload() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/key/info"))
+        .and(path("/v1/key/info"))
         .and(header("Authorization", format!("Bearer {API_KEY}")))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 1.23 }
+            "key_spent_usd": "1.23",
+            "remaining_usd": null,
+            "limited_by": null,
+            "layers": []
         })))
         .expect(1)
         .mount(&server)
@@ -433,7 +445,7 @@ async fn doctor_separates_gateway_success_from_malformed_models_payload() {
     let report = json_report(&output);
     assert_eq!(check(&report, "gateway_auth")["status"], "pass");
     assert_eq!(check(&report, "model_discovery")["status"], "fail");
-    assert_eq!(check(&report, "litellm_admin")["status"], "pass");
+    assert_eq!(check(&report, "budget_info")["status"], "pass");
 }
 
 #[tokio::test]
@@ -463,7 +475,7 @@ async fn doctor_treats_invalid_models_json_as_a_discovery_failure_not_auth_failu
 }
 
 #[tokio::test]
-async fn doctor_marks_admin_check_not_applicable_for_explicit_non_litellm_gateway() {
+async fn doctor_marks_budget_info_unsupported_for_a_gateway_that_lacks_the_endpoint() {
     let server = MockServer::start().await;
     mount_healthy_gateway(&server, false).await;
     let dir = TempDir::new().unwrap();
@@ -481,8 +493,8 @@ async fn doctor_marks_admin_check_not_applicable_for_explicit_non_litellm_gatewa
         String::from_utf8_lossy(&output.stderr)
     );
     let report = json_report(&output);
-    assert_eq!(check(&report, "litellm_admin")["status"], "not_applicable");
-    assert!(check(&report, "litellm_admin")["duration_ms"].is_null());
+    assert_eq!(check(&report, "budget_info")["status"], "not_applicable");
+    assert!(check(&report, "budget_info")["duration_ms"].is_null());
 }
 
 #[tokio::test]

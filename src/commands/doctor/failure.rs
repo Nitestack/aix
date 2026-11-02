@@ -93,18 +93,22 @@ pub(super) fn safe_validation_failure(error: &AixError) -> CheckFailure {
 
 pub(super) fn gateway_failure(error: &AixError) -> CheckFailure {
     if let Some(status) = http_status(error) {
-        return if is_auth_status(status) {
-            CheckFailure::new(
+        return match status {
+            401 | 403 => CheckFailure::new(
                 format!("gateway rejected authentication (HTTP {status})"),
                 "verify the API key and its gateway permissions",
                 DoctorFailureCategory::Authentication,
-            )
-        } else {
-            CheckFailure::new(
+            ),
+            402 => CheckFailure::new(
+                "gateway rejected the request because a budget limit was reached (HTTP 402)",
+                "review the key's effective remaining budget before retrying",
+                DoctorFailureCategory::Budget,
+            ),
+            _ => CheckFailure::new(
                 format!("gateway returned HTTP {status}"),
                 "verify gateway availability and endpoint configuration",
                 DoctorFailureCategory::Network,
-            )
+            ),
         };
     }
 
@@ -123,22 +127,22 @@ pub(super) fn gateway_failure(error: &AixError) -> CheckFailure {
     }
 }
 
-pub(super) fn admin_failure(error: &AixError) -> CheckFailure {
+pub(super) fn budget_failure(error: &AixError) -> CheckFailure {
     if let Some(status) = http_status(error) {
         return match status {
             401 | 403 => CheckFailure::new(
-                format!("LiteLLM management request was rejected (HTTP {status})"),
-                "verify that the key is authorized for LiteLLM management endpoints",
+                format!("budget information request was rejected (HTTP {status})"),
+                "verify that the API key can read its own budget information",
                 DoctorFailureCategory::Authentication,
             ),
-            404 | 405 | 501 => CheckFailure::new(
-                "LiteLLM management endpoint is unavailable",
-                "verify the gateway exposes the LiteLLM /key/info endpoint",
-                DoctorFailureCategory::Network,
+            402 => CheckFailure::new(
+                "GET /v1/key/info was rejected because a budget limit was reached (HTTP 402)",
+                "review the key's effective remaining budget before retrying",
+                DoctorFailureCategory::Budget,
             ),
             _ => CheckFailure::new(
-                format!("LiteLLM management request returned HTTP {status}"),
-                "verify LiteLLM management endpoint availability",
+                format!("GET /v1/key/info returned HTTP {status}"),
+                "verify the gateway's native budget information endpoint",
                 DoctorFailureCategory::Network,
             ),
         };
@@ -146,14 +150,20 @@ pub(super) fn admin_failure(error: &AixError) -> CheckFailure {
 
     if is_timeout(error) {
         CheckFailure::new(
-            "LiteLLM management request timed out",
+            "GET /v1/key/info timed out",
             "verify gateway availability and network connectivity",
+            DoctorFailureCategory::Network,
+        )
+    } else if matches!(error, AixError::GatewayProtocolError(_)) {
+        CheckFailure::new(
+            "GET /v1/key/info returned malformed budget information",
+            "ensure the gateway returns the documented native budget fields",
             DoctorFailureCategory::Network,
         )
     } else {
         CheckFailure::new(
-            "LiteLLM management request failed",
-            "verify the gateway exposes LiteLLM management endpoints",
+            "budget information request failed",
+            "verify the gateway's native budget information endpoint",
             DoctorFailureCategory::Network,
         )
     }
@@ -172,16 +182,73 @@ fn is_timeout(error: &AixError) -> bool {
     matches!(error, AixError::HttpError(error) if error.is_timeout())
 }
 
-fn is_auth_status(status: u16) -> bool {
-    matches!(status, 401 | 403)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn gateway_error(status: u16) -> AixError {
+        AixError::GatewayError {
+            status,
+            body: "upstream-body-private-detail".to_string(),
+        }
+    }
+
+    fn assert_budget_exit(failure: &CheckFailure) {
+        assert!(matches!(failure.category, DoctorFailureCategory::Budget));
+        let error = AixError::DoctorChecksFailed {
+            category: failure.category,
+        };
+        assert_eq!(error.exit_code(), 6);
+        assert!(!failure.message.contains("upstream-body-private-detail"));
+        assert!(!failure.hint.contains("upstream-body-private-detail"));
+    }
+
+    #[test]
+    fn gateway_402_is_a_safe_budget_failure_with_exit_code_six() {
+        let failure = gateway_failure(&gateway_error(402));
+
+        assert_budget_exit(&failure);
+        assert_eq!(
+            failure.message,
+            "gateway rejected the request because a budget limit was reached (HTTP 402)"
+        );
+    }
+
+    #[test]
+    fn budget_endpoint_402_is_a_safe_budget_failure_with_exit_code_six() {
+        let failure = budget_failure(&gateway_error(402));
+
+        assert_budget_exit(&failure);
+        assert_eq!(
+            failure.message,
+            "GET /v1/key/info was rejected because a budget limit was reached (HTTP 402)"
+        );
+    }
+
+    #[test]
+    fn gateway_and_budget_endpoint_keep_auth_network_and_protocol_classes() {
+        assert!(matches!(
+            gateway_failure(&gateway_error(403)).category,
+            DoctorFailureCategory::Authentication
+        ));
+        assert!(matches!(
+            budget_failure(&gateway_error(403)).category,
+            DoctorFailureCategory::Authentication
+        ));
+        assert!(matches!(
+            gateway_failure(&gateway_error(503)).category,
+            DoctorFailureCategory::Network
+        ));
+
+        let malformed = budget_failure(&AixError::GatewayProtocolError(
+            "gateway returned malformed native budget information",
+        ));
+        assert!(matches!(malformed.category, DoctorFailureCategory::Network));
+        assert!(malformed.message.contains("malformed budget information"));
+    }
 
     #[tokio::test]
     async fn gateway_timeout_has_a_safe_network_diagnostic() {

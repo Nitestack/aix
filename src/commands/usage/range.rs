@@ -6,7 +6,6 @@ use chrono::{Days, Local, NaiveDate};
 pub(super) struct UsageRange {
     pub(super) start: NaiveDate,
     pub(super) end: NaiveDate,
-    pub(super) is_default: bool,
 }
 
 impl UsageRange {
@@ -27,11 +26,7 @@ impl UsageRange {
                 let start = today
                     .checked_sub_days(Days::new(days - 1))
                     .ok_or_else(|| invalid_range("the requested --since range is too large"))?;
-                Ok(Self {
-                    start,
-                    end: today,
-                    is_default: false,
-                })
+                Ok(Self { start, end: today })
             }
             (None, Some(start), Some(end)) => {
                 let start = parse_iso_date(start)?;
@@ -39,21 +34,13 @@ impl UsageRange {
                 if end < start {
                     return Err(invalid_range("--end must be on or after --start"));
                 }
-                Ok(Self {
-                    start,
-                    end,
-                    is_default: false,
-                })
+                Ok(Self { start, end })
             }
             (None, None, None) => {
                 let start = today
                     .checked_sub_days(Days::new(29))
                     .ok_or_else(|| invalid_range("the default 30-day range is out of bounds"))?;
-                Ok(Self {
-                    start,
-                    end: today,
-                    is_default: true,
-                })
+                Ok(Self { start, end: today })
             }
             (None, _, _) => Err(invalid_range("--start and --end must be provided together")),
             (Some(_), _, _) => Err(invalid_range(
@@ -139,7 +126,6 @@ mod tests {
         let range = UsageRange::from_args(&UsageRangeArgs::default(), fixed_today()).unwrap();
         assert_eq!(range.start.format("%Y-%m-%d").to_string(), "2026-09-01");
         assert_eq!(range.end.format("%Y-%m-%d").to_string(), "2026-09-30");
-        assert!(range.is_default);
     }
 
     #[test]
@@ -151,7 +137,6 @@ mod tests {
         let range = UsageRange::from_args(&args, fixed_today()).unwrap();
         assert_eq!(range.start.format("%Y-%m-%d").to_string(), "2026-09-24");
         assert_eq!(range.end.format("%Y-%m-%d").to_string(), "2026-09-30");
-        assert!(!range.is_default);
     }
 
     #[test]

@@ -458,6 +458,8 @@ config_file = {}
 [tools.opencode]
 command = {}
 api_format = "openai"
+[run_policies.preview]
+max_duration = "5m"
 "#,
             toml_string(&selected),
             toml_string(&executable),
@@ -471,9 +473,8 @@ api_format = "openai"
             "--profile",
             "work",
             "--dry-run",
-            "--lease",
-            "--budget",
-            "1",
+            "--policy",
+            "preview",
             "--duration",
             "5m",
             "--",
@@ -505,9 +506,8 @@ api_format = "openai"
             "--profile",
             "work",
             "--dry-run",
-            "--lease",
-            "--budget",
-            "1",
+            "--policy",
+            "preview",
             "--duration",
             "5m",
             "--",

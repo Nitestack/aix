@@ -629,6 +629,68 @@ async fn ask_maps_authentication_failures_to_the_auth_exit_category() {
 }
 
 #[tokio::test]
+async fn ask_maps_budget_exhaustion_to_budget_and_rate_limits_to_network() {
+    for (status, error_type, title, expected_exit) in [
+        (
+            402,
+            "https://aihub/errors/budget-exceeded",
+            "Payment Required",
+            6,
+        ),
+        (
+            429,
+            "https://aihub/errors/rate-limit",
+            "Too Many Requests",
+            5,
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let body = serde_json::to_vec(&json!({
+            "type": error_type,
+            "title": title,
+            "status": status,
+            "detail": "The request cannot be served under the current limits."
+        }))
+        .unwrap();
+        let mut response =
+            ResponseTemplate::new(status).set_body_raw(body, "application/problem+json");
+        if status == 429 {
+            response = response.insert_header("Retry-After", "1");
+        }
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(response)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = TempDir::new().unwrap();
+        let config = write_config(
+            &dir,
+            &server.uri(),
+            "[models]\ndefault = \"gateway/general-model\"",
+        );
+        let output = cmd()
+            .args([
+                "--config",
+                config.to_str().unwrap(),
+                "ask",
+                "Summarize this document",
+            ])
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(expected_exit), "HTTP {status}");
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&format!("HTTP {status}")),
+            "stderr for HTTP {status}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test]
 async fn ask_maps_connection_failures_to_the_network_exit_category() {
     let dir = TempDir::new().unwrap();
     let config = write_config(

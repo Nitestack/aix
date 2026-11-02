@@ -76,7 +76,6 @@ fn summary<'a>(
     Ok(PolicySummary {
         name,
         profile: policy.profile.as_deref(),
-        max_budget: policy.max_budget,
         max_duration: &policy.max_duration,
         allowed_models: policy.allowed_models.as_deref(),
         resolved_models,
@@ -88,8 +87,6 @@ fn summary<'a>(
 struct PolicySummary<'a> {
     name: &'a str,
     profile: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_budget: Option<f64>,
     max_duration: &'a str,
     allowed_models: Option<&'a [String]>,
     resolved_models: Option<Vec<String>>,
@@ -104,10 +101,6 @@ fn print_summary(policy: &PolicySummary<'_>) {
             .profile
             .map_or("normal resolution", |profile| profile)
     );
-    match policy.max_budget {
-        Some(budget) => println!("  Max budget: ${budget:.2}"),
-        None => println!("  Max budget: (none)"),
-    }
     println!("  Max duration: {}", policy.max_duration);
     match (&policy.allowed_models, &policy.resolved_models) {
         (Some(aliases), Some(resolved)) => {

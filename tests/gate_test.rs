@@ -15,7 +15,7 @@ default_profile = "work"
 
 [endpoint]
 base_url = "{base_url}"
-gateway = "litellm"
+gateway = "custom-gateway"
 
 [profiles.work]
 api_key = "{api_key}"
@@ -24,11 +24,35 @@ api_key = "{api_key}"
 smart = "provider/model-smart"
 fast = "provider/model-fast"
 
+[tools.review]
+api_format = "openai"
+local_gateway = true
+
 [run_policies.implement]
-max_budget = 3.0
 max_duration = "2h"
 allowed_models = ["smart", "fast"]
 {policy}
+"#
+    ))
+    .unwrap();
+    file.path().to_path_buf()
+}
+
+fn write_unrestricted_config(dir: &TempDir, base_url: &str, api_key: &str) -> std::path::PathBuf {
+    let file = dir.child("aix-unrestricted.toml");
+    file.write_str(&format!(
+        r#"
+default_profile = "work"
+
+[endpoint]
+base_url = "{base_url}"
+gateway = "custom-gateway"
+
+[profiles.work]
+api_key = "{api_key}"
+
+[run_policies.implement]
+max_duration = "2h"
 "#
     ))
     .unwrap();
@@ -73,26 +97,8 @@ fn write_chatgpt_credentials(auth_dir: &std::path::Path) {
 }
 
 #[tokio::test]
-async fn a_satisfiable_policy_returns_a_stable_json_report_without_mutating_the_gateway() {
+async fn a_satisfiable_policy_returns_a_stable_json_report_without_network_calls() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .and(header("Authorization", format!("Bearer {API_KEY}")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [{ "id": "provider/model-fast" }, { "id": "provider/model-smart" }]
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .and(header("Authorization", format!("Bearer {API_KEY}")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 1.25, "max_budget": 10.0 }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
 
     let dir = TempDir::new().unwrap();
     let config = write_config(&dir, &server.uri(), API_KEY, "");
@@ -134,10 +140,7 @@ async fn a_satisfiable_policy_returns_a_stable_json_report_without_mutating_the_
             "gateway",
             "models",
             "duration",
-            "local_gateway",
-            "litellm",
-            "budget_info",
-            "budget"
+            "local_gateway"
         ]
     );
     for name in [
@@ -147,9 +150,8 @@ async fn a_satisfiable_policy_returns_a_stable_json_report_without_mutating_the_
         "credentials",
         "gateway",
         "models",
-        "litellm",
-        "budget_info",
-        "budget",
+        "duration",
+        "local_gateway",
     ] {
         assert_eq!(check(&report, name)["status"], "pass", "{name}: {report}");
     }
@@ -167,15 +169,14 @@ async fn a_satisfiable_policy_returns_a_stable_json_report_without_mutating_the_
     assert!(output.stderr.is_empty());
 
     let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 2);
-    assert!(requests.iter().all(|request| request.method == "GET"));
-    assert!(requests.iter().all(|request| {
-        request.url.path() == "/v1/models" || request.url.path() == "/key/info"
-    }));
+    assert!(
+        requests.is_empty(),
+        "unexpected gateway calls: {requests:?}"
+    );
 }
 
 #[tokio::test]
-async fn no_budget_policy_on_custom_gateway_skips_litellm_and_checks_local_model_enforcement() {
+async fn restricted_policy_checks_models_locally_without_backend_requests() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
@@ -234,11 +235,11 @@ allowed_models = ["smart"]
     assert_eq!(check(&report, "models")["status"], "pass");
     assert_eq!(check(&report, "duration")["status"], "pass");
     assert_eq!(check(&report, "local_gateway")["status"], "pass");
-    assert_eq!(check(&report, "litellm")["status"], "not_applicable");
-    assert_eq!(check(&report, "budget_info")["status"], "not_applicable");
-    assert_eq!(check(&report, "budget")["status"], "not_applicable");
     let requests = server.received_requests().await.unwrap();
-    assert!(requests.is_empty());
+    assert!(
+        requests.is_empty(),
+        "unexpected gateway calls: {requests:?}"
+    );
 }
 
 #[test]
@@ -284,11 +285,10 @@ allowed_models = ["model-a"]
         .as_str()
         .unwrap()
         .contains("requires a configured local-gateway tool"));
-    assert_eq!(check(&report, "litellm")["status"], "not_applicable");
 }
 
 #[test]
-fn chatgpt_policy_gate_checks_local_readiness_without_litellm_and_rejects_budget() {
+fn chatgpt_policy_gate_checks_local_readiness() {
     let dir = TempDir::new().unwrap();
     let file = dir.child("chatgpt-policy.toml");
     let auth_dir = dir.path().join("auth");
@@ -334,34 +334,55 @@ allowed_models = ["gpt-6-luna"]
     assert_eq!(check(&report, "gateway")["status"], "pass");
     assert_eq!(check(&report, "models")["status"], "pass");
     assert_eq!(check(&report, "local_gateway")["status"], "pass");
-    assert_eq!(check(&report, "litellm")["status"], "not_applicable");
-    assert_eq!(check(&report, "budget")["status"], "not_applicable");
+}
 
-    file.write_str(&base_config.replace(
-        "max_duration = \"2h\"",
-        "max_budget = 2.0\nmax_duration = \"2h\"",
-    ))
-    .unwrap();
+#[tokio::test]
+async fn max_budget_is_rejected_before_any_network_request() {
+    let server = MockServer::start().await;
+    let dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), API_KEY, "max_budget = 3.0");
     let output = Command::cargo_bin("aix")
         .unwrap()
-        .env("AIX_AUTH_DIR", &auth_dir)
+        .env_remove("AIX_PROFILE")
         .args([
             "--config",
-            file.path().to_str().unwrap(),
+            config.to_str().unwrap(),
             "gate",
             "--policy",
-            "local",
+            "implement",
             "--json",
         ])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(6));
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
     let report: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(check(&report, "budget")["status"], "fail");
-    assert!(check(&report, "budget")["message"]
-        .as_str()
-        .unwrap()
-        .contains("monetary budget enforcement unavailable for this transport"));
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["command"], "gate");
+    assert_eq!(check(&report, "config")["status"], "fail");
+    let checks = report["data"]["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 8);
+    for name in [
+        "policy",
+        "profile",
+        "credentials",
+        "gateway",
+        "models",
+        "duration",
+        "local_gateway",
+    ] {
+        assert_eq!(
+            check(&report, name)["status"],
+            "skipped",
+            "{name}: {report}"
+        );
+    }
+    let calls = server.received_requests().await.unwrap();
+    assert!(
+        calls.is_empty(),
+        "invalid config made gateway calls: {calls:?}"
+    );
 }
 
 fn run_chatgpt_local_model_gate(
@@ -560,13 +581,12 @@ default_profile = "work"
 
 [endpoint]
 base_url = "https://gateway.example/private-path"
-gateway = "litellm"
+gateway = "custom-gateway"
 
 [profiles.work]
 api_key = { env = "AIX_GATE_MISSING_KEY" }
 
 [run_policies.implement]
-max_budget = 3.0
 max_duration = "2h"
 "#,
     )
@@ -602,6 +622,7 @@ async fn gateway_authentication_failure_uses_auth_exit_semantics_without_secret_
     let base_url = format!("{}/gateway-private", server.uri());
     Mock::given(method("GET"))
         .and(path("/gateway-private/v1/models"))
+        .and(header("Authorization", format!("Bearer {API_KEY}")))
         .respond_with(
             ResponseTemplate::new(403)
                 .set_body_string(format!("upstream-diagnostic {API_KEY} at {base_url}")),
@@ -609,17 +630,9 @@ async fn gateway_authentication_failure_uses_auth_exit_semantics_without_secret_
         .expect(1)
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/gateway-private/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 1.0, "max_budget": 10.0 }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
 
     let dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &base_url, API_KEY, "");
+    let config = write_unrestricted_config(&dir, &base_url, API_KEY);
     let output = Command::cargo_bin("aix")
         .unwrap()
         .env_remove("AIX_PROFILE")
@@ -638,11 +651,14 @@ async fn gateway_authentication_failure_uses_auth_exit_semantics_without_secret_
     assert!(output.stdout.is_empty());
     let report: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(check(&report, "gateway")["status"], "fail");
-    assert_eq!(check(&report, "budget_info")["status"], "pass");
     let text = String::from_utf8_lossy(&output.stderr);
     assert!(!text.contains(API_KEY));
     assert!(!text.contains(&base_url));
     assert!(!text.contains("upstream-diagnostic"));
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].url.path(), "/gateway-private/v1/models");
 }
 
 #[tokio::test]
@@ -650,6 +666,7 @@ async fn a_gateway_timeout_uses_network_exit_semantics_while_independent_checks_
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
+        .and(header("Authorization", format!("Bearer {API_KEY}")))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_delay(std::time::Duration::from_millis(400))
@@ -658,17 +675,9 @@ async fn a_gateway_timeout_uses_network_exit_semantics_while_independent_checks_
         .expect(1)
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 1.0, "max_budget": 10.0 }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
 
     let dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), API_KEY, "");
+    let config = write_unrestricted_config(&dir, &server.uri(), API_KEY);
     let output = Command::cargo_bin("aix")
         .unwrap()
         .env_remove("AIX_PROFILE")
@@ -689,257 +698,9 @@ async fn a_gateway_timeout_uses_network_exit_semantics_while_independent_checks_
     assert!(output.stdout.is_empty());
     let report: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(check(&report, "gateway")["status"], "fail");
-    assert_eq!(check(&report, "models")["status"], "skipped");
-    assert_eq!(check(&report, "budget_info")["status"], "pass");
-}
-
-#[tokio::test]
-async fn a_missing_required_model_fails_with_policy_exit_semantics() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [{ "id": "provider/model-smart" }]
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 1.0, "max_budget": 10.0 }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), API_KEY, "");
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env_remove("AIX_PROFILE")
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "gate",
-            "--policy",
-            "implement",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(6));
-    assert!(output.stdout.is_empty());
-    let report: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(check(&report, "models")["status"], "fail");
-    assert_eq!(
-        check(&report, "models")["details"]["missing"],
-        json!(["provider/model-fast"])
-    );
-    assert_eq!(check(&report, "budget")["status"], "pass");
-}
-
-#[tokio::test]
-async fn insufficient_remaining_parent_budget_fails_closed_with_budget_exit_semantics() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [
-                { "id": "provider/model-smart" },
-                { "id": "provider/model-fast" }
-            ]
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 0.5, "max_budget": 2.0 }
-        })))
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), API_KEY, "");
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env_remove("AIX_PROFILE")
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "gate",
-            "--policy",
-            "implement",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(6));
-    let report: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(check(&report, "budget_info")["status"], "pass");
-    assert_eq!(check(&report, "budget")["status"], "fail");
-    assert_eq!(check(&report, "budget")["details"]["remaining"], 1.5);
-}
-
-#[tokio::test]
-async fn an_explicitly_unlimited_parent_budget_passes() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [
-                { "id": "provider/model-smart" },
-                { "id": "provider/model-fast" }
-            ]
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 123.0, "max_budget": null }
-        })))
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), API_KEY, "");
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env_remove("AIX_PROFILE")
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "gate",
-            "--policy",
-            "implement",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(check(&report, "budget_info")["status"], "pass");
-    assert_eq!(
-        check(&report, "budget_info")["details"]["max_budget"],
-        Value::Null
-    );
-    assert_eq!(check(&report, "budget")["status"], "pass");
-    assert!(check(&report, "budget")["message"]
-        .as_str()
-        .unwrap()
-        .contains("unlimited"));
-}
-
-#[tokio::test]
-async fn unavailable_parent_budget_information_fails_closed() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [
-                { "id": "provider/model-smart" },
-                { "id": "provider/model-fast" }
-            ]
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
-            "message": "management endpoint unavailable"
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), API_KEY, "");
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env_remove("AIX_PROFILE")
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "gate",
-            "--policy",
-            "implement",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(5));
-    assert!(output.stdout.is_empty());
-    let report: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(check(&report, "budget_info")["status"], "fail");
-    assert_eq!(check(&report, "budget")["status"], "skipped");
-}
-
-#[tokio::test]
-async fn a_non_litellm_gateway_is_rejected_without_management_or_mutating_requests() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [
-                { "id": "provider/model-smart" },
-                { "id": "provider/model-fast" }
-            ]
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let file = dir.child("custom-gateway.toml");
-    file.write_str(&format!(
-        r#"
-default_profile = "work"
-[endpoint]
-base_url = "{}"
-gateway = "custom-gateway"
-[profiles.work]
-api_key = "{}"
-[models.aliases]
-smart = "provider/model-smart"
-fast = "provider/model-fast"
-[run_policies.implement]
-max_budget = 3.0
-max_duration = "2h"
-allowed_models = ["smart", "fast"]
-"#,
-        server.uri(),
-        API_KEY
-    ))
-    .unwrap();
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env_remove("AIX_PROFILE")
-        .args([
-            "--config",
-            file.path().to_str().unwrap(),
-            "gate",
-            "--policy",
-            "implement",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(2));
-    let report: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(check(&report, "gateway")["status"], "pass");
-    assert_eq!(check(&report, "litellm")["status"], "fail");
-    assert_eq!(check(&report, "budget_info")["status"], "skipped");
+    assert_eq!(check(&report, "models")["status"], "not_applicable");
+    assert_eq!(check(&report, "credentials")["status"], "pass");
+    assert_eq!(check(&report, "duration")["status"], "pass");
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "GET");
@@ -949,39 +710,23 @@ allowed_models = ["smart", "fast"]
 #[tokio::test]
 async fn a_fixed_policy_profile_is_used_and_conflicting_override_fails_preflight() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [
-                { "id": "provider/model-smart" },
-                { "id": "provider/model-fast" }
-            ]
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 1.0, "max_budget": 10.0 }
-        })))
-        .mount(&server)
-        .await;
-
     let dir = TempDir::new().unwrap();
     let file = dir.child("fixed-profile.toml");
     file.write_str(&format!(
         r#"
 [endpoint]
 base_url = "{}"
-gateway = "litellm"
+gateway = "custom-gateway"
 [profiles.work]
 api_key = "{}"
 [models.aliases]
 smart = "provider/model-smart"
 fast = "provider/model-fast"
+[tools.review]
+api_format = "openai"
+local_gateway = true
 [run_policies.implement]
 profile = "work"
-max_budget = 3.0
 max_duration = "2h"
 allowed_models = ["smart", "fast"]
 "#,
@@ -1010,48 +755,11 @@ allowed_models = ["smart", "fast"]
     assert_eq!(check(&report, "profile")["status"], "fail");
     assert_eq!(check(&report, "credentials")["status"], "pass");
     assert_eq!(check(&report, "gateway")["status"], "pass");
-    assert_eq!(check(&report, "budget")["status"], "pass");
-}
-
-#[tokio::test]
-async fn missing_parent_budget_fields_fail_closed_even_when_litellm_responds() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [
-                { "id": "provider/model-smart" },
-                { "id": "provider/model-fast" }
-            ]
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 1.0 }
-        })))
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), API_KEY, "");
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env_remove("AIX_PROFILE")
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "gate",
-            "--policy",
-            "implement",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(6));
-    let report: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(check(&report, "budget_info")["status"], "fail");
-    assert_eq!(check(&report, "budget")["status"], "skipped");
+    assert_eq!(check(&report, "models")["status"], "pass");
+    assert_eq!(check(&report, "local_gateway")["status"], "pass");
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.is_empty(),
+        "unexpected gateway calls: {requests:?}"
+    );
 }

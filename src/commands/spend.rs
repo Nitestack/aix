@@ -3,10 +3,9 @@ use crate::commands::env::resolve_profile;
 use crate::commands::GatewayRequestOptions;
 use crate::config;
 use crate::error::AixError;
-use crate::gateway::LiteLlmAdminClient;
+use crate::gateway::{BudgetClient, BudgetInfo};
 use crate::output;
 use color_eyre::Result;
-use owo_colors::{OwoColorize, Rgb, Stream::Stdout};
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -22,15 +21,6 @@ pub async fn run(
     config::validate(&cfg)?;
     config::load_env_files(&cfg)?;
 
-    if let Some(gateway) = &cfg.endpoint.gateway {
-        if !matches!(
-            gateway,
-            config::Gateway::Known(config::KnownGateway::Litellm)
-        ) {
-            return Err(AixError::NotLiteLlm.into());
-        }
-    }
-
     let profile_name = resolve_profile(selection, &cfg)?;
     let profile = cfg
         .profiles
@@ -42,106 +32,129 @@ pub async fn run(
 
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
     let api_key = profile.resolve_api_key()?;
+    let base_url = base_url.expose_secret();
+    let api_key = api_key.expose_secret();
     let cache = Cache::from_config(&cfg.cache);
 
-    let hit = if !no_cache {
-        cache.get(base_url.expose_secret(), api_key.expose_secret())
-    } else {
+    let hit = if no_cache {
         None
+    } else {
+        cache.get(base_url, api_key).and_then(|(data, fetched_at)| {
+            BudgetInfo::from_cache_value(&data).map(|budget| (budget, fetched_at))
+        })
     };
 
-    let (data, cached_at) = match hit {
-        Some((data, fetched_at)) => (data, Some(fetched_at)),
+    let (budget, cached_at) = match hit {
+        Some((budget, fetched_at)) => (Some(budget), Some(fetched_at)),
         None => {
-            let client = LiteLlmAdminClient::with_timeout(
-                base_url.expose_secret(),
-                api_key.expose_secret(),
-                timeout,
-            );
-            match client.user_info().await {
+            let client = BudgetClient::with_timeout(base_url, api_key, timeout);
+            match client.key_info().await {
                 Ok(fresh) => {
-                    cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);
-                    (fresh, None)
+                    cache.put(base_url, api_key, &fresh.to_cache_value());
+                    (Some(fresh), None)
                 }
-                Err(AixError::BudgetExceeded { spend, max_budget }) => {
-                    let fresh = serde_json::json!({
-                        "spend": spend,
-                        "max_budget": max_budget,
-                        "_aix_budget_exceeded": true
-                    });
-                    cache.put(base_url.expose_secret(), api_key.expose_secret(), &fresh);
-                    (fresh, None)
-                }
-                Err(e) => return Err(e.into()),
+                Err(AixError::GatewayError {
+                    status: 404 | 405 | 501,
+                    ..
+                }) => (None, None),
+                Err(error) => return Err(error.into()),
             }
         }
     };
 
-    if let Some(error) = budget_error(&data) {
-        return Err(error.into());
-    }
-
+    let summary = budget
+        .as_ref()
+        .map_or_else(SpendSummary::unsupported, |budget| {
+            SpendSummary::available(budget)
+        });
     if json {
-        output::print_json("spend", spend_summary(&data, api_key.expose_secret()))?;
+        output::print_json("spend", summary)?;
+    } else if let Some(budget) = budget.as_ref() {
+        print_human(budget, cached_at);
     } else {
-        print_human(&data, api_key.expose_secret(), cached_at);
+        println!("Budget info  unsupported");
     }
     Ok(())
 }
 
-fn find_matching_key<'a>(
-    keys: &'a [serde_json::Value],
-    api_key: &str,
-) -> Option<&'a serde_json::Value> {
-    keys.iter().find(|k| {
-        k.get("key_name")
-            .and_then(|v| v.as_str())
-            .is_some_and(|kn| crate::cache::key_identity_matches_name(api_key, kn))
-    })
+#[derive(Serialize)]
+struct SpendSummary {
+    status: SpendStatus,
+    key_spent_usd: Option<f64>,
+    remaining_usd: Option<f64>,
+    limited_by: Option<String>,
+    layers: Option<Vec<SpendLayerSummary>>,
+    expires_at: Option<String>,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct ParentBudget {
-    pub(crate) spend: f64,
-    /// `None` means LiteLLM explicitly reported a null/unlimited budget.
-    pub(crate) max_budget: Option<f64>,
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SpendStatus {
+    Available,
+    Unsupported,
 }
 
-/// Read the selected parent key's spend and explicitly configured budget.
-/// A missing `max_budget` field is not treated as unlimited: gate must fail
-/// closed when the gateway did not provide enough information to prove safety.
-pub(crate) fn parent_budget(data: &serde_json::Value, api_key: &str) -> Option<ParentBudget> {
-    let keys: &[serde_json::Value] = data
-        .get("keys")
-        .and_then(serde_json::Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let source = find_matching_key(keys, api_key).unwrap_or(data);
-    let spend = source.get("spend")?.as_f64()?;
-    let max_budget = match source.get("max_budget")? {
-        serde_json::Value::Null => None,
-        value => Some(value.as_f64()?),
-    };
-    if !spend.is_finite() || spend < 0.0 || max_budget.is_some_and(|value| !value.is_finite()) {
-        return None;
+#[derive(Serialize)]
+struct SpendLayerSummary {
+    scope: String,
+    budget_usd: Option<f64>,
+    spent_usd: f64,
+    remaining_usd: Option<f64>,
+    period_start: String,
+}
+
+impl SpendSummary {
+    fn available(budget: &BudgetInfo) -> Self {
+        Self {
+            status: SpendStatus::Available,
+            key_spent_usd: Some(budget.key_spent_usd),
+            remaining_usd: budget.remaining_usd,
+            limited_by: budget.limited_by.clone(),
+            layers: Some(
+                budget
+                    .layers
+                    .iter()
+                    .map(|layer| SpendLayerSummary {
+                        scope: layer.scope.clone(),
+                        budget_usd: layer.budget_usd,
+                        spent_usd: layer.spent_usd,
+                        remaining_usd: layer.remaining_usd,
+                        period_start: layer.period_start.clone(),
+                    })
+                    .collect(),
+            ),
+            expires_at: budget.expires_at.clone(),
+        }
     }
-    Some(ParentBudget { spend, max_budget })
+
+    fn unsupported() -> Self {
+        Self {
+            status: SpendStatus::Unsupported,
+            key_spent_usd: None,
+            remaining_usd: None,
+            limited_by: None,
+            layers: None,
+            expires_at: None,
+        }
+    }
 }
 
-pub(crate) fn has_spend_data(data: &serde_json::Value, api_key: &str) -> bool {
-    let keys: &[serde_json::Value] = data
-        .get("keys")
-        .and_then(|value| value.as_array())
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let source = find_matching_key(keys, api_key).unwrap_or(data);
+fn print_human(budget: &BudgetInfo, cached_at: Option<u64>) {
+    let cache_suffix = cached_at.map_or(" · live".to_string(), |time| {
+        let age = crate::cache::now_secs().saturating_sub(time);
+        format!(" · cached {}", format_age(age))
+    });
 
-    ["spend", "max_budget"].iter().any(|field| {
-        source
-            .get(field)
-            .and_then(serde_json::Value::as_f64)
-            .is_some()
-    })
+    for line in display::budget_lines(
+        budget.key_spent_usd,
+        budget.remaining_usd,
+        budget.limited_by.as_deref(),
+        &budget.layers,
+        budget.expires_at.as_deref(),
+        &cache_suffix,
+    ) {
+        println!("{line}");
+    }
 }
 
 pub(crate) fn format_age(age_secs: u64) -> String {
@@ -152,188 +165,4 @@ pub(crate) fn format_age(age_secs: u64) -> String {
         _ => format!("{}d ago", age_secs / 86400),
     }
 }
-
-fn budget_error(data: &serde_json::Value) -> Option<AixError> {
-    data.get("_aix_budget_exceeded")
-        .and_then(serde_json::Value::as_bool)
-        .filter(|exceeded| *exceeded)
-        .map(|_| AixError::BudgetExceeded {
-            spend: data
-                .get("spend")
-                .and_then(|value| value.as_f64())
-                .unwrap_or(0.0),
-            max_budget: data
-                .get("max_budget")
-                .and_then(|value| value.as_f64())
-                .unwrap_or(0.0),
-        })
-}
-
-#[derive(Serialize)]
-pub(crate) struct SpendSummary {
-    pub(crate) spend: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) max_budget: Option<f64>,
-}
-
-pub(crate) fn spend_summary(data: &serde_json::Value, api_key: &str) -> SpendSummary {
-    let keys: &[serde_json::Value] = data
-        .get("keys")
-        .and_then(|v| v.as_array())
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-
-    let (spend, max_budget) = if let Some(key) = find_matching_key(keys, api_key) {
-        (
-            key.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            key.get("max_budget").and_then(|v| v.as_f64()),
-        )
-    } else {
-        (
-            data.get("spend").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            data.get("max_budget").and_then(|v| v.as_f64()),
-        )
-    };
-
-    SpendSummary { spend, max_budget }
-}
-
-const GRADIENT_STOPS: [(f64, Rgb); 4] = [
-    (0.0, Rgb(0, 200, 0)),
-    (50.0, Rgb(220, 200, 0)),
-    (75.0, Rgb(255, 165, 0)),
-    (100.0, Rgb(220, 0, 0)),
-];
-
-fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
-    (a as f64 + (b as f64 - a as f64) * t).round() as u8
-}
-
-fn gradient_color(pct_used: f64) -> Rgb {
-    let pct = pct_used.clamp(0.0, 100.0);
-    let segment = GRADIENT_STOPS
-        .windows(2)
-        .find(|w| pct <= w[1].0)
-        .unwrap_or(&GRADIENT_STOPS[GRADIENT_STOPS.len() - 2..]);
-    let (p0, c0) = segment[0];
-    let (p1, c1) = segment[1];
-    let t = if p1 > p0 { (pct - p0) / (p1 - p0) } else { 0.0 };
-
-    Rgb(
-        lerp_channel(c0.0, c1.0, t),
-        lerp_channel(c0.1, c1.1, t),
-        lerp_channel(c0.2, c1.2, t),
-    )
-}
-
-fn position_color(index: usize, bar_len: usize) -> Rgb {
-    let pct = index as f64 / (bar_len - 1) as f64 * 100.0;
-    gradient_color(pct)
-}
-
-fn print_human(data: &serde_json::Value, api_key: &str, cached_at: Option<u64>) {
-    let SpendSummary { spend, max_budget } = spend_summary(data, api_key);
-
-    let cache_suffix = cached_at.map_or(String::new(), |t| {
-        let age = crate::cache::now_secs().saturating_sub(t);
-        format!("  ·  cached {}", format_age(age))
-    });
-
-    if let Some(b) = max_budget {
-        let remaining = b - spend;
-        let pct_used = if b > 0.0 {
-            (spend / b * 100.0).clamp(0.0, 100.0)
-        } else {
-            0.0
-        };
-        let pct_remaining = 100.0 - pct_used;
-
-        const BAR: usize = 40;
-        let filled = (pct_used / 100.0 * BAR as f64).round() as usize;
-        let bar_empty = "░".repeat(BAR - filled);
-        let bar_filled: String = (0..filled)
-            .map(|i| {
-                "█"
-                    .if_supports_color(Stdout, |t| t.color(position_color(i, BAR)))
-                    .to_string()
-            })
-            .collect();
-        let label = format!("{pct_used:.0}% used")
-            .if_supports_color(Stdout, |t| t.color(gradient_color(pct_used)))
-            .to_string();
-
-        if remaining < 0.0 {
-            println!(
-                "${spend:.2} of ${b:.2}  ·  over budget by ${:.2}{cache_suffix}",
-                -remaining
-            );
-        } else {
-            println!(
-                "${spend:.2} of ${b:.2}  ·  ${remaining:.2} available ({pct_remaining:.0}%){cache_suffix}"
-            );
-        }
-        println!("[{bar_filled}{bar_empty}]  {label}");
-    } else {
-        println!("${spend:.2} spent  (no budget set){cache_suffix}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use owo_colors::Rgb;
-
-    #[test]
-    fn gradient_color_at_stops() {
-        assert_eq!(gradient_color(0.0), Rgb(0, 200, 0));
-        assert_eq!(gradient_color(50.0), Rgb(220, 200, 0));
-        assert_eq!(gradient_color(75.0), Rgb(255, 165, 0));
-        assert_eq!(gradient_color(100.0), Rgb(220, 0, 0));
-    }
-
-    #[test]
-    fn gradient_color_interpolates_between_stops() {
-        // Halfway between green (0%) and yellow (50%).
-        assert_eq!(gradient_color(25.0), Rgb(110, 200, 0));
-        // Halfway between yellow (50%) and orange (75%).
-        assert_eq!(gradient_color(62.5), Rgb(238, 183, 0));
-        // Halfway between orange (75%) and red (100%).
-        assert_eq!(gradient_color(87.5), Rgb(238, 83, 0));
-    }
-
-    #[test]
-    fn gradient_color_clamps_out_of_range_input() {
-        assert_eq!(gradient_color(-10.0), Rgb(0, 200, 0));
-        assert_eq!(gradient_color(150.0), Rgb(220, 0, 0));
-    }
-
-    #[test]
-    fn position_color_sweeps_the_full_spectrum_across_a_bar() {
-        assert_eq!(position_color(0, 40), Rgb(0, 200, 0));
-        assert_eq!(position_color(39, 40), Rgb(220, 0, 0));
-        // index 20 of 40 -> 20/39*100 = 51.28...%, between the yellow (50%) and
-        // orange (75%) stops.
-        assert_eq!(position_color(20, 40), Rgb(222, 198, 0));
-    }
-
-    #[test]
-    fn find_matching_key_matches_short_credentials_without_exposing_them() {
-        let api_key = "abcd";
-        let key_name = crate::cache::sanitized_key_name(api_key);
-        let keys = [serde_json::json!({ "key_name": key_name, "spend": 2.0 })];
-
-        let matched = find_matching_key(&keys, api_key).unwrap();
-        assert_eq!(matched["spend"], 2.0);
-        assert!(!matched.to_string().contains(api_key));
-    }
-
-    #[test]
-    fn find_matching_key_matches_masked_short_key_suffix() {
-        let api_key = "abcd";
-        let key_name = crate::cache::sanitized_key_name("sk-...abcd");
-        let keys = [serde_json::json!({ "key_name": key_name, "spend": 2.0 })];
-
-        let matched = find_matching_key(&keys, api_key).unwrap();
-        assert_eq!(matched["spend"], 2.0);
-    }
-}
+pub(crate) mod display;

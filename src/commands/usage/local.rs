@@ -40,7 +40,6 @@ pub(super) struct LocalUsageContext {
     pub storage_unavailable: bool,
     pub scan_incomplete: bool,
     pub model_filter: Option<String>,
-    pub message: Option<String>,
 }
 
 #[derive(Clone, Copy, Default, Serialize)]
@@ -183,7 +182,6 @@ impl LocalUsageReport {
             storage_unavailable,
             scan_incomplete,
             model_filter,
-            message,
         } = context;
         let mut metrics = LocalUsageMetrics::default();
         let mut daily = BTreeMap::<NaiveDate, LocalUsageMetrics>::new();
@@ -256,11 +254,7 @@ impl LocalUsageReport {
         } else if scan_incomplete {
             Some("Some local usage events could not be read; totals may be incomplete.".to_string())
         } else if events.is_empty() {
-            let no_events = "No local usage events were observed in the selected date range.";
-            Some(message.map_or_else(
-                || no_events.to_string(),
-                |context| format!("{no_events} {context}"),
-            ))
+            Some("No local usage events were observed in the selected date range.".to_string())
         } else {
             None
         };

@@ -1,13 +1,13 @@
 mod failure;
 mod report;
 
-use self::failure::{admin_failure, gateway_failure, safe_load_failure, safe_validation_failure};
+use self::failure::{budget_failure, gateway_failure, safe_load_failure, safe_validation_failure};
 use self::report::{print_human, DoctorOutput, DoctorReport};
 use crate::cache::Cache;
 use crate::commands::GatewayRequestOptions;
-use crate::config::{self, CacheConfig, Config, Gateway, KnownGateway};
+use crate::config::{self, CacheConfig, Config};
 use crate::error::{AixError, DoctorFailureCategory};
-use crate::gateway::{LiteLlmAdminClient, OpenAiClient};
+use crate::gateway::{BudgetClient, OpenAiClient};
 use crate::output;
 use color_eyre::Result;
 use std::path::PathBuf;
@@ -319,47 +319,36 @@ async fn diagnose(
     }
 
     match (config.as_ref(), &api_key, &base_url) {
-        (Some(cfg), Some(api_key), Some(base_url)) if config_is_valid && env_files_loaded => {
-            if is_litellm_or_unset(cfg) {
-                let started = Instant::now();
-                let result = LiteLlmAdminClient::with_timeout(
-                    base_url.expose_secret(),
-                    api_key.expose_secret(),
-                    timeout,
-                )
-                .user_info()
-                .await;
-                let duration_ms = elapsed_ms(started.elapsed());
-                match result {
-                    Ok(_) => report.pass(
-                        "litellm_admin",
-                        "LiteLLM management capability is reachable",
-                        Some(duration_ms),
-                    ),
-                    Err(AixError::BudgetExceeded { .. }) => report.fail(
-                        "litellm_admin",
-                        "LiteLLM rejected the management request because the budget is exceeded",
-                        "review the configured key's LiteLLM budget policy",
-                        Some(duration_ms),
-                        DoctorFailureCategory::Budget,
-                    ),
-                    Err(error) => {
-                        report.fail_with("litellm_admin", admin_failure(&error), Some(duration_ms));
-                    }
+        (Some(_), Some(api_key), Some(base_url)) if config_is_valid && env_files_loaded => {
+            let started = Instant::now();
+            let result = BudgetClient::with_timeout(
+                base_url.expose_secret(),
+                api_key.expose_secret(),
+                timeout,
+            )
+            .key_info()
+            .await;
+            let duration_ms = elapsed_ms(started.elapsed());
+            match result {
+                Ok(_) => report.pass(
+                    "budget_info",
+                    "GET /v1/key/info returned native budget information",
+                    Some(duration_ms),
+                ),
+                Err(AixError::GatewayError {
+                    status: 404 | 405 | 501,
+                    ..
+                }) => report.not_applicable(
+                    "budget_info",
+                    "GET /v1/key/info is not supported by this gateway",
+                ),
+                Err(error) => {
+                    report.fail_with("budget_info", budget_failure(&error), Some(duration_ms));
                 }
-            } else {
-                report.not_applicable(
-                    "litellm_admin",
-                    "endpoint.gateway explicitly identifies a non-LiteLLM gateway",
-                );
             }
         }
-        (Some(cfg), _, _) if config_is_valid && !is_litellm_or_unset(cfg) => report.not_applicable(
-            "litellm_admin",
-            "endpoint.gateway explicitly identifies a non-LiteLLM gateway",
-        ),
         _ => report.skipped(
-            "litellm_admin",
+            "budget_info",
             "a valid config, API key, and base URL are required",
         ),
     }
@@ -390,13 +379,6 @@ async fn diagnose(
 
 fn resolve_profile_without_picker(profile: Option<String>, config: &Config) -> Option<String> {
     profile.or_else(|| config.default_profile.clone())
-}
-
-fn is_litellm_or_unset(config: &Config) -> bool {
-    match &config.endpoint.gateway {
-        None | Some(Gateway::Known(KnownGateway::Litellm)) => true,
-        Some(Gateway::Custom(_)) => false,
-    }
 }
 
 fn elapsed_ms(duration: Duration) -> u64 {

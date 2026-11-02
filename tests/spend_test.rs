@@ -1,10 +1,13 @@
+use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::Command;
 use assert_fs::prelude::*;
 use assert_fs::TempDir;
 use predicates::prelude::*;
-use serde_json::json;
-use wiremock::matchers::{header, method, path, query_param};
+use serde_json::{json, Value};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const API_KEY: &str = "sk-native-budget-secret-0011";
 
 fn write_config(dir: &TempDir, base_url: &str, api_key: &str) -> std::path::PathBuf {
     let file = dir.child("aix.toml");
@@ -21,529 +24,334 @@ api_key = "{api_key}"
     file.path().to_path_buf()
 }
 
-#[tokio::test]
-async fn spend_shows_matching_key_by_suffix() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .and(header("Authorization", "Bearer sk-test1111"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "key": "server-key",
-            "info": {
-                "keys": [
-                    {
-                        "key_name": "sk-...1111",
-                        "spend": 41.53,
-                        "max_budget": 500.0,
-                        "metadata": { "key_name": "alice" }
-                    },
-                    {
-                        "key_name": "sk-...2222",
-                        "spend": 100.0,
-                        "max_budget": 1000.0,
-                        "metadata": { "key_name": "bob" }
-                    }
-                ]
+fn native_budget() -> Value {
+    json!({
+        "key_spent_usd": "41.53",
+        "remaining_usd": "12.00",
+        "limited_by": "project",
+        "layers": [
+            {
+                "scope": "key",
+                "budget_usd": "100.00",
+                "spent_usd": "41.53",
+                "remaining_usd": "58.47",
+                "period_start": "2026-11-01T00:00:00Z"
+            },
+            {
+                "scope": "project",
+                "budget_usd": "20.00",
+                "spent_usd": "8.00",
+                "remaining_usd": "12.00",
+                "period_start": "2026-11-01T00:00:00Z"
             }
-        })))
-        .mount(&server)
+        ],
+        "expires_at": "2026-12-01T00:00:00Z",
+        "key": "raw-server-key-secret",
+        "key_id": "private-key-id-secret",
+        "name": "private-name-secret",
+        "metadata": { "api_key": "nested-key-secret" }
+    })
+}
+
+async fn mount_budget(server: &MockServer, body: Value, expected: u64) {
+    Mock::given(method("GET"))
+        .and(path("/v1/key/info"))
+        .and(header("Authorization", format!("Bearer {API_KEY}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .expect(expected)
+        .mount(server)
         .await;
+}
 
-    let dir = TempDir::new().unwrap();
-    let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), "sk-test1111");
-
+fn invoke(
+    config: &std::path::Path,
+    cache_dir: &std::path::Path,
+    args: &[&str],
+) -> std::process::Output {
     Command::cargo_bin("aix")
         .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args(["--config", config.to_str().unwrap(), "spend", "test"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("41.53"))
-        .stdout(predicate::str::contains("500.00"))
-        .stdout(predicate::str::contains("458.47"))
-        .stdout(predicate::str::contains("available"))
-        .stdout(predicate::str::contains("█"))
-        .stdout(predicate::str::contains("% used"))
-        .stdout(predicate::str::contains("bob").not());
+        .env("AIX_CACHE_DIR", cache_dir)
+        .args(["--config", config.to_str().unwrap()])
+        .args(args)
+        .output()
+        .unwrap()
 }
 
 #[tokio::test]
-async fn spend_falls_back_to_user_totals_when_no_key_match() {
+async fn spend_json_reports_native_key_spend_effective_remaining_and_layers() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "key": "server-key",
-            "info": {
-                "spend": 99.0,
-                "max_budget": 200.0,
-                "keys": []
-            }
-        })))
-        .mount(&server)
-        .await;
-
+    mount_budget(&server, native_budget(), 1).await;
     let dir = TempDir::new().unwrap();
     let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), "sk-nomatch1234");
+    let config = write_config(&dir, &server.uri(), API_KEY);
 
-    Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args(["--config", config.to_str().unwrap(), "spend", "test"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("99.00"))
-        .stdout(predicate::str::contains("200.00"))
-        .stdout(predicate::str::contains("█"))
-        .stdout(predicate::str::contains("% used"));
-}
+    let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
 
-#[tokio::test]
-async fn spend_json_returns_versioned_aix_data_without_upstream_fields() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "key": "server-key",
-            "info": {
-                "spend": 99.0,
-                "max_budget": 1000.0,
-                "token": "server-key",
-                "key_name": "sk-...1234",
-                "keys": [
-                    {
-                        "key_name": "sk-...1234",
-                        "spend": 1.23,
-                        "max_budget": 5.0,
-                        "metadata": { "token": "nested-private-token" }
-                    }
-                ]
-            }
-        })))
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), "sk-test1234");
-
-    let after = Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "spend",
-            "test",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert!(after.status.success());
-    let before = Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "--json",
-            "spend",
-            "test",
-        ])
-        .output()
-        .unwrap();
-    assert!(before.status.success());
-    assert_eq!(before.stdout, after.stdout);
-
-    let stdout = String::from_utf8(after.stdout).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed["schema_version"], 1);
-    assert_eq!(parsed["command"], "spend");
-    assert_eq!(parsed["data"]["spend"], 1.23);
-    assert_eq!(parsed["data"]["max_budget"], 5.0);
-    for upstream_field in ["key", "token", "key_name", "keys", "user_id", "metadata"] {
-        assert!(
-            parsed["data"].get(upstream_field).is_none(),
-            "unexpected upstream field {upstream_field}: {stdout}"
-        );
-    }
-    for secret in ["server-key", "nested-private-token", "sk-test1234"] {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["command"], "spend");
+    assert_eq!(report["data"]["status"], "available");
+    assert_eq!(report["data"]["key_spent_usd"], 41.53);
+    assert_eq!(report["data"]["remaining_usd"], 12.0);
+    assert_eq!(report["data"]["limited_by"], "project");
+    assert_eq!(report["data"]["layers"][0]["scope"], "key");
+    assert_eq!(report["data"]["layers"][0]["budget_usd"], 100.0);
+    assert_eq!(report["data"]["layers"][0]["spent_usd"], 41.53);
+    assert_eq!(report["data"]["layers"][1]["remaining_usd"], 12.0);
+    assert_eq!(report["data"]["expires_at"], "2026-12-01T00:00:00Z");
+    assert!(report["data"].get("max_budget").is_none());
+    assert!(report["data"].get("spend").is_none());
+    for secret in [
+        API_KEY,
+        "raw-server-key-secret",
+        "private-key-id-secret",
+        "private-name-secret",
+        "nested-key-secret",
+        "metadata",
+    ] {
         assert!(!stdout.contains(secret), "leaked {secret}: {stdout}");
     }
 }
 
 #[tokio::test]
-async fn spend_second_call_uses_cache() {
+async fn spend_human_output_keeps_key_spend_separate_from_effective_remaining() {
     let server = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .and(header("Authorization", "Bearer sk-testT3S4"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "key": "server-key",
-            "info": {
-                "user_id": "u-cached",
-                "spend": 4.20,
-                "max_budget": 10.0,
-                "keys": [{ "key_name": "sk-...T3S4", "spend": 4.20, "max_budget": 10.0 }]
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
+    mount_budget(&server, native_budget(), 1).await;
     let dir = TempDir::new().unwrap();
     let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), "sk-testT3S4");
+    let config = write_config(&dir, &server.uri(), API_KEY);
 
-    Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args(["--config", config.to_str().unwrap(), "spend", "test"])
+    invoke(&config, cache_dir.path(), &["spend", "test"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("4.20"));
-
-    Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args(["--config", config.to_str().unwrap(), "spend", "test"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("4.20"));
-    // wiremock verifies .expect(1) on server drop
+        .stdout(predicate::str::contains("Key spend   $41.53"))
+        .stdout(predicate::str::contains(
+            "Available   $12.00 · limited by project",
+        ))
+        .stdout(predicate::str::contains("$41.53 / $100.00"))
+        .stdout(predicate::str::contains("$8.00 / $20.00"))
+        .stdout(predicate::str::contains("Project *"))
+        .stdout(predicate::str::contains("* Limiting budget"))
+        .stdout(predicate::str::contains("$53.53").not());
 }
 
 #[tokio::test]
-async fn spend_warms_cache_for_sibling_keys() {
+async fn spend_shows_a_progress_bar_for_each_capped_budget_layer() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .and(header("Authorization", "Bearer sk-firstK111"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "key": "server-key",
-            "info": {
-                "user_id": "u-shared",
-                "spend": 10.0,
-                "max_budget": 100.0
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/key/list"))
-        .and(header("Authorization", "Bearer sk-firstK111"))
-        .and(query_param("user_id", "u-shared"))
-        .and(query_param("page", "1"))
-        .and(query_param("size", "100"))
-        .and(query_param("return_full_object", "true"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "keys": [
-                {
-                    "api_key": "server-key-K111",
-                    "spend": 10.0,
-                    "max_budget": 100.0
-                },
-                {
-                    "api_key": "server-key-K222",
-                    "spend": 20.0,
-                    "max_budget": 100.0
-                }
-            ],
-            "total_pages": 1
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
+    mount_budget(&server, native_budget(), 1).await;
     let dir = TempDir::new().unwrap();
     let cache_dir = TempDir::new().unwrap();
-    let config = dir.child("aix.toml");
-    config
-        .write_str(&format!(
-            r#"
-[endpoint]
-base_url = "{}"
+    let config = write_config(&dir, &server.uri(), API_KEY);
 
-[profiles.first]
-api_key = "sk-firstK111"
+    let output = invoke(&config, cache_dir.path(), &["spend", "test"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("42% used"), "{stdout}");
+    assert!(stdout.contains("40% used"), "{stdout}");
+    assert_eq!(
+        stdout.matches('░').count() + stdout.matches('█').count(),
+        80
+    );
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "redirected output must not contain ANSI codes"
+    );
+}
 
-[profiles.second]
-api_key = "sk-secondK222"
-"#,
-            server.uri()
-        ))
-        .unwrap();
+#[tokio::test]
+async fn spend_preserves_unlimited_values_as_null_and_displays_unlimited() {
+    let server = MockServer::start().await;
+    let mut body = native_budget();
+    body["remaining_usd"] = Value::Null;
+    body["limited_by"] = Value::Null;
+    body["layers"] = json!([{
+        "scope": "tenant",
+        "budget_usd": null,
+        "spent_usd": "41.53",
+        "remaining_usd": null,
+        "period_start": "2026-11-01T00:00:00Z"
+    }]);
+    mount_budget(&server, body, 2).await;
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), API_KEY);
 
-    Command::cargo_bin("aix")
+    let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["data"]["status"], "available");
+    assert_eq!(report["data"]["remaining_usd"], Value::Null);
+    assert_eq!(report["data"]["limited_by"], Value::Null);
+    assert_eq!(report["data"]["layers"][0]["budget_usd"], Value::Null);
+    assert_eq!(report["data"]["layers"][0]["remaining_usd"], Value::Null);
+
+    let human = invoke(&config, cache_dir.path(), &["spend", "test", "--no-cache"]);
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains("Available   unlimited"), "{stdout}");
+    assert!(stdout.contains("$41.53 / unlimited"), "{stdout}");
+    assert!(!stdout.contains("% used"), "{stdout}");
+    assert!(!stdout.contains('░'), "{stdout}");
+}
+
+#[tokio::test]
+async fn spend_marks_native_endpoint_unsupported_without_failing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/key/info"))
+        .and(header("Authorization", format!("Bearer {API_KEY}")))
+        .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), API_KEY);
+
+    let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["data"]["status"], "unsupported");
+    assert_eq!(report["data"]["key_spent_usd"], Value::Null);
+    assert_eq!(report["data"]["layers"], Value::Null);
+}
+
+#[tokio::test]
+async fn malformed_native_fields_fail_as_protocol_errors_instead_of_zeroes() {
+    let server = MockServer::start().await;
+    let mut body = native_budget();
+    body["key_spent_usd"] = json!("NaN");
+    mount_budget(&server, body, 1).await;
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), API_KEY);
+
+    let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
+    assert_eq!(output.status.code(), Some(5));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("malformed native budget information"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(API_KEY));
+}
+
+#[tokio::test]
+async fn cache_is_key_scoped_secret_safe_and_legacy_records_are_refetched() {
+    let server = MockServer::start().await;
+    mount_budget(&server, native_budget(), 2).await;
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), API_KEY);
+
+    let first = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
+    assert!(first.status.success());
+
+    let cache_file = std::fs::read_dir(cache_dir.path())
         .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args([
-            "--config",
-            config.path().to_str().unwrap(),
-            "spend",
-            "first",
-            "--no-cache",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("10.00"));
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .flat_map(|entry| {
+            std::fs::read_dir(entry.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name() != "index.json")
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>()
+        })
+        .next()
+        .expect("budget cache data file");
+    let mut cached: Value =
+        serde_json::from_str(&std::fs::read_to_string(&cache_file).unwrap()).unwrap();
+    cached["data"] = json!({ "spend": 41.53, "max_budget": 100.0 });
+    std::fs::write(&cache_file, serde_json::to_vec(&cached).unwrap()).unwrap();
 
-    Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args([
-            "--config",
-            config.path().to_str().unwrap(),
-            "spend",
-            "second",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("20.00"))
-        .stdout(predicate::str::contains("80.00"));
+    let second = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
+    assert!(second.status.success());
+    let report: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(report["data"]["key_spent_usd"], 41.53);
 
-    for endpoint in std::fs::read_dir(cache_dir.path()).unwrap() {
-        let endpoint = endpoint.unwrap().path();
+    for entry in std::fs::read_dir(cache_dir.path()).unwrap() {
+        let endpoint = entry.unwrap().path();
         if endpoint.is_dir() {
-            for entry in std::fs::read_dir(endpoint).unwrap() {
-                let contents = std::fs::read_to_string(entry.unwrap().path()).unwrap();
-                assert!(!contents.contains("server-key"));
-                assert!(!contents.contains("api_key"));
-                assert!(!contents.contains("token"));
+            for file in std::fs::read_dir(endpoint).unwrap() {
+                let contents = std::fs::read_to_string(file.unwrap().path()).unwrap();
+                for private in [
+                    API_KEY,
+                    "raw-server-key-secret",
+                    "private-key-id-secret",
+                    "private-name-secret",
+                    "nested-key-secret",
+                    "metadata",
+                ] {
+                    assert!(!contents.contains(private), "cached {private}: {contents}");
+                }
             }
         }
     }
 }
 
 #[tokio::test]
-async fn spend_no_cache_flag_always_fetches() {
+async fn cache_hit_uses_no_second_budget_request() {
     let server = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .and(header("Authorization", "Bearer sk-testN0C1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "key": "server-key",
-            "info": {
-                "user_id": "u-nocache",
-                "spend": 1.0,
-                "max_budget": 5.0,
-                "keys": [{ "key_name": "sk-...N0C1", "spend": 1.0, "max_budget": 5.0 }]
-            }
-        })))
-        .expect(2)
-        .mount(&server)
-        .await;
-
+    mount_budget(&server, native_budget(), 1).await;
     let dir = TempDir::new().unwrap();
     let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), "sk-testN0C1");
+    let config = write_config(&dir, &server.uri(), API_KEY);
 
-    for _ in 0..2 {
-        Command::cargo_bin("aix")
-            .unwrap()
-            .env("AIX_CACHE_DIR", cache_dir.path())
-            .args([
-                "--config",
-                config.to_str().unwrap(),
-                "spend",
-                "test",
-                "--no-cache",
-            ])
-            .assert()
-            .success();
-    }
-    // wiremock verifies .expect(2) on server drop
+    let first = invoke(&config, cache_dir.path(), &["spend", "test"]);
+    let second = invoke(&config, cache_dir.path(), &["spend", "test"]);
+    assert!(first.status.success());
+    assert!(second.status.success());
+    assert!(String::from_utf8_lossy(&second.stdout).contains("cached"));
 }
 
 #[tokio::test]
-async fn spend_output_has_no_ansi_codes_when_piped() {
+async fn spend_auth_failure_does_not_leak_credentials_or_upstream_metadata() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "key": "server-key",
-            "info": {
-                "spend": 90.0,
-                "max_budget": 100.0,
-                "keys": []
-            }
-        })))
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), "sk-colortest1");
-
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args(["--config", config.to_str().unwrap(), "spend", "test"])
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    // assert_cmd captures stdout to a pipe, not a TTY, so owo-colors'
-    // supports-colors detection must suppress ANSI escapes here.
-    assert!(
-        !stdout.contains('\x1b'),
-        "expected no ANSI codes, got: {stdout:?}"
-    );
-    assert!(stdout.contains("90% used"));
-}
-
-#[tokio::test]
-async fn spend_auth_failure_uses_auth_exit_code_and_never_prints_secrets() {
-    let server = MockServer::start().await;
-    let api_key = "sk-auth-secret-1234";
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .and(header("Authorization", format!("Bearer {api_key}")))
+        .and(path("/v1/key/info"))
+        .and(header("Authorization", format!("Bearer {API_KEY}")))
         .respond_with(ResponseTemplate::new(403).set_body_json(json!({
-            "message": format!("credential {api_key} rejected"),
+            "message": format!("credential {API_KEY} rejected"),
             "access_token": "upstream-token-secret"
-        })))
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), api_key);
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args([
-            "--json",
-            "--config",
-            config.to_str().unwrap(),
-            "spend",
-            "test",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(4));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("403"), "unexpected diagnostic: {stderr}");
-    assert!(
-        !stderr.contains(api_key),
-        "secret leaked to stderr: {stderr}"
-    );
-    assert!(
-        !stderr.contains("upstream-token-secret"),
-        "upstream token leaked to stderr: {stderr}"
-    );
-}
-
-#[tokio::test]
-async fn spend_gateway_failure_uses_gateway_exit_code_and_empty_json_stdout() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(502).set_body_string("gateway unavailable"))
-        .mount(&server)
-        .await;
-
-    let dir = TempDir::new().unwrap();
-    let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), "sk-network-secret-5678");
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "spend",
-            "test",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(5));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("502"), "unexpected diagnostic: {stderr}");
-    assert!(!stderr.contains("sk-network-secret-5678"));
-}
-
-#[tokio::test]
-async fn spend_transport_failure_does_not_leak_url_or_api_key_secrets() {
-    let dir = TempDir::new().unwrap();
-    let cache_dir = TempDir::new().unwrap();
-    let api_key = "sk-transport-secret-9012";
-    let url_secret = "url-secret-marker";
-    let config = write_config(&dir, &format!("http://127.0.0.1:1/{url_secret}"), api_key);
-    let output = Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args([
-            "--json",
-            "--config",
-            config.to_str().unwrap(),
-            "spend",
-            "test",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(5));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains(api_key), "API key leaked: {stderr}");
-    assert!(!stderr.contains(url_secret), "URL secret leaked: {stderr}");
-}
-
-#[tokio::test]
-async fn budget_failure_uses_exit_code_six_and_json_stdout_stays_empty() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .respond_with(ResponseTemplate::new(429).set_body_json(json!({
-            "error": {
-                "message": "Budget exceeded. Current cost: 50.17, Max budget: 50.0",
-                "type": "budget_exceeded"
-            }
         })))
         .expect(1)
         .mount(&server)
         .await;
-
     let dir = TempDir::new().unwrap();
     let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), "sk-budget-test-9876");
+    let config = write_config(&dir, &server.uri(), API_KEY);
 
-    let human = Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args(["--config", config.to_str().unwrap(), "spend", "test"])
-        .output()
-        .unwrap();
-    assert_eq!(human.status.code(), Some(6));
-    assert!(human.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&human.stderr).contains("budget exceeded"));
+    let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("403"), "{stderr}");
+    assert!(!stderr.contains(API_KEY), "leaked API key: {stderr}");
+    assert!(
+        !stderr.contains("upstream-token-secret"),
+        "leaked token: {stderr}"
+    );
+}
 
-    let json = Command::cargo_bin("aix")
-        .unwrap()
-        .env("AIX_CACHE_DIR", cache_dir.path())
-        .args([
-            "--json",
-            "--config",
-            config.to_str().unwrap(),
-            "spend",
-            "test",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(json.status.code(), Some(6));
-    assert!(json.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&json.stderr).contains("budget exceeded"));
+#[tokio::test]
+async fn no_cache_forces_each_request() {
+    let server = MockServer::start().await;
+    mount_budget(&server, native_budget(), 2).await;
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), API_KEY);
+
+    for _ in 0..2 {
+        let output = invoke(&config, cache_dir.path(), &["spend", "test", "--no-cache"]);
+        assert!(output.status.success());
+    }
 }

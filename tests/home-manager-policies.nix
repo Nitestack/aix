@@ -52,18 +52,19 @@ let
     evaluated.config.xdg.configFile."aix/aix.toml".source;
 in
 assert
-  !(builtins.tryEval (render {
-    runPolicies.invalid = {
-      maxBudget = 0;
-      maxDuration = "1h";
-    };
-  })).success;
+  !(builtins.tryEval (
+    builtins.readFile (render {
+      runPolicies.invalid = {
+        maxBudget = 3.0;
+        maxDuration = "1h";
+      };
+    })
+  )).success;
 {
   configured = render {
     runPolicies = {
       implement = {
         profile = "work";
-        maxBudget = 3.0;
         maxDuration = "2h";
         allowedModels = [
           "smart"

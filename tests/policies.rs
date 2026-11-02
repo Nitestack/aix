@@ -1,11 +1,7 @@
 use assert_cmd::Command;
 use assert_fs::prelude::*;
 use serde_json::{json, Value};
-use wiremock::matchers::{header, method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
-
-const PARENT_KEY: &str = "sk-policy-parent";
-const LEASE_KEY: &str = "sk-policy-lease";
+use wiremock::MockServer;
 
 fn cmd() -> Command {
     Command::cargo_bin("aix").expect("binary exists")
@@ -29,7 +25,6 @@ fast = "provider/model-fast"
 
 [run_policies.implement]
 profile = "work"
-max_budget = 3.00
 max_duration = "2h"
 allowed_models = ["smart", "fast"]
 tags = ["phase:implement"]
@@ -50,38 +45,19 @@ fn run_policy_validation_rejects_unsafe_or_incomplete_constraints() {
         (
             "empty name",
             r#"[run_policies.""]
-max_budget = 1
 max_duration = "1h"
 "#,
             "names must not be empty",
         ),
         (
-            "non-positive budget",
-            r#"[run_policies.implement]
-max_budget = 0
-max_duration = "1h"
-"#,
-            "max_budget greater than zero",
-        ),
-        (
-            "non-finite budget",
-            r#"[run_policies.implement]
-max_budget = inf
-max_duration = "1h"
-"#,
-            "max_budget greater than zero",
-        ),
-        (
             "missing duration",
             r#"[run_policies.implement]
-max_budget = 1
 "#,
             "max_duration",
         ),
         (
             "invalid duration",
             r#"[run_policies.implement]
-max_budget = 1
 max_duration = "forever"
 "#,
             "valid positive max_duration",
@@ -89,7 +65,6 @@ max_duration = "forever"
         (
             "non-positive duration",
             r#"[run_policies.implement]
-max_budget = 1
 max_duration = "0h"
 "#,
             "valid positive max_duration",
@@ -97,7 +72,6 @@ max_duration = "0h"
         (
             "empty model allowlist",
             r#"[run_policies.implement]
-max_budget = 1
 max_duration = "1h"
 allowed_models = []
 "#,
@@ -106,7 +80,6 @@ allowed_models = []
         (
             "empty model name",
             r#"[run_policies.implement]
-max_budget = 1
 max_duration = "1h"
 allowed_models = [""]
 "#,
@@ -115,7 +88,6 @@ allowed_models = [""]
         (
             "empty tag",
             r#"[run_policies.implement]
-max_budget = 1
 max_duration = "1h"
 tags = [""]
 "#,
@@ -125,7 +97,6 @@ tags = [""]
             "undefined fixed profile",
             r#"[run_policies.implement]
 profile = "missing"
-max_budget = 1
 max_duration = "1h"
 "#,
             "references undefined profile",
@@ -154,7 +125,7 @@ max_duration = "1h"
 }
 
 #[test]
-fn run_policy_without_budget_validates_and_lists_budget_as_absent() {
+fn run_policy_validates_and_lists_duration_and_models() {
     let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
     config
         .write_str(
@@ -194,9 +165,9 @@ tags = ["workflow:implement"]
         .clone();
     let dry_run = String::from_utf8_lossy(&output.stderr);
     assert!(dry_run.contains("Would enforce the local run policy"));
-    assert!(dry_run.contains("budget: not configured"));
-    assert!(!dry_run.contains("key alias:"));
-    assert!(!dry_run.contains("$0.00"));
+    assert!(dry_run.contains("duration: 2h"));
+    assert!(dry_run.contains("gpt-5-codex"));
+    assert!(!dry_run.contains("budget"));
 
     let output = cmd()
         .env("AIX_CONFIG", config.path())
@@ -207,8 +178,7 @@ tags = ["workflow:implement"]
         .stdout
         .clone();
     let policy: Value = serde_json::from_slice(&output).unwrap();
-    assert!(policy["data"].get("max_budget").is_none_or(Value::is_null));
-    assert_ne!(policy["data"]["max_budget"], 0);
+    assert!(policy["data"].get("max_budget").is_none());
 
     let output = cmd()
         .env("AIX_CONFIG", config.path())
@@ -218,9 +188,9 @@ tags = ["workflow:implement"]
         .get_output()
         .stdout
         .clone();
-    assert!(String::from_utf8(output)
-        .unwrap()
-        .contains("Max budget: (none)"));
+    let human = String::from_utf8(output).unwrap();
+    assert!(human.contains("Max duration: 2h"));
+    assert!(!human.contains("budget"));
 }
 
 #[test]
@@ -243,13 +213,11 @@ fast = "provider/model-fast"
 
 [run_policies.implement]
 profile = "work"
-max_budget = 3.00
 max_duration = "2h"
 allowed_models = ["smart", "fast"]
 tags = ["phase:implement"]
 
 [run_policies.research]
-max_budget = 1.50
 max_duration = "1h"
 allowed_models = ["fast", "smart"]
 tags = ["phase:research"]
@@ -285,7 +253,7 @@ tags = ["phase:research"]
         .clone();
     let human_list = String::from_utf8(output).unwrap();
     assert!(human_list.find("implement").unwrap() < human_list.find("research").unwrap());
-    assert!(human_list.contains("Max budget: $3.00"));
+    assert!(human_list.contains("Max duration: 2h"));
 
     let output = cmd()
         .env("AIX_CONFIG", config.path())
@@ -298,7 +266,7 @@ tags = ["phase:research"]
     let envelope: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(envelope["command"], "policy show");
     assert_eq!(envelope["data"]["name"], "implement");
-    assert_eq!(envelope["data"]["max_budget"], 3.0);
+    assert!(envelope["data"].get("max_budget").is_none());
 
     let output = cmd()
         .env("AIX_CONFIG", config.path())
@@ -309,13 +277,13 @@ tags = ["phase:research"]
         .stdout
         .clone();
     let human = String::from_utf8(output).unwrap();
-    assert!(human.contains("Max budget: $3.00"));
+    assert!(human.contains("Max duration: 2h"));
     assert!(human.contains("provider/model-smart"));
     assert!(!human.contains("test-key"));
 }
 
 #[test]
-fn policy_runs_default_to_caps_and_allow_only_lower_budget_and_duration() {
+fn policy_runs_default_to_maximum_duration_and_reject_longer_overrides() {
     let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
     config
         .write_str(
@@ -328,7 +296,6 @@ api_key = "test-key"
 
 [run_policies.implement]
 profile = "work"
-max_budget = 3.0
 max_duration = "2h"
 "#,
         )
@@ -342,8 +309,8 @@ max_duration = "2h"
         .get_output()
         .clone();
     let stderr = String::from_utf8_lossy(&defaulted.stderr);
-    assert!(stderr.contains("budget: $3.00"));
     assert!(stderr.contains("duration: 2h"));
+    assert!(!stderr.contains("budget"));
     assert!(stderr.contains("AIX_RUN_POLICY"));
 
     cmd()
@@ -352,8 +319,6 @@ max_duration = "2h"
             "run",
             "--policy",
             "implement",
-            "--budget",
-            "1.50",
             "--duration",
             "90m",
             "--dry-run",
@@ -363,32 +328,27 @@ max_duration = "2h"
         .assert()
         .success();
 
-    for (option, value, expected_error) in [
-        ("--budget", "3.01", "exceeds run policy"),
-        ("--duration", "121m", "exceeds run policy"),
-    ] {
-        let output = cmd()
-            .env("AIX_CONFIG", config.path())
-            .args([
-                "run",
-                "--policy",
-                "implement",
-                option,
-                value,
-                "--dry-run",
-                "--",
-                "true",
-            ])
-            .assert()
-            .code(2)
-            .get_output()
-            .clone();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(expected_error),
-            "{option} {value}: {stderr}"
-        );
-    }
+    let output = cmd()
+        .env("AIX_CONFIG", config.path())
+        .args([
+            "run",
+            "--policy",
+            "implement",
+            "--duration",
+            "121m",
+            "--dry-run",
+            "--",
+            "true",
+        ])
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("exceeds run policy"),
+        "--duration 121m: {stderr}"
+    );
 }
 
 #[test]
@@ -410,11 +370,9 @@ api_key = "personal-key"
 
 [run_policies.fixed]
 profile = "work"
-max_budget = 1
 max_duration = "1h"
 
 [run_policies.flexible]
-max_budget = 1
 max_duration = "1h"
 "#,
         )
@@ -483,7 +441,7 @@ max_duration = "1h"
 
 #[test]
 #[cfg(unix)]
-fn api_key_anthropic_local_gateway_policy_launches_without_a_budget() {
+fn api_key_anthropic_local_gateway_policy_launches_with_local_enforcement() {
     let dir = assert_fs::TempDir::new().unwrap();
     let config = dir.child("aix.toml");
     let state_dir = dir.path().join("state");
@@ -644,16 +602,20 @@ smart = "provider/smart-v3"
 
 [run_policies.review]
 profile = "work"
-max_budget = 1
 max_duration = "30m"
 allowed_models = ["smart", "fast"]
+
+[tools.review]
+command = "true"
+api_format = "openai"
+local_gateway = true
 "#,
         )
         .unwrap();
 
     let defaulted = cmd()
         .env("AIX_CONFIG", config.path())
-        .args(["run", "--policy", "review", "--dry-run", "--", "true"])
+        .args(["run", "--policy", "review", "--dry-run", "--", "review"])
         .assert()
         .success()
         .get_output()
@@ -671,7 +633,7 @@ allowed_models = ["smart", "fast"]
             "fast",
             "--dry-run",
             "--",
-            "true",
+            "review",
         ])
         .assert()
         .success()
@@ -690,7 +652,7 @@ allowed_models = ["smart", "fast"]
             "provider/outside-v1",
             "--dry-run",
             "--",
-            "true",
+            "review",
         ])
         .assert()
         .code(2)
@@ -710,7 +672,7 @@ allowed_models = ["smart", "fast"]
             "test-key",
             "--dry-run",
             "--",
-            "true",
+            "review",
         ])
         .assert()
         .code(2)
@@ -723,35 +685,8 @@ allowed_models = ["smart", "fast"]
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(unix)]
-async fn policy_run_uses_a_lease_and_records_effective_guardrails_and_tags() {
+async fn policy_run_never_creates_keys_and_records_effective_guardrails_and_tags() {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/key/generate"))
-        .and(header("Authorization", format!("Bearer {PARENT_KEY}")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "key": LEASE_KEY,
-            "expires": "2030-01-02T03:04:05Z"
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/key/info"))
-        .and(header("Authorization", format!("Bearer {PARENT_KEY}")))
-        .and(query_param("key", LEASE_KEY))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "info": { "spend": 0.25 }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/key/delete"))
-        .and(header("Authorization", format!("Bearer {PARENT_KEY}")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "deleted": true })))
-        .expect(1)
-        .mount(&server)
-        .await;
 
     let config = assert_fs::NamedTempFile::new("aix.toml").unwrap();
     config
@@ -759,7 +694,6 @@ async fn policy_run_uses_a_lease_and_records_effective_guardrails_and_tags() {
             r#"
 [endpoint]
 base_url = "{}"
-gateway = "litellm"
 
 [profiles.work]
 api_key = {{ env = "AIX_PARENT_KEY" }}
@@ -769,27 +703,29 @@ smart = "provider/model-smart"
 
 [run_policies.implement]
 profile = "work"
-max_budget = 3.00
 max_duration = "2h"
 allowed_models = ["smart"]
 tags = ["phase:implement", "duplicate"]
+
+[tools.review]
+command = "sh"
+api_format = "openai"
+local_gateway = true
 "#,
             server.uri()
         ))
         .unwrap();
     let state = assert_fs::TempDir::new().unwrap();
-    let script = r#"test "$OPENAI_API_KEY" = sk-policy-lease && test "$LITELLM_API_KEY" = sk-policy-lease && test "$AIX_PROFILE" = work && test "$AIX_RUN_POLICY" = implement && printf '%s\n%s\n' "$AIX_RUN_ID" "$AIX_RUN_TAGS""#;
+    let script = r#"test "$OPENAI_API_KEY" = "$LITELLM_API_KEY" && test "$OPENAI_API_KEY" != sk-policy-parent && test "$AIX_PROFILE" = work && test "$AIX_RUN_POLICY" = implement && printf '%s\n%s\n' "$AIX_RUN_ID" "$AIX_RUN_TAGS""#;
 
     let output = cmd()
         .env("AIX_CONFIG", config.path())
         .env("AIX_STATE_DIR", state.path())
-        .env("AIX_PARENT_KEY", PARENT_KEY)
+        .env("AIX_PARENT_KEY", "sk-policy-parent")
         .args([
             "run",
             "--policy",
             "implement",
-            "--budget",
-            "1.50",
             "--duration",
             "45m",
             "--allow-model",
@@ -799,7 +735,7 @@ tags = ["phase:implement", "duplicate"]
             "--tag",
             "issue:17",
             "--",
-            "sh",
+            "review",
             "-c",
             script,
         ])
@@ -824,8 +760,7 @@ tags = ["phase:implement", "duplicate"]
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!output_text.contains(PARENT_KEY));
-    assert!(!output_text.contains(LEASE_KEY));
+    assert!(!output_text.contains("sk-policy-parent"));
 
     let record_output = cmd()
         .env("AIX_STATE_DIR", state.path())
@@ -839,7 +774,7 @@ tags = ["phase:implement", "duplicate"]
     let record = &envelope["data"];
     assert_eq!(record["schema_version"], 3);
     assert_eq!(record["policy"]["name"], "implement");
-    assert_eq!(record["policy"]["effective_budget"], 1.5);
+    assert!(record["policy"].get("effective_budget").is_none());
     assert_eq!(record["policy"]["effective_duration"], "45m");
     assert_eq!(
         record["policy"]["effective_allowed_models"],
@@ -850,22 +785,14 @@ tags = ["phase:implement", "duplicate"]
         record["tags"],
         json!(["phase:implement", "duplicate", "issue:17"])
     );
-    assert_eq!(record["lease"]["budget"], 1.5);
-    assert_eq!(record["lease"]["duration"], "45m");
-    assert_eq!(
-        record["lease"]["allowed_models"],
-        json!(["provider/model-smart"])
-    );
-    assert!(!envelope.to_string().contains(PARENT_KEY));
-    assert!(!envelope.to_string().contains(LEASE_KEY));
+    assert!(record["lease"].is_null());
+    assert!(!envelope.to_string().contains("sk-policy-parent"));
 
     let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 3);
-    let generate: Value = serde_json::from_slice(&requests[0].body).unwrap();
-    assert_eq!(generate["max_budget"], 1.5);
-    assert_eq!(generate["duration"], "45m");
-    assert_eq!(generate["models"], json!(["provider/model-smart"]));
-    assert_eq!(generate["metadata"]["tags"], expected_tags);
+    assert!(
+        requests.is_empty(),
+        "a run must not make key-admin requests"
+    );
 
     let human_record = cmd()
         .env("AIX_STATE_DIR", state.path())
@@ -877,7 +804,7 @@ tags = ["phase:implement", "duplicate"]
         .clone();
     let human_record = String::from_utf8(human_record).unwrap();
     assert!(human_record.contains("Policy: \"implement\""));
-    assert!(human_record.contains("Effective budget: $1.50"));
+    assert!(human_record.contains("Effective duration: \"45m\""));
 }
 
 #[test]
@@ -1022,7 +949,7 @@ fn run_history_without_policy_metadata_remains_readable() {
 }
 
 #[test]
-fn run_history_schema_v2_records_remain_readable_without_usage() {
+fn run_history_schema_v2_lease_and_budget_records_remain_readable() {
     let state = assert_fs::TempDir::new().unwrap();
     let run_id = "4b9a85df-51d9-49a4-9a17-69d7f0dc91f2";
     let run_dir = state.path().join("runs").join(run_id);
@@ -1052,7 +979,15 @@ fn run_history_schema_v2_records_remain_readable_without_usage() {
     "effective_allowed_models": [],
     "effective_tags": []
   }},
-  "lease": null
+  "lease": {{
+    "key_alias": "aix-run-legacy",
+    "budget": 1.0,
+    "duration": "1h",
+    "expires_at": null,
+    "allowed_models": ["provider/model-a"],
+    "spend": 0.25,
+    "cleanup_status": "revoked"
+  }}
 }}"#
         ),
     )
@@ -1069,5 +1004,9 @@ fn run_history_schema_v2_records_remain_readable_without_usage() {
     let envelope: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(envelope["data"]["schema_version"], 2);
     assert_eq!(envelope["data"]["policy"]["name"], "bounded");
+    assert_eq!(envelope["data"]["policy"]["effective_budget"], 1.0);
+    assert_eq!(envelope["data"]["lease"]["budget"], 1.0);
+    assert_eq!(envelope["data"]["lease"]["spend"], 0.25);
+    assert_eq!(envelope["data"]["lease"]["cleanup_status"], "revoked");
     assert!(envelope["data"].get("usage").is_none());
 }

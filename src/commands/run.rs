@@ -1,11 +1,8 @@
 use crate::commands::launch;
-use crate::commands::run_lease;
 use crate::commands::ProfileSelection;
 use crate::error::AixError;
-use crate::gateway::LiteLlmAdminClient;
 use crate::run_history::{
-    LeaseCleanupStatus, RunLeaseRecord, RunPolicyRecord, RunRecord, RunStatus, RunStore,
-    RunUsageRecord, RUN_SCHEMA_VERSION,
+    RunPolicyRecord, RunRecord, RunStatus, RunStore, RunUsageRecord, RUN_SCHEMA_VERSION,
 };
 use crate::usage_store::{UsageStore, UsageSummary};
 use color_eyre::Result;
@@ -31,8 +28,6 @@ pub(crate) struct RunOptions {
     pub config_path: Option<std::path::PathBuf>,
     pub metadata: RunMetadata,
     pub policy: Option<String>,
-    pub lease: bool,
-    pub budget: Option<f64>,
     pub duration: Option<String>,
     pub requested_models: Vec<String>,
     pub dry_run: bool,
@@ -47,27 +42,11 @@ pub async fn run(options: RunOptions) -> Result<()> {
         config_path,
         mut metadata,
         policy,
-        lease,
-        budget,
         duration,
         requested_models,
         dry_run,
         args,
     } = options;
-    let unscoped_lease_options = if policy.is_none() {
-        Some(run_lease::validate_options(
-            lease,
-            budget,
-            duration.clone(),
-            &requested_models,
-            dry_run,
-        )?)
-    } else {
-        if requested_models.iter().any(|model| model.trim().is_empty()) {
-            return Err(AixError::EmptyLeaseModel.into());
-        }
-        None
-    };
     let (requested_program, command_args) = args.split_first().ok_or(AixError::RunNoCommand)?;
     let mut resolved = launch::resolve_run_launch(launch::RunLaunchRequest {
         selection,
@@ -77,7 +56,6 @@ pub async fn run(options: RunOptions) -> Result<()> {
         tool_args: command_args,
         allowed_models: &requested_models,
         policy_name: policy.as_deref(),
-        require_litellm: lease,
         dry_run,
         timeout,
         native_args: command_args,
@@ -86,78 +64,27 @@ pub async fn run(options: RunOptions) -> Result<()> {
     if let Some(run_policy) = &resolved.policy {
         metadata.tags = merge_tags(&run_policy.tags, &metadata.tags);
     }
-    let lease = lease
-        || resolved
-            .policy
-            .as_ref()
-            .is_some_and(|policy| policy.max_budget.is_some())
-        || budget.is_some();
-    let default_budget = resolved
+    if requested_models.iter().any(|model| model.trim().is_empty()) {
+        return Err(AixError::EmptyRunModel.into());
+    }
+    let duration = resolved
         .policy
         .as_ref()
-        .and_then(|policy| policy.max_budget);
-    let default_duration = resolved
-        .policy
-        .as_ref()
-        .map(|policy| policy.max_duration.clone());
-    let (budget, duration) = if let Some(run_policy) = &resolved.policy {
-        let duration = duration.or(default_duration);
-        if lease {
-            run_lease::validate_options(
-                true,
-                budget.or(default_budget),
-                duration,
-                &requested_models,
-                dry_run,
-            )?
-        } else {
-            if requested_models.iter().any(|model| model.trim().is_empty()) {
-                return Err(AixError::EmptyLeaseModel.into());
+        .map(|run_policy| {
+            let duration = duration.unwrap_or_else(|| run_policy.max_duration.clone());
+            if crate::duration::to_std_duration(&duration).is_none() {
+                return Err(AixError::InvalidRunDuration);
             }
-            let duration = duration.ok_or_else(|| AixError::InvalidRunPolicyDuration {
-                name: run_policy.name.clone(),
-            })?;
-            if !run_lease::is_positive_litellm_duration(&duration) {
-                return Err(AixError::InvalidLeaseDuration.into());
-            }
-            (None, Some(duration))
-        }
-    } else {
-        unscoped_lease_options.expect("non-policy lease options were validated")
-    };
-    if let Some(run_policy) = &resolved.policy {
-        if let (Some(effective_budget), Some(max_budget)) = (budget, run_policy.max_budget) {
-            if effective_budget > max_budget {
-                return Err(AixError::RunPolicyBudgetExceeded {
+            if !crate::duration::is_no_longer_than(&duration, &run_policy.max_duration) {
+                return Err(AixError::RunPolicyDurationExceeded {
                     policy: run_policy.name.clone(),
-                    budget: effective_budget,
-                    max_budget,
-                }
-                .into());
+                    duration,
+                    max_duration: run_policy.max_duration.clone(),
+                });
             }
-        }
-        let effective_duration = duration
-            .as_deref()
-            .expect("a policy run always has a duration");
-        if !crate::duration::is_no_longer_than(effective_duration, &run_policy.max_duration) {
-            return Err(AixError::RunPolicyDurationExceeded {
-                policy: run_policy.name.clone(),
-                duration: effective_duration.to_string(),
-                max_duration: run_policy.max_duration.clone(),
-            }
-            .into());
-        }
-    }
-    if lease
-        && run_lease::inputs_contain_parent_key(
-            &resolved,
-            duration.as_deref().expect("validated lease duration"),
-            &metadata,
-            &args,
-        )
-    {
-        return Err(AixError::LeaseInputContainsCredential.into());
-    }
+            Ok(duration)
+        })
+        .transpose()?;
 
     let mut child_args = resolved.prepend_args.clone();
     child_args.extend(command_args.iter().cloned());
@@ -168,12 +95,7 @@ pub async fn run(options: RunOptions) -> Result<()> {
         launch::validate_executable(&resolved.program)?;
         launch::print_tool_config_dry_run(&resolved);
         launch::print_sidecar_dry_run(&resolved);
-        run_lease::print_dry_run(
-            &resolved,
-            budget,
-            duration.as_deref().expect("validated run duration"),
-            &metadata,
-        );
+        print_policy_dry_run(&resolved, duration.as_deref(), &metadata);
         return Ok(());
     }
     let run_deadline = resolved
@@ -191,19 +113,15 @@ pub async fn run(options: RunOptions) -> Result<()> {
         })
         .transpose()?;
     let run_id = Uuid::new_v4();
-    let mut active_sidecar = if lease {
-        None
-    } else {
-        launch::start_launch_sidecar(&mut resolved, timeout, Some(run_id), None, run_deadline)
-            .await?
-    };
+    let mut active_sidecar =
+        launch::start_launch_sidecar(&mut resolved, timeout, Some(run_id), run_deadline).await?;
     let effective_tags = resolved
         .policy
         .as_ref()
         .map(|_| append_run_id_tag(&metadata.tags, run_id));
     let policy_record = resolved.policy.as_ref().map(|policy| RunPolicyRecord {
         name: policy.name.clone(),
-        effective_budget: budget,
+        effective_budget: None,
         effective_duration: duration
             .as_deref()
             .expect("a policy run always has a duration")
@@ -252,96 +170,6 @@ pub async fn run(options: RunOptions) -> Result<()> {
     let store = RunStore::from_environment()?;
     let mut handle = store.begin(&record)?;
 
-    let mut active_lease = if lease {
-        let budget = budget.expect("validated lease budget");
-        let duration = duration.as_deref().expect("validated lease duration");
-        let key_alias = format!("aix-run-{run_id}");
-        let parent_gateway = resolved
-            .parent_gateway
-            .as_ref()
-            .ok_or(AixError::ChatGptRunLeaseUnsupported)?;
-        let client = LiteLlmAdminClient::with_timeout(
-            parent_gateway.base_url.expose_secret(),
-            parent_gateway.api_key.expose_secret(),
-            timeout,
-        );
-        let metadata_tags = effective_tags.clone().unwrap_or_else(|| {
-            let mut tags = Vec::with_capacity(metadata.tags.len() + 1);
-            tags.push(format!("aix:run:{run_id}"));
-            tags.extend(metadata.tags.iter().cloned());
-            tags
-        });
-
-        let generated = client
-            .generate_virtual_key(
-                budget,
-                duration,
-                &key_alias,
-                &resolved.allowed_models,
-                &metadata_tags,
-            )
-            .await;
-        let generated = match generated {
-            Ok(generated) => generated,
-            Err(error) => {
-                finish_prelaunch_failure(&mut record);
-                if let Err(write_error) = store.write(&mut handle, &record) {
-                    eprintln!("{write_error:?}");
-                }
-                return Err(error.into());
-            }
-        };
-
-        let parent_key = parent_gateway.api_key.expose_secret();
-        let mut lease_record = RunLeaseRecord {
-            key_alias,
-            budget,
-            duration: duration.to_string(),
-            expires_at: generated
-                .expires_at
-                .filter(|expiry| !expiry.contains(parent_key)),
-            allowed_models: resolved.allowed_models.clone(),
-            spend: None,
-            cleanup_status: LeaseCleanupStatus::ExpiredOrUnverified,
-        };
-        if !parent_key.is_empty() && generated.key.expose_secret().contains(parent_key) {
-            lease_record.cleanup_status = LeaseCleanupStatus::RevokeFailed;
-            run_lease::warn_unconfirmed_cleanup(
-                &lease_record.key_alias,
-                &lease_record.cleanup_status,
-            );
-            record.lease = Some(lease_record);
-            finish_prelaunch_failure(&mut record);
-            if let Err(write_error) = store.write(&mut handle, &record) {
-                eprintln!("{write_error:?}");
-            }
-            return Err(AixError::LeaseKeyContainsParentCredential.into());
-        }
-
-        let active = run_lease::ActiveLease {
-            client,
-            key: generated.key,
-            record: lease_record,
-        };
-        launch::apply_lease_credentials(
-            &mut resolved.env,
-            parent_gateway.api_key.expose_secret(),
-            active.key.expose_secret(),
-            parent_gateway.base_url.expose_secret(),
-        );
-        record.lease = Some(active.record.clone());
-        if let Err(error) = store.write(&mut handle, &record) {
-            let status = run_lease::revoke_lease(&active.client, &active.key).await;
-            if status != LeaseCleanupStatus::Revoked {
-                run_lease::warn_unconfirmed_cleanup(&active.record.key_alias, &status);
-            }
-            return Err(error.into());
-        }
-        Some(active)
-    } else {
-        None
-    };
-
     append_run_metadata(
         &mut resolved.env,
         run_id,
@@ -349,43 +177,6 @@ pub async fn run(options: RunOptions) -> Result<()> {
         resolved.policy.as_ref(),
         policy_record.as_ref(),
     );
-
-    if active_sidecar.is_none() {
-        let sidecar_result = launch::start_launch_sidecar(
-            &mut resolved,
-            timeout,
-            Some(run_id),
-            active_lease.as_ref().map(|active| &active.key),
-            run_deadline,
-        )
-        .await;
-        match sidecar_result {
-            Ok(sidecar) => active_sidecar = sidecar,
-            Err(error) => {
-                let mut cleanup_confirmed = true;
-                if let Some(active) = active_lease.as_mut() {
-                    active.record.cleanup_status =
-                        run_lease::revoke_lease(&active.client, &active.key).await;
-                    cleanup_confirmed = active.record.cleanup_status == LeaseCleanupStatus::Revoked;
-                    if !cleanup_confirmed {
-                        run_lease::warn_unconfirmed_cleanup(
-                            &active.record.key_alias,
-                            &active.record.cleanup_status,
-                        );
-                    }
-                    record.lease = Some(active.record.clone());
-                }
-                finish_prelaunch_failure(&mut record);
-                if let Err(write_error) = store.write(&mut handle, &record) {
-                    eprintln!("{write_error:?}");
-                }
-                if !cleanup_confirmed {
-                    return Err(AixError::LeaseCleanupFailed.into());
-                }
-                return Err(error);
-            }
-        }
-    }
 
     let gateway_managed = active_sidecar.is_some();
     child_args.extend(resolved.codex_provider_overrides.iter().cloned());
@@ -438,25 +229,6 @@ pub async fn run(options: RunOptions) -> Result<()> {
         record_run_usage(&mut record);
     }
 
-    let mut cleanup_confirmed = true;
-    if let Some(active) = active_lease.as_mut() {
-        active.record.spend = active
-            .client
-            .virtual_key_spend(active.key.expose_secret())
-            .await
-            .ok()
-            .flatten();
-        active.record.cleanup_status = run_lease::revoke_lease(&active.client, &active.key).await;
-        cleanup_confirmed = active.record.cleanup_status == LeaseCleanupStatus::Revoked;
-        record.lease = Some(active.record.clone());
-        if !cleanup_confirmed {
-            run_lease::warn_unconfirmed_cleanup(
-                &active.record.key_alias,
-                &active.record.cleanup_status,
-            );
-        }
-    }
-
     if let Err(error) = store.write(&mut handle, &record) {
         eprintln!("{error:?}");
         if let Some(interruption) = interruption {
@@ -506,10 +278,6 @@ pub async fn run(options: RunOptions) -> Result<()> {
         }
     } else if let Some(error) = child_error {
         return Err(error.into());
-    }
-
-    if !cleanup_confirmed {
-        return Err(AixError::LeaseCleanupFailed.into());
     }
 
     Ok(())
@@ -577,10 +345,50 @@ fn append_run_id_tag(tags: &[String], run_id: Uuid) -> Vec<String> {
     effective_tags
 }
 
-fn finish_prelaunch_failure(record: &mut RunRecord) {
-    record.finished_at_unix_ms = Some(RunRecord::now_unix_ms());
-    record.duration_ms = Some(0);
-    record.status = RunStatus::Failed;
+fn print_policy_dry_run(
+    resolved: &launch::ResolvedRunLaunch,
+    duration: Option<&str>,
+    metadata: &RunMetadata,
+) {
+    let Some(policy) = resolved.policy.as_ref() else {
+        return;
+    };
+    let run_id = Uuid::new_v4();
+    let effective_tags = append_run_id_tag(&metadata.tags, run_id);
+    eprintln!("Would enforce the local run policy:");
+    eprintln!("  policy: {}", policy.name);
+    eprintln!("  profile: {}", resolved.env.profile_name);
+    eprintln!("  duration: {}", duration.unwrap_or(&policy.max_duration));
+    if resolved.allowed_models.is_empty() {
+        eprintln!("  allowed models: no model restriction configured");
+    } else {
+        eprintln!("  allowed models: {}", resolved.allowed_models.join(", "));
+    }
+    eprintln!("  run tag values: {}", metadata.tags.len());
+    eprintln!("  effective tags: {effective_tags:?}");
+    eprintln!("Would launch the configured child command.");
+    eprintln!("Would set variable names:");
+    let mut names = std::collections::BTreeSet::new();
+    names.extend(resolved.env.vars.iter().map(|(name, _)| name.as_str()));
+    names.extend(resolved.env.auth_vars.iter().map(|(name, _)| name.as_str()));
+    names.extend(resolved.env.display_only_vars.iter().map(String::as_str));
+    names.insert("AIX_RUN_ID");
+    names.insert("AIX_RUN_POLICY");
+    if metadata.name.is_some() {
+        names.insert("AIX_RUN_NAME");
+    }
+    if metadata.workflow.is_some() {
+        names.insert("AIX_WORKFLOW");
+    }
+    if metadata.task_id.is_some() {
+        names.insert("AIX_TASK_ID");
+    }
+    if !metadata.tags.is_empty() || resolved.policy.is_some() {
+        names.insert("AIX_RUN_TAGS");
+    }
+    for name in names {
+        eprintln!("  {name}");
+    }
 }
 
 fn record_run_usage(record: &mut RunRecord) {

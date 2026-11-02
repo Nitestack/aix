@@ -24,10 +24,10 @@ The old Nix shell-script implementation has been superseded; see `docs/aix/migra
 | `aix auth login [PROFILE]` | Sign in to a ChatGPT-authenticated profile using the system browser |
 | `aix auth status [PROFILE] [--json]` | Show local auth state without network access or token values |
 | `aix auth logout [PROFILE]` | Revoke the ChatGPT refresh token when possible and always clear local tokens |
-| `aix spend [PROFILE] [--json] [--no-cache]` | Show LiteLLM spend and budget information |
+| `aix spend [PROFILE] [--json] [--no-cache]` | Show current-key budget information from the gateway's native `GET /v1/key/info` endpoint |
 | `aix status [PROFILE] [--json] [--refresh]` | Probe gateway connectivity and report profile and spend status |
 | `aix models [PROFILE] [--filter TEXT] [--json]` | Discover sorted model IDs from `/v1/models` |
-| `aix usage [PROFILE] [--since Nd | --start DATE --end DATE] [--model MODEL] [--json]` | Show historical LiteLLM spend, token, request, and model usage |
+| `aix usage [PROFILE] [--since Nd | --start DATE --end DATE] [--model MODEL] [--protocol PROTOCOL] [--tool TOOL] [--run RUN_ID] [--json]` | Report locally observed request and token usage; no upstream history is fetched |
 | `aix ask [--model MODEL] [--system TEXT] [--file PATH]... [PROMPT]` | Send one instruction and explicit context to the gateway |
 | `aix prompt NAME [--model MODEL] [--file PATH]...` | Run a configured reusable prompt preset |
 | `aix prompt --list [--json]` | List preset names and model metadata without printing preset bodies |
@@ -84,9 +84,11 @@ credential, and aix gets the real access token from `AuthService` for each
 upstream inference request. These gateway-backed processes can cross token
 refresh without restarting. Other tools remain on direct token handoff and may
 need a restart after their access token expires. `aix env`, `shell`, `exec`,
-`ask`, and unconfigured tools do not receive OAuth tokens. LiteLLM leases and
-run policies remain API-key-only. No child receives a refresh token, ID token,
-or issued client ID, and run history remains metadata-only.
+`ask`, and unconfigured tools do not receive OAuth tokens. Declarative run
+policies constrain the selected profile, maximum duration, allowed models, and
+run tags; they do not create gateway keys or impose spend caps. No child
+receives a refresh token, ID token, or issued client ID, and run history remains
+metadata-only.
 
 For a ChatGPT-authenticated `opencode` tool, aix launches OpenCode v2 with a
 process-local `aix-chatgpt` Responses provider configured through
@@ -211,6 +213,12 @@ Records contain the profile, logical tool and executable names, timing, exit
 status, and caller-supplied metadata. They never contain command arguments,
 prompts, stdin/stdout/stderr, API keys, base URLs, OAuth tokens, or secret env
 values. Writes are atomic. `aix exec` remains unrecorded.
+
+`run_policies.<name>` may set `profile`, `max_duration`, `allowed_models`, and
+`tags`. The removed `max_budget` field is rejected as an unknown config key;
+older run-history records remain readable offline, including records with
+historical lease metadata. Upgrading does not contact the gateway or revoke
+keys exported by earlier versions.
 
 ---
 

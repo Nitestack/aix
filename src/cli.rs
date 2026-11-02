@@ -138,7 +138,7 @@ pub enum Command {
         #[command(subcommand)]
         action: AuthAction,
     },
-    /// Show spend and budget info for the selected profile (LiteLLM only)
+    /// Show current key spend and budget information from the gateway
     Spend {
         /// Profile name (positional; overrides the global --profile flag)
         profile: Option<String>,
@@ -155,9 +155,6 @@ pub enum Command {
         refresh: bool,
     },
     /// Check whether a configured run policy can execute right now
-    ///
-    /// Does not create a probe key to test key-generation permission. Actual lease creation may
-    /// still fail if the parent credential lacks that permission.
     Gate {
         /// Run policy to preflight
         #[arg(long, required = true)]
@@ -176,7 +173,7 @@ pub enum Command {
         #[arg(long, value_name = "TEXT")]
         filter: Option<String>,
     },
-    /// Show local observed usage and/or upstream LiteLLM historical usage
+    /// Show locally observed usage; no upstream history is requested
     Usage {
         /// Profile name (positional; overrides the global --profile flag)
         profile: Option<String>,
@@ -185,9 +182,6 @@ pub enum Command {
         /// Filter usage to an exact model ID
         #[arg(long)]
         model: Option<String>,
-        /// Usage source: auto selects the best source for the profile
-        #[arg(long, value_enum, default_value = "auto")]
-        source: UsageSource,
         /// Filter local events to an exact API protocol
         #[arg(long)]
         protocol: Option<String>,
@@ -248,32 +242,19 @@ pub enum Command {
         /// Repeatable run tag
         #[arg(long = "tag")]
         tags: Vec<String>,
-        /// Create and use a temporary LiteLLM virtual key for this run
-        #[arg(long)]
-        lease: bool,
-        /// Maximum spend in USD (required with --lease)
-        #[arg(long)]
-        budget: Option<f64>,
-        /// Maximum run or lease duration, such as 30m or 2h
-        #[arg(long)]
+        /// Lower the policy's maximum run duration, such as 30m or 2h
+        #[arg(long, requires = "policy")]
         duration: Option<String>,
-        /// Restrict the lease to a model ID or configured alias (repeatable)
-        #[arg(long = "allow-model")]
+        /// Narrow the policy's allowed model IDs or aliases (repeatable)
+        #[arg(long = "allow-model", requires = "policy")]
         allow_models: Vec<String>,
-        /// Validate and describe enforcement without creating a lease or running the child
-        #[arg(long)]
+        /// Validate and describe policy enforcement without running the child
+        #[arg(long, requires = "policy")]
         dry_run: bool,
         /// Command and arguments to run (after --)
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Create, inspect, or revoke an exported LiteLLM credential lease
-    Lease {
-        #[command(subcommand)]
-        action: LeaseAction,
-    },
-    /// List locally recorded exported credential leases
-    Leases,
     /// Inspect durable run history
     Runs {
         /// Show only the newest N records
@@ -295,17 +276,6 @@ pub enum Command {
     /// Home Manager option descriptions for path and replacement behavior.
     #[command(external_subcommand)]
     Tool(Vec<String>),
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum, PartialEq, Eq)]
-pub enum UsageSource {
-    #[default]
-    Auto,
-    #[value(name = "local")]
-    Local,
-    #[value(name = "litellm")]
-    LiteLlm,
-    All,
 }
 
 #[derive(Args, Default)]
@@ -337,10 +307,6 @@ impl Command {
                 | Self::Usage { .. }
                 | Self::Ask { .. }
                 | Self::Prompt { .. }
-                | Self::Leases
-                | Self::Lease {
-                    action: LeaseAction::Show { .. }
-                }
                 | Self::Runs { .. }
                 | Self::Auth {
                     action: AuthAction::Status { .. }
@@ -392,32 +358,6 @@ pub enum CurrentFormat {
 pub enum RunsAction {
     /// Show one complete run record
     Show { run_id: String },
-}
-
-#[derive(Subcommand)]
-pub enum LeaseAction {
-    /// Create a temporary gateway credential and write it to a secret file
-    Create {
-        /// Maximum spend in USD
-        #[arg(long, required = true)]
-        budget: f64,
-        /// Lease duration, such as 30m or 2h (default: 2h)
-        #[arg(long)]
-        duration: Option<String>,
-        /// Restrict the lease to a model ID or configured alias (repeatable)
-        #[arg(long = "allow-model")]
-        allow_models: Vec<String>,
-        /// Attach a metadata tag (repeatable)
-        #[arg(long = "tag")]
-        tags: Vec<String>,
-        /// New secret file path (Unix mode 0600; elsewhere inherits ACLs and may use a non-atomic fallback)
-        #[arg(long, required = true, value_name = "PATH")]
-        output: PathBuf,
-    },
-    /// Show one locally recorded lease without contacting the gateway
-    Show { lease_id: String },
-    /// Revoke a locally recorded lease by its non-secret ID
-    Revoke { lease_id: String },
 }
 
 #[derive(Subcommand)]

@@ -236,17 +236,10 @@ let
         description = "Optional fixed aix profile for runs using this policy.";
       };
 
-      maxBudget = lib.mkOption {
-        type = lib.types.nullOr lib.types.number;
-        default = null;
-        example = 3.0;
-        description = "Optional maximum lease spend in USD; when set, must be greater than zero.";
-      };
-
       maxDuration = lib.mkOption {
         type = lib.types.str;
         example = "2h";
-        description = "Maximum managed-run duration in aix/LiteLLM-compatible syntax.";
+        description = "Maximum managed-run duration, for example 30m or 2h.";
       };
 
       allowedModels = lib.mkOption {
@@ -320,9 +313,6 @@ let
     _name: policy:
     {
       max_duration = policy.maxDuration;
-    }
-    // lib.optionalAttrs (policy.maxBudget != null) {
-      max_budget = policy.maxBudget;
     }
     // lib.optionalAttrs (policy.profile != null) {
       profile = policy.profile;
@@ -501,9 +491,8 @@ in
             default = null;
             example = "litellm";
             description = ''
-              Optional gateway hint.
-              When set to a value other than "litellm", `aix spend` and `aix usage` will refuse to run.
-              Omit or set to "litellm" to use those commands with the default LiteLLM-compatible gateway.
+              Optional gateway metadata. It does not gate current-key budget checks
+              or local usage reporting.
             '';
           };
 
@@ -517,7 +506,7 @@ in
     };
 
     cache = lib.mkOption {
-      description = "Cache settings for aix spend and aix status LiteLLM responses.";
+      description = "Cache settings for current-key budget responses.";
       default = { };
       type = lib.types.submodule {
         options = {
@@ -558,7 +547,7 @@ in
     };
 
     runPolicies = lib.mkOption {
-      description = "Declarative constraints for managed aix runs; maxBudget is optional.";
+      description = "Declarative constraints for managed aix runs.";
       default = { };
       type = lib.types.attrsOf runPolicyType;
     };
@@ -656,11 +645,7 @@ in
         else
           profile.apiKey != null && (profile.baseUrl != null || cfg.endpoint.baseUrl != null);
       message = "programs.aix.profiles.${name}: API-key profiles require apiKey and an effective base URL; ChatGPT profiles must omit apiKey and baseUrl.";
-    }) cfg.profiles
-    ++ lib.mapAttrsToList (name: policy: {
-      assertion = policy.maxBudget == null || policy.maxBudget > 0;
-      message = "programs.aix.runPolicies.${name}.maxBudget must be greater than zero when set.";
-    }) cfg.runPolicies;
+    }) cfg.profiles;
 
     home.packages = [ cfg.package ];
 

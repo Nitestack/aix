@@ -35,9 +35,9 @@ Owns the config file data model and all file I/O related to config.
 | `load_env_files()` | Load `.env` files listed under `env_files`; real env wins |
 | `sorted_profiles()` | Return `(name, label)` pairs sorted by name |
 
-Config types: `Config`, `Endpoint`, `Profile`, `ProfileAuth`, `Provider`, `Gateway`, `CacheConfig`, `ModelConfig`, `PromptPreset`, and `Tool`. A profile has exactly one auth source: a legacy `api_key` or `auth = { type = "chatgpt" }`. ChatGPT profiles may omit the shared endpoint and cannot set a profile `base_url`.
+Config types: `Config`, `Endpoint`, `Profile`, `ProfileAuth`, `Provider`, `Gateway`, `CacheConfig`, `ModelConfig`, `PromptPreset`, `RunPolicy`, and `Tool`. A profile has exactly one auth source: a legacy `api_key` or `auth = { type = "chatgpt" }`. ChatGPT profiles may omit the shared endpoint and cannot set a profile `base_url`.
 A profile can override `endpoint.base_url` with `base_url` and append custom, secret-backed variables with `env`; those custom values can override generated variables.
-`gateway` and `provider` are optional metadata for most commands, but `aix spend` and `aix usage` accept only an unset gateway or `litellm`.
+`gateway` and `provider` are optional metadata. Run policies constrain profile, duration, allowed models, and tags; `max_budget` is not supported and is rejected during config parsing.
 `models` contains defaults and aliases. `tools.<name>` contains optional `command`, required `api_format`, and optional secret-backed `env` launch settings. Its optional `chatgpt` block declares the access-token environment name, prepended arguments, and inherited variables to clear. `ApiFormat` is serialized as `anthropic`, `openai`, or `both` for tool entries.
 
 ### `src/secrets.rs` — Secret resolution
@@ -78,8 +78,9 @@ Codex-local-gateway children instead receive only a random bridge bearer token;
 the ChatGPT access token is added to a request inside aix and is never placed
 in the child environment. No OAuth token is exported through `env`, `shell`,
 generic `exec`, inference, or an unconfigured tool.
-`aix run` uses the same explicit binding, but lease and run-policy paths reject
-ChatGPT profiles before reaching LiteLLM.
+`aix run` uses the same explicit binding. Run policies apply local profile,
+duration, model, and tag constraints; they do not create gateway credentials or
+enforce spend caps.
 
 ### `src/gateway/` — Gateway capability clients
 
@@ -90,17 +91,23 @@ capability-specific clients:
   `reqwest::Client`; it provides bearer-authenticated JSON request helpers and
   common HTTP error handling.
 - `openai.rs` exposes OpenAI-compatible `/v1/*` endpoints.
-- `litellm.rs` owns LiteLLM management endpoints such as `/key/info` and
-  `/key/list`. Management data is sanitized before it is returned to command
-  code, and `aix spend` and `aix status` use this client. Historical activity
-  requests use the same client; `aix usage` normalizes the response into
-  aix-owned daily and model aggregates and discards API-key breakdowns.
+- `budget.rs` fetches current-key budget information from the native
+  `GET /v1/key/info` endpoint. The returned native budget data is sanitized
+  before `aix spend`, `aix status`, and `aix doctor` use it.
 - `aix models` discovers model IDs and `aix ask` / `aix prompt` send one-shot text requests
   through the OpenAI-compatible client. `aix status` uses its models endpoint
   for a live authenticated connectivity probe.
 
 Keep endpoint-specific behavior in the corresponding capability client rather
 than growing a single catch-all gateway client.
+
+### `src/commands/usage.rs` — Local usage reporting
+
+`aix usage` reads `UsageStore` events and never calls a gateway client or
+resolves API-key/base-URL secrets. Date bounds and exact model, protocol, tool,
+and run filters apply to local events; reports preserve token completeness,
+run attribution, and cost provenance. Unknown costs remain unavailable, and
+ChatGPT plan usage is not represented as USD spend.
 
 ### `src/inference.rs` — Shared one-shot inference service
 
@@ -198,7 +205,10 @@ The child receives informational `AIX_RUN_*` metadata; standard streams remain
 inherited. A configured tool's prepend arguments and ChatGPT binding are also
 used by plain managed runs. OAuth tokens are never recorded. `RunStore` owns
 state-directory selection, atomic record writes, listing, and record lookup. It
-never captures command arguments or child content. `aix exec` remains stateless.
+never captures command arguments or child content. Existing records remain
+available offline, including records with historical lease metadata; an
+upgrade does not contact the gateway or revoke previously exported keys.
+`aix exec` remains stateless.
 
 ### `src/error.rs` — Error types
 
@@ -256,7 +266,9 @@ No Rust changes are required for most provider additions.
 
 1. Set `base_url` to the gateway URL via env var, file, or command.
 2. Add a named profile under `[profiles.<name>]` with the appropriate `api_key`.
-3. Optionally set `provider` and `gateway` as metadata. Set `gateway = "litellm"` (or leave it unset) when the profile will be used with `aix spend` or `aix usage`; other gateway values are rejected by those commands.
+3. Optionally set `provider` and `gateway` as metadata. `aix spend` uses the
+   gateway's native current-key budget endpoint; `aix usage` is local-only and
+   does not depend on gateway metadata.
 
 For API-key profiles, `aix env` and `aix exec` emit Anthropic, OpenAI, and
 LiteLLM credential sets. ChatGPT profiles are rejected by those commands rather

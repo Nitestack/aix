@@ -407,7 +407,6 @@ mod tests {
             allowed_models: Vec::new(),
             policy: Some(super::super::ResolvedRunPolicy {
                 name: "bounded".to_string(),
-                max_budget: Some(10.0),
                 max_duration: "1h".to_string(),
                 tags: Vec::new(),
             }),

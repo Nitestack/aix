@@ -40,6 +40,16 @@ pub async fn run() -> ExitCode {
 }
 
 async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
+    if let Command::Tool(raw) = &cli.command {
+        let command = match raw.first().map(String::as_str) {
+            Some("lease") => Some("lease"),
+            Some("leases") => Some("leases"),
+            _ => None,
+        };
+        if let Some(command) = command {
+            return Err(crate::error::AixError::RemovedCommand { command }.into());
+        }
+    }
     if cli.json && !cli.command.supports_json() {
         return Err(crate::error::AixError::JsonUnsupportedCommand.into());
     }
@@ -144,7 +154,6 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             profile,
             date_range,
             model,
-            source,
             protocol,
             tool,
             run_id,
@@ -155,7 +164,6 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
                 json,
                 date_range,
                 model_filter: model,
-                source,
                 protocol_filter: protocol,
                 tool_filter: tool,
                 run_filter: run_id,
@@ -202,8 +210,6 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             workflow,
             task_id,
             tags,
-            lease,
-            budget,
             duration,
             allow_models,
             dry_run,
@@ -221,8 +227,6 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
                     tags,
                 },
                 policy,
-                lease,
-                budget,
                 duration,
                 requested_models: allow_models,
                 dry_run,
@@ -230,34 +234,6 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             })
             .await
         }
-        Command::Lease { action } => match action {
-            crate::cli::LeaseAction::Create {
-                budget,
-                duration,
-                allow_models,
-                tags,
-                output,
-            } => {
-                crate::commands::leases::create(crate::commands::leases::CreateOptions {
-                    selection: selection_for(None, non_interactive),
-                    timeout,
-                    config_path,
-                    budget,
-                    duration,
-                    requested_models: allow_models,
-                    tags,
-                    output,
-                })
-                .await
-            }
-            crate::cli::LeaseAction::Show { lease_id } => {
-                crate::commands::leases::show(&lease_id, json)
-            }
-            crate::cli::LeaseAction::Revoke { lease_id } => {
-                crate::commands::leases::revoke(&lease_id, config_path, timeout).await
-            }
-        },
-        Command::Leases => crate::commands::leases::list(json),
         Command::Runs { limit, action } => crate::commands::runs::run(action, limit, json),
         Command::Cache { action } => crate::commands::cache::run(action, config_path),
         Command::Tool(raw) => {

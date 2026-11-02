@@ -99,7 +99,6 @@ pub(crate) struct ParentGatewayCredentials {
 #[derive(Clone, Debug)]
 pub struct ResolvedRunPolicy {
     pub name: String,
-    pub max_budget: Option<f64>,
     pub max_duration: String,
     pub tags: Vec<String>,
 }
@@ -145,7 +144,6 @@ struct LaunchRequest<'a> {
     tool_env_mode: ToolEnvMode,
     allowed_models: &'a [String],
     policy_name: Option<&'a str>,
-    require_litellm: bool,
     codex_config: Option<CodexConfigSelection>,
     native_args: &'a [String],
 }
@@ -227,7 +225,6 @@ pub fn resolve_launch_env(
         tool_env_mode: ToolEnvMode::Resolve,
         allowed_models: &[],
         policy_name: None,
-        require_litellm: false,
         codex_config: None,
         native_args: &[],
     })?;
@@ -242,7 +239,6 @@ pub(crate) struct RunLaunchRequest<'a> {
     pub tool_args: &'a [String],
     pub allowed_models: &'a [String],
     pub policy_name: Option<&'a str>,
-    pub require_litellm: bool,
     pub dry_run: bool,
     pub timeout: Duration,
     pub native_args: &'a [String],
@@ -257,7 +253,6 @@ pub(crate) async fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<
         tool_args,
         allowed_models,
         policy_name,
-        require_litellm,
         dry_run,
         timeout,
         native_args,
@@ -277,7 +272,6 @@ pub(crate) async fn resolve_run_launch(request: RunLaunchRequest<'_>) -> Result<
             },
             allowed_models,
             policy_name,
-            require_litellm,
             codex_config: None,
             native_args,
         },
@@ -385,10 +379,6 @@ fn load_launch_context(request: &LaunchRequest<'_>) -> Result<LaunchContext> {
         }
     }
 
-    let explicit_non_litellm_gateway = matches!(
-        cfg.endpoint.gateway.as_ref(),
-        Some(config::Gateway::Custom(_))
-    );
     let profile_name = resolve_profile(
         ProfileSelection {
             profile: policy
@@ -398,21 +388,6 @@ fn load_launch_context(request: &LaunchRequest<'_>) -> Result<LaunchContext> {
         },
         &cfg,
     )?;
-
-    let profile = cfg
-        .profiles
-        .get(&profile_name)
-        .ok_or_else(|| AixError::ProfileNotFound {
-            name: profile_name.clone(),
-            available_hint: config::format_available_profiles(&cfg),
-        })?;
-    let budget_requested = policy.is_some_and(|policy| policy.max_budget.is_some());
-    if budget_requested && profile.auth.is_chatgpt() {
-        return Err(AixError::RunPolicyBudgetUnavailable.into());
-    }
-    if (request.require_litellm || budget_requested) && explicit_non_litellm_gateway {
-        return Err(AixError::LeaseNotLiteLlm.into());
-    }
 
     Ok(LaunchContext {
         cfg,
@@ -546,10 +521,7 @@ fn resolve_api_key_launch(
         .or(format_override)
         .unwrap_or(config::ApiFormat::Both);
     let local_gateway = configured_tool.is_some_and(|tool| tool.local_gateway);
-    if policy.is_some_and(|policy| policy.max_budget.is_none())
-        && !resolved_allowed_models.is_empty()
-        && !local_gateway
-    {
+    if policy.is_some() && !resolved_allowed_models.is_empty() && !local_gateway {
         return Err(AixError::RunPolicyEnforcementUnavailable {
             policy: policy_name.unwrap_or_default().to_string(),
             constraint: "allowed_models",
@@ -681,7 +653,6 @@ fn resolve_api_key_launch(
         allowed_models: resolved_allowed_models,
         policy: policy.map(|policy| ResolvedRunPolicy {
             name: policy_name.unwrap_or_default().to_string(),
-            max_budget: policy.max_budget,
             max_duration: policy.max_duration.clone(),
             tags: policy.tags.clone(),
         }),
@@ -763,34 +734,6 @@ fn deduplicate_models(models: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-pub fn apply_lease_credentials(
-    env: &mut LaunchEnv,
-    parent_key: &str,
-    leased_key: &str,
-    base_url: &str,
-) {
-    const API_KEY_VARS: [&str; 3] = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "LITELLM_API_KEY"];
-    const BASE_URL_VARS: [&str; 3] = ["ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "LITELLM_BASE_URL"];
-
-    env.vars.retain_mut(|(name, value)| {
-        if API_KEY_VARS.contains(&name.as_str()) {
-            *value = leased_key.to_string();
-            true
-        } else if BASE_URL_VARS.contains(&name.as_str()) {
-            *value = if name == "ANTHROPIC_BASE_URL" {
-                base_url.to_string()
-            } else {
-                crate::commands::env::append_v1(base_url)
-            };
-            true
-        } else {
-            true
-        }
-    });
-
-    scrub_parent_credential(env, parent_key);
-}
-
 pub(crate) fn scrub_parent_credential(env: &mut LaunchEnv, parent_key: &str) {
     if parent_key.is_empty() {
         return;
@@ -854,7 +797,6 @@ pub async fn run_named_tool(
             tool_env_mode,
             allowed_models: &[],
             policy_name: None,
-            require_litellm: false,
             codex_config: None,
             native_args: &args,
         },
@@ -875,8 +817,7 @@ pub async fn run_named_tool(
         return run_command(&resolved.program, &args, &resolved.env, true);
     }
 
-    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None, None, None).await?
-    else {
+    let Some(sidecar) = start_launch_sidecar(&mut resolved, timeout, None, None).await? else {
         args.extend(resolved.codex_provider_overrides.iter().cloned());
         let status = run_command_status(&resolved.program, &args, &resolved.env)?;
         if !status.success() {
@@ -915,7 +856,6 @@ pub(crate) async fn start_launch_sidecar(
     resolved: &mut ResolvedRunLaunch,
     timeout: Duration,
     run_id: Option<Uuid>,
-    upstream_api_key_override: Option<&SecretString>,
     deadline: Option<Instant>,
 ) -> Result<Option<StartedLaunchSidecar>> {
     let Some(plan) = resolved.sidecar_plan.take() else {
@@ -956,14 +896,11 @@ pub(crate) async fn start_launch_sidecar(
                 .parent_gateway
                 .as_ref()
                 .ok_or(AixError::ChatGptAuthUnsupported)?;
-            let upstream_api_key = upstream_api_key_override
-                .unwrap_or(&parent_gateway.api_key)
-                .expose_secret();
             let gateway = ApiKeyGatewayHandle::start(
                 context,
                 api_format,
                 parent_gateway.base_url.expose_secret(),
-                upstream_api_key,
+                parent_gateway.api_key.expose_secret(),
             )
             .await?;
             gateway.configure_env(&mut resolved.env);
@@ -1426,7 +1363,6 @@ clear_env = ["CODEX_API_KEY"]
             tool_env_mode,
             allowed_models: &[],
             policy_name: None,
-            require_litellm: false,
             codex_config: None,
             native_args: &[],
         }
@@ -1569,7 +1505,6 @@ access_token_env = "ACCESS_TOKEN"
                 tool_env_mode: ToolEnvMode::Resolve,
                 allowed_models: &[],
                 policy_name: None,
-                require_litellm: false,
                 codex_config: None,
                 native_args: &[],
             },
@@ -1604,7 +1539,6 @@ access_token_env = "ACCESS_TOKEN"
             allowed_models: Vec::new(),
             policy: Some(ResolvedRunPolicy {
                 name: "bounded".to_string(),
-                max_budget: Some(10.0),
                 max_duration: "1h".to_string(),
                 tags: Vec::new(),
             }),

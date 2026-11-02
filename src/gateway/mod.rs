@@ -1,6 +1,6 @@
-mod litellm;
+mod budget;
 pub(crate) mod openai;
 mod transport;
 
-pub(crate) use litellm::LiteLlmAdminClient;
+pub(crate) use budget::{BudgetClient, BudgetInfo, BudgetLayer};
 pub(crate) use openai::OpenAiClient;

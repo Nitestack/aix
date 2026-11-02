@@ -32,12 +32,6 @@ pub enum AixError {
     #[error("ChatGPT local_gateway transport is supported only for OpenAI-compatible OpenCode or Codex app-server bindings; configure an eligible tool or use transport = \"direct\" (tool {tool:?})")]
     ChatGptLocalGatewayUnsupported { tool: String },
 
-    #[error("LiteLLM lease and run-policy flows require an API-key profile; ChatGPT plan usage is not a LiteLLM lease")]
-    ChatGptRunLeaseUnsupported,
-
-    #[error("monetary budget enforcement unavailable for this transport; ChatGPT subscription traffic has no authoritative incurred-dollar meter")]
-    RunPolicyBudgetUnavailable,
-
     #[error(
         "`aix auth login` requires interactive browser authorization; remove --non-interactive"
     )]
@@ -231,9 +225,6 @@ pub enum AixError {
     #[error("run policy names must not be empty")]
     EmptyRunPolicyName,
 
-    #[error("run policy {name:?} must set a finite max_budget greater than zero")]
-    InvalidRunPolicyBudget { name: String },
-
     #[error("run policy {name:?} must set a valid positive max_duration such as 30m or 2h")]
     InvalidRunPolicyDuration { name: String },
 
@@ -257,13 +248,6 @@ pub enum AixError {
 
     #[error("run policy has a fixed profile that conflicts with the global --profile")]
     RunPolicyProfileConflict,
-
-    #[error("--budget ${budget:.2} exceeds run policy {policy:?} maximum ${max_budget:.2}")]
-    RunPolicyBudgetExceeded {
-        policy: String,
-        budget: f64,
-        max_budget: f64,
-    },
 
     #[error("--duration {duration:?} exceeds run policy {policy:?} maximum {max_duration:?}")]
     RunPolicyDurationExceeded {
@@ -304,50 +288,14 @@ pub enum AixError {
     #[error("run requires a command after --")]
     RunNoCommand,
 
-    #[error("`aix run --lease` requires --budget <USD>")]
-    LeaseBudgetRequired,
+    #[error("`aix {command}` has been removed; manage API keys in your provider's portal")]
+    RemovedCommand { command: &'static str },
 
-    #[error("--budget, --duration, --allow-model, and --dry-run require --lease")]
-    LeaseOptionsRequireLease,
-
-    #[error("lease budget must be a finite amount greater than zero")]
-    InvalidLeaseBudget,
-
-    #[error("invalid lease duration; use a positive finite duration such as 30m or 2h")]
-    InvalidLeaseDuration,
+    #[error("invalid run duration; use a positive finite duration such as 30m or 2h")]
+    InvalidRunDuration,
 
     #[error("allowed model names must not be empty")]
-    EmptyLeaseModel,
-
-    #[error("lease tags must not be empty")]
-    EmptyLeaseTag,
-
-    #[error("lease metadata and child arguments must not contain the selected profile credential")]
-    LeaseInputContainsCredential,
-
-    #[error("LiteLLM returned a virtual key containing the parent credential; the child was not launched")]
-    LeaseKeyContainsParentCredential,
-
-    #[error("lease metadata must not contain the generated leased credential")]
-    LeaseMetadataContainsLeasedCredential,
-
-    #[error("`aix run --lease` and `aix lease create` require a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
-    LeaseNotLiteLlm,
-
-    #[error("LiteLLM denied virtual-key generation (HTTP {status}); verify the parent key has permission to generate keys")]
-    LeaseGenerationDenied { status: u16 },
-
-    #[error("LiteLLM virtual-key generation failed (HTTP {status}); verify the /key/generate capability is available")]
-    LeaseGenerationFailed { status: u16 },
-
-    #[error("LiteLLM virtual-key generation could not be completed; verify gateway connectivity and /key/generate support")]
-    LeaseGenerationUnavailable,
-
-    #[error("LiteLLM /key/generate returned no usable virtual key")]
-    LeaseKeyResponseMalformed,
-
-    #[error("LiteLLM lease cleanup could not be confirmed; the key remains bounded by its configured expiry")]
-    LeaseCleanupFailed,
+    EmptyRunModel,
 
     #[error("run history I/O failed at {path}: {source}")]
     RunHistoryIo {
@@ -358,26 +306,6 @@ pub enum AixError {
 
     #[error("run record {run_id} was not found")]
     RunNotFound { run_id: String },
-
-    #[error("lease was not found in the local registry")]
-    LeaseNotFound,
-
-    #[error(
-        "the selected parent profile for this lease was not found in the current configuration"
-    )]
-    LeaseParentProfileNotFound,
-
-    #[error("lease output file already exists")]
-    LeaseOutputExists,
-
-    #[error("local lease registry I/O failed: {0}")]
-    LeaseRegistryIo(#[source] std::io::Error),
-
-    #[error("failed to encode lease registry record: {0}")]
-    LeaseRegistrySerialization(#[source] serde_json::Error),
-
-    #[error("failed to write lease credential file: {0}")]
-    LeaseOutputIo(#[source] std::io::Error),
 
     #[error("failed to encode run record: {0}")]
     RunRecordSerialization(#[from] serde_json::Error),
@@ -391,26 +319,12 @@ pub enum AixError {
     ShellExtraArgs,
 
     #[error(
-        "JSON output is only supported by `aix current`, `aix profiles`, `aix policies`, `aix policy show`, `aix spend`, `aix models`, `aix status`, `aix doctor`, `aix usage`, `aix ask`, `aix prompt`, `aix auth status`, `aix runs`, `aix leases`, and `aix lease show`"
+        "JSON output is only supported by `aix current`, `aix profiles`, `aix policies`, `aix policy show`, `aix spend`, `aix models`, `aix status`, `aix doctor`, `aix gate`, `aix usage`, `aix ask`, `aix prompt`, `aix auth status`, and `aix runs`"
     )]
     JsonUnsupportedCommand,
 
     #[error("invalid usage date range: {reason}")]
     InvalidUsageRange { reason: String },
-
-    #[error("`aix usage --source litellm` requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
-    UsageNotLiteLlm,
-
-    #[error("local usage filters (--protocol, --tool, --run) are not available from LiteLLM; use `--source local` or `--source all`")]
-    UsageLocalFilterWithLiteLlm,
-
-    #[error(
-        "LiteLLM usage requires an API-key profile; use `--source local` for ChatGPT plan activity"
-    )]
-    UsageLiteLlmRequiresApiKey,
-
-    #[error("usage history is unavailable on this gateway or LiteLLM version (the daily activity endpoint is unsupported)")]
-    UsageUnavailable,
 
     #[error("executable not found: {program}")]
     ExecutableNotFound { program: String },
@@ -438,14 +352,8 @@ pub enum AixError {
     #[error("gateway request failed with HTTP {status}")]
     GatewayRequestFailed { status: u16 },
 
-    #[error("budget exceeded: ${spend:.2} of ${max_budget:.2}")]
-    BudgetExceeded { spend: f64, max_budget: f64 },
-
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
-
-    #[error("aix spend requires a LiteLLM-compatible gateway; set `gateway = \"litellm\"` in [endpoint], or omit `gateway` to use the default")]
-    NotLiteLlm,
 
     #[error("doctor found one or more failed checks")]
     DoctorChecksFailed { category: DoctorFailureCategory },
@@ -509,8 +417,6 @@ impl AixError {
             | Self::ChatGptAuthUnsupported
             | Self::ChatGptToolNotConfigured { .. }
             | Self::ChatGptLocalGatewayUnsupported { .. }
-            | Self::ChatGptRunLeaseUnsupported
-            | Self::RunPolicyBudgetUnavailable
             | Self::AuthLoginRequiresInteractive
             | Self::AuthProfileNotChatGpt
             | Self::NoModelConfigured
@@ -539,7 +445,6 @@ impl AixError {
             | Self::EmptyToolConfigPath { .. }
             | Self::OpenCodeConfigArgumentConflict
             | Self::EmptyRunPolicyName
-            | Self::InvalidRunPolicyBudget { .. }
             | Self::InvalidRunPolicyDuration { .. }
             | Self::EmptyRunPolicyModels { .. }
             | Self::EmptyRunPolicyModel { .. }
@@ -547,7 +452,6 @@ impl AixError {
             | Self::UnknownRunPolicyProfile { .. }
             | Self::RunPolicyNotFound { .. }
             | Self::RunPolicyProfileConflict
-            | Self::RunPolicyBudgetExceeded { .. }
             | Self::RunPolicyDurationExceeded { .. }
             | Self::RunPolicyModelNotAllowed
             | Self::RunPolicyEnforcementUnavailable { .. }
@@ -557,26 +461,14 @@ impl AixError {
             | Self::NoInteractiveTerminal
             | Self::ExecNoCommand
             | Self::RunNoCommand
-            | Self::LeaseBudgetRequired
-            | Self::LeaseOptionsRequireLease
-            | Self::InvalidLeaseBudget
-            | Self::InvalidLeaseDuration
-            | Self::EmptyLeaseModel
-            | Self::EmptyLeaseTag
-            | Self::LeaseInputContainsCredential
-            | Self::LeaseNotFound
-            | Self::LeaseParentProfileNotFound
-            | Self::LeaseOutputExists
+            | Self::RemovedCommand { .. }
+            | Self::InvalidRunDuration
+            | Self::EmptyRunModel
             | Self::RunNotFound { .. }
             | Self::ShellExtraArgs
             | Self::JsonUnsupportedCommand
             | Self::InvalidUsageRange { .. }
-            | Self::ExecutableNotFound { .. }
-            | Self::NotLiteLlm
-            | Self::LeaseNotLiteLlm
-            | Self::UsageNotLiteLlm
-            | Self::UsageLocalFilterWithLiteLlm
-            | Self::UsageLiteLlmRequiresApiKey => 2,
+            | Self::ExecutableNotFound { .. } => 2,
             Self::SecretMissingEnvVar { .. }
             | Self::SecretFileRead { .. }
             | Self::SecretCommandFailed { .. }
@@ -589,7 +481,6 @@ impl AixError {
             Self::GatewayError {
                 status: 401 | 403, ..
             }
-            | Self::LeaseGenerationDenied { .. }
             | Self::GatewayRequestFailed { status: 401 | 403 }
             | Self::AuthAuthorizationDenied
             | Self::AuthCallbackInvalid
@@ -599,18 +490,16 @@ impl AixError {
             | Self::AuthPlanUsageDisabled
             | Self::AuthRefreshTokenUnavailable
             | Self::AuthRefreshNotYetAllowed => 4,
+            Self::GatewayError { status: 402, .. } | Self::GatewayRequestFailed { status: 402 } => {
+                6
+            }
             Self::GatewayError { .. }
-            | Self::LeaseGenerationFailed { .. }
-            | Self::LeaseGenerationUnavailable
-            | Self::LeaseKeyResponseMalformed
             | Self::GatewayRequestFailed { .. }
             | Self::GatewayProtocolError(_)
             | Self::HttpError(_)
-            | Self::UsageUnavailable
             | Self::AuthCallbackTimeout
             | Self::AuthNetwork { .. }
             | Self::AuthProtocol => 5,
-            Self::BudgetExceeded { .. } => 6,
             Self::RunPolicyDurationReached { .. } => 124,
             Self::DoctorChecksFailed { category } => category.exit_code(),
             Self::GateChecksFailed { category } => category.exit_code(),
@@ -619,12 +508,6 @@ impl AixError {
             | Self::ProcessWait { .. }
             | Self::RunHistoryIo { .. }
             | Self::RunRecordSerialization(_)
-            | Self::LeaseRegistryIo(_)
-            | Self::LeaseRegistrySerialization(_)
-            | Self::LeaseOutputIo(_)
-            | Self::LeaseCleanupFailed
-            | Self::LeaseKeyContainsParentCredential
-            | Self::LeaseMetadataContainsLeasedCredential
             | Self::RunInterruptHandler(_) => 1,
         }
     }
@@ -755,12 +638,28 @@ mod tests {
             5
         );
         assert_eq!(
-            AixError::BudgetExceeded {
-                spend: 11.0,
-                max_budget: 10.0
+            AixError::GatewayError {
+                status: 402,
+                body: "budget exhausted".to_string()
             }
             .exit_code(),
             6
+        );
+        assert_eq!(
+            AixError::GatewayRequestFailed { status: 402 }.exit_code(),
+            6
+        );
+        assert_eq!(
+            AixError::GatewayRequestFailed { status: 401 }.exit_code(),
+            4
+        );
+        assert_eq!(
+            AixError::GatewayRequestFailed { status: 403 }.exit_code(),
+            4
+        );
+        assert_eq!(
+            AixError::GatewayRequestFailed { status: 429 }.exit_code(),
+            5
         );
         assert_eq!(AixError::NotImplemented("example").exit_code(), 1);
     }

@@ -11,11 +11,7 @@ pub(crate) struct GatewayTransport {
 pub(crate) enum TransportError {
     Http(reqwest::Error),
     Protocol,
-    Gateway {
-        status: u16,
-        body: String,
-        safe_body: String,
-    },
+    Gateway { status: u16, safe_body: String },
 }
 
 impl TransportError {
@@ -98,7 +94,6 @@ impl GatewayTransport {
             return Err(TransportError::Gateway {
                 status: status.as_u16(),
                 safe_body: sanitize_error_body(&body, &self.api_key, &self.base_url),
-                body,
             });
         }
         let body = response.bytes().await?;
