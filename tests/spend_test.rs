@@ -2,7 +2,6 @@ use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::Command;
 use assert_fs::prelude::*;
 use assert_fs::TempDir;
-use predicates::prelude::*;
 use serde_json::{json, Value};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -78,7 +77,7 @@ fn invoke(
 }
 
 #[tokio::test]
-async fn spend_json_reports_native_key_spend_effective_remaining_and_layers() {
+async fn spend_json_preserves_the_original_spend_and_max_budget_fields() {
     let server = MockServer::start().await;
     mount_budget(&server, native_budget(), 1).await;
     let dir = TempDir::new().unwrap();
@@ -96,17 +95,7 @@ async fn spend_json_reports_native_key_spend_effective_remaining_and_layers() {
     let report: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(report["schema_version"], 1);
     assert_eq!(report["command"], "spend");
-    assert_eq!(report["data"]["status"], "available");
-    assert_eq!(report["data"]["key_spent_usd"], 41.53);
-    assert_eq!(report["data"]["remaining_usd"], 12.0);
-    assert_eq!(report["data"]["limited_by"], "project");
-    assert_eq!(report["data"]["layers"][0]["scope"], "key");
-    assert_eq!(report["data"]["layers"][0]["budget_usd"], 100.0);
-    assert_eq!(report["data"]["layers"][0]["spent_usd"], 41.53);
-    assert_eq!(report["data"]["layers"][1]["remaining_usd"], 12.0);
-    assert_eq!(report["data"]["expires_at"], "2026-12-01T00:00:00Z");
-    assert!(report["data"].get("max_budget").is_none());
-    assert!(report["data"].get("spend").is_none());
+    assert_eq!(report["data"], json!({"spend": 8.0, "max_budget": 20.0}));
     for secret in [
         API_KEY,
         "raw-server-key-secret",
@@ -120,29 +109,59 @@ async fn spend_json_reports_native_key_spend_effective_remaining_and_layers() {
 }
 
 #[tokio::test]
-async fn spend_human_output_keeps_key_spend_separate_from_effective_remaining() {
+async fn spend_maps_a_key_limit_without_fabricating_or_expanding_the_summary() {
+    let server = MockServer::start().await;
+    let mut body = native_budget();
+    body["limited_by"] = json!("key");
+    body["remaining_usd"] = json!("58.47");
+    mount_budget(&server, body, 1).await;
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), API_KEY);
+
+    let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["data"], json!({"spend": 41.53, "max_budget": 100.0}));
+}
+
+#[tokio::test]
+async fn missing_limiting_layer_fails_instead_of_inventing_a_budget() {
+    let server = MockServer::start().await;
+    let mut body = native_budget();
+    body["layers"] = json!([]);
+    mount_budget(&server, body, 1).await;
+    let dir = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let config = write_config(&dir, &server.uri(), API_KEY);
+
+    let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
+    assert_eq!(output.status.code(), Some(5));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("limiting budget layer"));
+}
+
+#[tokio::test]
+async fn spend_human_output_is_only_the_original_summary_and_single_bar() {
     let server = MockServer::start().await;
     mount_budget(&server, native_budget(), 1).await;
     let dir = TempDir::new().unwrap();
     let cache_dir = TempDir::new().unwrap();
     let config = write_config(&dir, &server.uri(), API_KEY);
 
+    let expected = format!(
+        "$8.00 of $20.00  ·  $12.00 available (60%)\n[{}{}]  40% used\n",
+        "█".repeat(16),
+        "░".repeat(24),
+    );
     invoke(&config, cache_dir.path(), &["spend", "test"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Key spend   $41.53"))
-        .stdout(predicate::str::contains(
-            "Available   $12.00 · limited by project",
-        ))
-        .stdout(predicate::str::contains("$41.53 / $100.00"))
-        .stdout(predicate::str::contains("$8.00 / $20.00"))
-        .stdout(predicate::str::contains("Project *"))
-        .stdout(predicate::str::contains("* Limiting budget"))
-        .stdout(predicate::str::contains("$53.53").not());
+        .stdout(expected);
 }
 
 #[tokio::test]
-async fn spend_shows_a_progress_bar_for_each_capped_budget_layer() {
+async fn spend_shows_only_one_progress_bar_for_the_limiting_budget() {
     let server = MockServer::start().await;
     mount_budget(&server, native_budget(), 1).await;
     let dir = TempDir::new().unwrap();
@@ -152,11 +171,11 @@ async fn spend_shows_a_progress_bar_for_each_capped_budget_layer() {
     let output = invoke(&config, cache_dir.path(), &["spend", "test"]);
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("42% used"), "{stdout}");
+    assert!(!stdout.contains("42% used"), "{stdout}");
     assert!(stdout.contains("40% used"), "{stdout}");
     assert_eq!(
         stdout.matches('░').count() + stdout.matches('█').count(),
-        80
+        40
     );
     assert!(
         !stdout.contains('\u{1b}'),
@@ -165,7 +184,7 @@ async fn spend_shows_a_progress_bar_for_each_capped_budget_layer() {
 }
 
 #[tokio::test]
-async fn spend_preserves_unlimited_values_as_null_and_displays_unlimited() {
+async fn spend_omits_an_unlimited_budget_and_displays_the_original_no_budget_summary() {
     let server = MockServer::start().await;
     let mut body = native_budget();
     body["remaining_usd"] = Value::Null;
@@ -185,23 +204,16 @@ async fn spend_preserves_unlimited_values_as_null_and_displays_unlimited() {
     let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
     assert!(output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["data"]["status"], "available");
-    assert_eq!(report["data"]["remaining_usd"], Value::Null);
-    assert_eq!(report["data"]["limited_by"], Value::Null);
-    assert_eq!(report["data"]["layers"][0]["budget_usd"], Value::Null);
-    assert_eq!(report["data"]["layers"][0]["remaining_usd"], Value::Null);
+    assert_eq!(report["data"], json!({"spend": 41.53}));
 
     let human = invoke(&config, cache_dir.path(), &["spend", "test", "--no-cache"]);
     assert!(human.status.success());
     let stdout = String::from_utf8_lossy(&human.stdout);
-    assert!(stdout.contains("Available   unlimited"), "{stdout}");
-    assert!(stdout.contains("$41.53 / unlimited"), "{stdout}");
-    assert!(!stdout.contains("% used"), "{stdout}");
-    assert!(!stdout.contains('░'), "{stdout}");
+    assert_eq!(stdout, "$41.53 spent  (no budget set)\n");
 }
 
 #[tokio::test]
-async fn spend_marks_native_endpoint_unsupported_without_failing() {
+async fn spend_reports_unsupported_endpoints_as_gateway_errors() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/key/info"))
@@ -215,11 +227,9 @@ async fn spend_marks_native_endpoint_unsupported_without_failing() {
     let config = write_config(&dir, &server.uri(), API_KEY);
 
     let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
-    assert!(output.status.success());
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["data"]["status"], "unsupported");
-    assert_eq!(report["data"]["key_spent_usd"], Value::Null);
-    assert_eq!(report["data"]["layers"], Value::Null);
+    assert_eq!(output.status.code(), Some(5));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("HTTP 404"));
 }
 
 #[tokio::test]
@@ -276,7 +286,7 @@ async fn cache_is_key_scoped_secret_safe_and_legacy_records_are_refetched() {
     let second = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
     assert!(second.status.success());
     let report: Value = serde_json::from_slice(&second.stdout).unwrap();
-    assert_eq!(report["data"]["key_spent_usd"], 41.53);
+    assert_eq!(report["data"], json!({"spend": 8.0, "max_budget": 20.0}));
 
     for entry in std::fs::read_dir(cache_dir.path()).unwrap() {
         let endpoint = entry.unwrap().path();

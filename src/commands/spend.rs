@@ -45,114 +45,66 @@ pub async fn run(
     };
 
     let (budget, cached_at) = match hit {
-        Some((budget, fetched_at)) => (Some(budget), Some(fetched_at)),
+        Some((budget, fetched_at)) => (budget, Some(fetched_at)),
         None => {
             let client = BudgetClient::with_timeout(base_url, api_key, timeout);
-            match client.key_info().await {
-                Ok(fresh) => {
-                    cache.put(base_url, api_key, &fresh.to_cache_value());
-                    (Some(fresh), None)
-                }
-                Err(AixError::GatewayError {
-                    status: 404 | 405 | 501,
-                    ..
-                }) => (None, None),
-                Err(error) => return Err(error.into()),
-            }
+            let fresh = client.key_info().await?;
+            cache.put(base_url, api_key, &fresh.to_cache_value());
+            (fresh, None)
         }
     };
 
-    let summary = budget
-        .as_ref()
-        .map_or_else(SpendSummary::unsupported, |budget| {
-            SpendSummary::available(budget)
-        });
+    let summary = SpendSummary::from_budget(&budget)?;
     if json {
         output::print_json("spend", summary)?;
-    } else if let Some(budget) = budget.as_ref() {
-        print_human(budget, cached_at);
     } else {
-        println!("Budget info  unsupported");
+        print_human(&summary, cached_at);
     }
     Ok(())
 }
 
 #[derive(Serialize)]
 struct SpendSummary {
-    status: SpendStatus,
-    key_spent_usd: Option<f64>,
-    remaining_usd: Option<f64>,
-    limited_by: Option<String>,
-    layers: Option<Vec<SpendLayerSummary>>,
-    expires_at: Option<String>,
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum SpendStatus {
-    Available,
-    Unsupported,
-}
-
-#[derive(Serialize)]
-struct SpendLayerSummary {
-    scope: String,
-    budget_usd: Option<f64>,
-    spent_usd: f64,
-    remaining_usd: Option<f64>,
-    period_start: String,
+    spend: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_budget: Option<f64>,
 }
 
 impl SpendSummary {
-    fn available(budget: &BudgetInfo) -> Self {
-        Self {
-            status: SpendStatus::Available,
-            key_spent_usd: Some(budget.key_spent_usd),
-            remaining_usd: budget.remaining_usd,
-            limited_by: budget.limited_by.clone(),
-            layers: Some(
-                budget
-                    .layers
-                    .iter()
-                    .map(|layer| SpendLayerSummary {
-                        scope: layer.scope.clone(),
-                        budget_usd: layer.budget_usd,
-                        spent_usd: layer.spent_usd,
-                        remaining_usd: layer.remaining_usd,
-                        period_start: layer.period_start.clone(),
-                    })
-                    .collect(),
-            ),
-            expires_at: budget.expires_at.clone(),
+    fn from_budget(budget: &BudgetInfo) -> Result<Self, AixError> {
+        if budget.remaining_usd.is_none() {
+            return Ok(Self {
+                spend: budget.key_spent_usd,
+                max_budget: None,
+            });
         }
-    }
 
-    fn unsupported() -> Self {
-        Self {
-            status: SpendStatus::Unsupported,
-            key_spent_usd: None,
-            remaining_usd: None,
-            limited_by: None,
-            layers: None,
-            expires_at: None,
-        }
+        // Keep one coherent spent/limit pair. Never combine key spend with a
+        // shared layer's remaining balance to invent a maximum budget.
+        let layer = budget
+            .layers
+            .iter()
+            .find(|layer| {
+                Some(layer.scope.as_str()) == budget.limited_by.as_deref()
+                    && layer.budget_usd.is_some()
+            })
+            .ok_or(AixError::GatewayProtocolError(
+                "gateway did not report the limiting budget layer",
+            ))?;
+        Ok(Self {
+            spend: layer.spent_usd,
+            max_budget: layer.budget_usd,
+        })
     }
 }
 
-fn print_human(budget: &BudgetInfo, cached_at: Option<u64>) {
-    let cache_suffix = cached_at.map_or(" · live".to_string(), |time| {
+fn print_human(summary: &SpendSummary, cached_at: Option<u64>) {
+    let cache_suffix = cached_at.map_or(String::new(), |time| {
         let age = crate::cache::now_secs().saturating_sub(time);
-        format!(" · cached {}", format_age(age))
+        format!("  ·  cached {}", format_age(age))
     });
 
-    for line in display::budget_lines(
-        budget.key_spent_usd,
-        budget.remaining_usd,
-        budget.limited_by.as_deref(),
-        &budget.layers,
-        budget.expires_at.as_deref(),
-        &cache_suffix,
-    ) {
+    for line in display::spend_lines(summary.spend, summary.max_budget, &cache_suffix) {
         println!("{line}");
     }
 }

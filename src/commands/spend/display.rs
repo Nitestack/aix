@@ -9,6 +9,30 @@ const GRADIENT_STOPS: [(f64, Rgb); 4] = [
     (100.0, Rgb(220, 0, 0)),
 ];
 
+pub(super) fn spend_lines(spend: f64, max_budget: Option<f64>, cache_suffix: &str) -> Vec<String> {
+    let Some(budget) = max_budget else {
+        return vec![format!("${spend:.2} spent  (no budget set){cache_suffix}")];
+    };
+    let remaining = budget - spend;
+    let percent_used = if budget > 0.0 {
+        (spend / budget * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let percent_remaining = 100.0 - percent_used;
+    let summary = if remaining < 0.0 {
+        format!(
+            "${spend:.2} of ${budget:.2}  ·  over budget by ${:.2}{cache_suffix}",
+            -remaining
+        )
+    } else {
+        format!(
+            "${spend:.2} of ${budget:.2}  ·  ${remaining:.2} available ({percent_remaining:.0}%){cache_suffix}"
+        )
+    };
+    vec![summary, render_progress(percent_used)]
+}
+
 pub(crate) fn budget_lines(
     key_spent: f64,
     remaining: Option<f64>,
@@ -112,8 +136,11 @@ fn progress_bar(spent: f64, limit: f64) -> String {
     } else {
         1.0
     };
-    let percent = fraction * 100.0;
-    let filled = (fraction * BAR_WIDTH as f64).round() as usize;
+    render_progress(fraction * 100.0)
+}
+
+fn render_progress(percent: f64) -> String {
+    let filled = (percent / 100.0 * BAR_WIDTH as f64).round() as usize;
     let used: String = (0..filled)
         .map(|index| {
             "█"
@@ -154,6 +181,42 @@ fn gradient_color(percent: f64) -> Rgb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_spend_summary_keeps_two_decimals_and_one_bar() {
+        let lines = spend_lines(41.53, Some(100.0), "");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "$41.53 of $100.00  ·  $58.47 available (58%)");
+        assert!(lines[1].contains("42% used"));
+        assert_eq!(
+            spend_lines(0.000_312_4, None, ""),
+            ["$0.00 spent  (no budget set)"]
+        );
+    }
+
+    #[test]
+    fn original_spend_summary_keeps_over_budget_and_cache_wording() {
+        let lines = spend_lines(25.0, Some(20.0), "  ·  cached 1m ago");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[0],
+            "$25.00 of $20.00  ·  over budget by $5.00  ·  cached 1m ago"
+        );
+        assert_eq!(lines[1].matches('█').count(), BAR_WIDTH);
+        assert!(lines[1].contains("100% used"));
+        assert_eq!(
+            spend_lines(25.0, None, "  ·  cached 1m ago"),
+            ["$25.00 spent  (no budget set)  ·  cached 1m ago"]
+        );
+    }
+
+    #[test]
+    fn original_zero_budget_rendering_is_unchanged() {
+        let lines = spend_lines(0.0, Some(0.0), "");
+        assert_eq!(lines[0], "$0.00 of $0.00  ·  $0.00 available (100%)");
+        assert_eq!(lines[1].matches('░').count(), BAR_WIDTH);
+        assert!(lines[1].contains("0% used"));
+    }
 
     fn layer(limit: Option<f64>, spent: f64, remaining: Option<f64>) -> BudgetLayer {
         BudgetLayer {

@@ -924,34 +924,23 @@ Human output contains one sorted model ID per line. If no IDs match a filter, th
 the gateway's native `GET /v1/key/info` endpoint and presents the values the
 gateway reports. It does not create or select another key.
 
-Key spend (`key_spent_usd`) is separate from effective remaining budget
-(`remaining_usd`). `layers` reports each key, personal, project, or tenant limit;
-`limited_by` identifies the limiting scope. A null remaining amount means
-unlimited, not zero. aix does not combine key spend with another layer's
-remaining balance to invent a maximum budget.
-
-Human output keeps the colored progress bars and aligns each layer's spend,
-limit, and remaining balance in a table. `*` marks the limiting budget. Uncapped
-layers show `unlimited` without a misleading percentage; small nonzero spend is
-shown with extra precision instead of rounding to zero. For example:
+The output is unchanged: one spend/budget summary and one colored progress bar,
+with two-decimal USD amounts and the existing cache-age suffix. For layered
+budgets, the native `limited_by` scope selects the actual spent/limit pair;
+aix never invents a maximum by adding key spend to a shared balance. If nothing
+caps the key, it prints the original `spent (no budget set)` summary without a
+bar. For example:
 
 ```text
-Key spend   $41.53 · live
-Available   $12.00 · limited by project
-
-Budget     Spent / Limit    Remaining
-Key        $41.53 / $100.00  $58.47
-  [█████████████████░░░░░░░░░░░░░░░░░░░░░░░░░]  42% used
-Project *  $8.00 / $20.00    $12.00
-  [████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░]  40% used
-* Limiting budget
+$41.53 of $100.00  ·  $58.47 available (58%)
+[█████████████████░░░░░░░░░░░░░░░░░░░░░░░░░]  42% used
 ```
 
 ```bash
 # Show spend for the default or selected profile
 aix spend work
 
-# JSON envelope containing current-key budget information
+# Original JSON summary: spend and an optional max_budget
 aix spend work --json
 
 # The global flag is also accepted before the command
@@ -1186,10 +1175,11 @@ JSON mode writes exactly one JSON document to stdout on success. Errors and diag
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` and the spend portion of `status.data` report current-key budget information obtained from the gateway's native `/v1/key/info` endpoint, with cache metadata. The shared envelope is stable; inner budget fields follow the gateway's contract and are not defined here as a cross-gateway schema. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` also includes profile and gateway-probe information. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; failed doctor reports go to stderr so automation can inspect the findings there. Cache source is `live`, `cache`, or `none`. `usage.data` contains a local date range, observed request/token metrics, daily and attribution breakdowns, and billing status as described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose credentials, prompts, or raw upstream inference responses.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` preserves the original spend/budget summary, mapped from the gateway's native `/v1/key/info` endpoint. `status.data.spend` exposes the native budget fields with cache metadata. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` also includes profile and gateway-probe information. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; failed doctor reports go to stderr so automation can inspect the findings there. Cache source is `live`, `cache`, or `none`. `usage.data` contains a local date range, observed request/token metrics, daily and attribution breakdowns, and billing status as described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose credentials, prompts, or raw upstream inference responses.
 
-The gateway's native budget response is normalized and sanitized by aix; the
-field set is gateway-defined and is not repeated here as a fixed example.
+`spend.data` keeps its original `{ "spend": 41.53, "max_budget": 100.0 }`
+shape; `max_budget` is omitted when unlimited. `status.data.spend` retains the
+native key spend, effective remaining, budget layers, expiry, and cache details.
 Gateway-reported budget exhaustion uses exit code `6`; failed JSON commands
 leave stdout empty and report the error on stderr.
 
