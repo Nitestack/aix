@@ -186,10 +186,19 @@ fn assistant_content(response: &Value) -> Result<String> {
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
         .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_str)
-        .filter(|content| !content.trim().is_empty())
-        .map(str::to_string)
+        .and_then(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .filter(|content| !content.trim().is_empty())
+                .or_else(|| {
+                    message
+                        .get("refusal")
+                        .and_then(Value::as_str)
+                        .filter(|refusal| !refusal.trim().is_empty())
+                })
+                .map(str::to_string)
+        })
         .ok_or_else(|| {
             AixError::GatewayProtocolError("response contained no assistant text").into()
         })

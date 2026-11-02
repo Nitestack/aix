@@ -688,6 +688,49 @@ async fn ask_treats_success_without_assistant_text_as_a_gateway_protocol_error()
 }
 
 #[tokio::test]
+async fn ask_prints_assistant_refusal_when_content_is_null() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "refusal": "I cannot help with that request."
+                },
+                "finish_reason": "stop"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let config = write_config(
+        &dir,
+        &server.uri(),
+        "[models]\ndefault = \"gateway/general-model\"",
+    );
+    let output = cmd()
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "ask",
+            "Summarize this document",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"I cannot help with that request.\n");
+}
+
+#[tokio::test]
 async fn ask_treats_a_successful_non_json_response_as_a_protocol_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
