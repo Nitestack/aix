@@ -42,10 +42,19 @@ pub fn run(
 }
 
 pub(crate) fn append_v1(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    match trimmed.find('?') {
-        Some(pos) => format!("{}/v1{}", &trimmed[..pos], &trimmed[pos..]),
-        None => format!("{}/v1", trimmed),
+    let (base, query) = match base_url.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (base_url, None),
+    };
+    let base = base.trim_end_matches('/');
+    let versioned = if base.ends_with("/v1") {
+        base.to_string()
+    } else {
+        format!("{base}/v1")
+    };
+    match query {
+        Some(query) => format!("{versioned}?{query}"),
+        None => versioned,
     }
 }
 

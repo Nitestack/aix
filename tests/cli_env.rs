@@ -143,6 +143,38 @@ base_url = "https://local.example.com"
 }
 
 #[test]
+fn env_does_not_duplicate_v1_before_a_query_string() {
+    let config = r#"
+[endpoint]
+base_url = "https://gateway.example/v1/?tenant=work"
+
+[profiles.work]
+api_key = "test-key"
+"#;
+    let file = assert_fs::NamedTempFile::new("aix.toml").unwrap();
+    file.write_str(config).unwrap();
+
+    let out = cmd()
+        .env("AIX_CONFIG", file.path())
+        .args(["env", "work", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+
+    assert_eq!(
+        parsed["OPENAI_BASE_URL"],
+        "https://gateway.example/v1?tenant=work"
+    );
+    assert_eq!(
+        parsed["LITELLM_BASE_URL"],
+        "https://gateway.example/v1?tenant=work"
+    );
+}
+
+#[test]
 fn env_includes_profile_custom_variables() {
     let config = r#"
 [endpoint]
