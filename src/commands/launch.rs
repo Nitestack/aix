@@ -874,8 +874,8 @@ pub async fn run_named_tool(
         print_sidecar_dry_run(&resolved);
         return run_command(&resolved.program, &args, &resolved.env, true);
     }
-    herdr::label_pane(name, &resolved.env.profile_name);
-
+    let (interrupt_requested, terminated) = install_interrupt_handlers()?;
+    let pane_label = herdr::label_pane(name, &resolved.env.profile_name);
     let mut sidecar = start_launch_sidecar(&mut resolved, timeout, None, None).await?;
     if let Err(error) = resolved.prepare_tool_config() {
         if let Some(sidecar) = sidecar.take() {
@@ -895,16 +895,6 @@ pub async fn run_named_tool(
         }
     };
     args.extend(resolved.codex_provider_overrides.iter().cloned());
-    if sidecar.is_none() && resolved.pi_agent_config.is_none() {
-        let status = run_command_status(&resolved.program, &args, &resolved.env)?;
-        if !status.success() {
-            let exit_code = status.code().unwrap_or(1);
-            resolved.cleanup_tool_config_stages();
-            std::process::exit(exit_code);
-        }
-        return Ok(());
-    }
-    let (interrupt_requested, terminated) = install_interrupt_handlers()?;
     let run_child = || {
         run_command_status_interruptible(
             &resolved.program,
@@ -914,11 +904,12 @@ pub async fn run_named_tool(
             &terminated,
         )
     };
-    let child_result = match sidecar {
+    let status = match sidecar {
         Some(sidecar) => sidecar.run_child(run_child).await,
         None => run_child(),
-    };
-    let status = child_result?;
+    }?;
+    // process::exit skips destructors, so clear metadata before either exit below.
+    drop(pane_label);
     if let Some(interruption) = interruption_reason(&interrupt_requested, &terminated) {
         resolved.cleanup_tool_config_stages();
         std::process::exit(interruption.exit_code());
