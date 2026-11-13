@@ -955,6 +955,13 @@ Use `--no-cache` to bypass the cache for one call; the fresh response is still
 written to cache for subsequent calls. The endpoint is a gateway capability and
 does not require a `gateway = "litellm"` metadata value.
 
+A gateway that does not implement the endpoint (`404`, `405`, or `501`) is a
+missing capability, not a failure: `aix spend` prints
+`Spend unsupported by this gateway` and exits `0`, matching what `aix status`
+reports for the same endpoint. The unsupported result is not cached, and real
+failures (authentication, server errors, timeouts, malformed payloads) still
+exit non-zero. Native Anthropic endpoints, for example, have no `/v1/key/info`.
+
 ---
 
 ## Gateway status
@@ -1175,10 +1182,12 @@ JSON mode writes exactly one JSON document to stdout on success. Errors and diag
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` preserves the original spend/budget summary, mapped from the gateway's native `/v1/key/info` endpoint. `status.data.spend` exposes the native budget fields with cache metadata. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` also includes profile and gateway-probe information. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; failed doctor reports go to stderr so automation can inspect the findings there. Cache source is `live`, `cache`, or `none`. `usage.data` contains a local date range, observed request/token metrics, daily and attribution breakdowns, and billing status as described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose credentials, prompts, or raw upstream inference responses.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` preserves the original spend/budget summary, mapped from the gateway's native `/v1/key/info` endpoint, or `{ "status": "unsupported" }` when the gateway does not implement that endpoint. `status.data.spend` exposes the native budget fields with cache metadata. `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` also includes profile and gateway-probe information. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; failed doctor reports go to stderr so automation can inspect the findings there. Cache source is `live`, `cache`, or `none`. `usage.data` contains a local date range, observed request/token metrics, daily and attribution breakdowns, and billing status as described above. `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose credentials, prompts, or raw upstream inference responses.
 
 `spend.data` keeps its original `{ "spend": 41.53, "max_budget": 100.0 }`
-shape; `max_budget` is omitted when unlimited. `status.data.spend` retains the
+shape; `max_budget` is omitted when unlimited, and a gateway without the native
+endpoint reports `{ "status": "unsupported" }` with exit code `0`.
+`status.data.spend` retains the
 native key spend, effective remaining, budget layers, expiry, and cache details.
 Gateway-reported budget exhaustion uses exit code `6`; failed JSON commands
 leave stdout empty and report the error on stderr.
