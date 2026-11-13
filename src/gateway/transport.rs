@@ -2,6 +2,13 @@ use crate::error::AixError;
 use serde_json::Value;
 use std::time::Duration;
 
+/// Anthropic's native routes (`/v1/models`) reject requests without a versioned
+/// API header, while its OpenAI-compatible routes and OpenAI-compatible
+/// gateways ignore the header when it is present. Sending it unconditionally
+/// keeps one transport for both endpoint shapes instead of routing on
+/// provider metadata.
+const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+
 pub(crate) struct GatewayTransport {
     base_url: String,
     api_key: String,
@@ -83,7 +90,9 @@ impl GatewayTransport {
     }
 
     fn authenticated(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        request.bearer_auth(&self.api_key)
+        request
+            .bearer_auth(&self.api_key)
+            .header("anthropic-version", ANTHROPIC_API_VERSION)
     }
 
     async fn send_json(&self, request: reqwest::RequestBuilder) -> Result<Value, TransportError> {
@@ -200,5 +209,26 @@ mod tests {
             _ => panic!("expected an HTTP timeout while reading the error body"),
         }
         responder.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn authenticated_requests_send_bearer_auth_and_anthropic_api_version() {
+        use serde_json::json;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(header("anthropic-version", ANTHROPIC_API_VERSION))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let transport =
+            GatewayTransport::with_timeout(server.uri(), "test-key", Duration::from_secs(30));
+        assert!(transport.get_json("/v1/models", &[]).await.is_ok());
     }
 }
