@@ -903,6 +903,13 @@ aix --json profiles
 
 `aix models` fetches model IDs live from the selected profile's OpenAI-compatible `/v1/models` endpoint. It does not cache the response or assume provider-specific metadata.
 
+Every authenticated request also carries `anthropic-version: 2023-06-01`, so a
+profile whose `base_url` points at a native Anthropic endpoint (for example
+`https://api.anthropic.com`) can be listed too: Anthropic's `/v1/models`
+requires that header, while OpenAI-compatible gateways ignore it. No
+`provider`/`gateway` metadata value selects this behavior; the header is always
+sent and inert where it is unknown.
+
 ```bash
 # List model IDs for the default or selected profile
 aix models work
@@ -984,12 +991,14 @@ aix --json status work
 
 The OpenAI-compatible `GET /v1/models` probe is always live, including when
 budget data comes from cache. `--refresh` bypasses only the budget cache; a
-successful probe reports its latency and authenticated state. The output shows
-configured gateway/provider metadata and only the API key's final four
-characters (short keys are fully redacted). The resolved gateway URL and full
-key are never printed. If native budget information is unsupported or
-unavailable, status reports that separately without hiding a successful
-connectivity/authentication result.
+successful probe reports its latency and authenticated state. The header
+handling described under model discovery applies here as well, so native
+Anthropic endpoints report `reachable · authenticated` with
+`Spend unsupported`. The output shows configured gateway/provider metadata and
+only the API key's final four characters (short keys are fully redacted). The
+resolved gateway URL and full key are never printed. If native budget
+information is unsupported or unavailable, status reports that separately
+without hiding a successful connectivity/authentication result.
 
 ---
 
@@ -1007,7 +1016,7 @@ aix doctor work --json
 aix --json doctor work
 ```
 
-Each row has one of four statuses: `PASS` means the check succeeded; `FAIL` includes a remediation hint; `SKIP` means a prerequisite failed; and `N/A` means the check does not apply. The checks run in this order:
+Each row has one of four statuses: `PASS` means the check succeeded; `FAIL` includes a remediation hint; `SKIP` means a prerequisite failed; and `N/A` means the check does not apply (for example `budget_info` on a gateway that answers `404` for `/v1/key/info`). The checks run in this order:
 
 | Check | What it verifies |
 |---|---|
