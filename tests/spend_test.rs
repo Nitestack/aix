@@ -213,23 +213,44 @@ async fn spend_omits_an_unlimited_budget_and_displays_the_original_no_budget_sum
 }
 
 #[tokio::test]
-async fn spend_reports_unsupported_endpoints_as_gateway_errors() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/key/info"))
-        .and(header("Authorization", format!("Bearer {API_KEY}")))
-        .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let dir = TempDir::new().unwrap();
-    let cache_dir = TempDir::new().unwrap();
-    let config = write_config(&dir, &server.uri(), API_KEY);
+async fn spend_reports_unsupported_endpoints_without_failing() {
+    for status in [404, 405, 501] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/key/info"))
+            .and(header("Authorization", format!("Bearer {API_KEY}")))
+            .respond_with(ResponseTemplate::new(status).set_body_string("not found"))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let dir = TempDir::new().unwrap();
+        let cache_dir = TempDir::new().unwrap();
+        let config = write_config(&dir, &server.uri(), API_KEY);
 
-    let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
-    assert_eq!(output.status.code(), Some(5));
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("HTTP 404"));
+        // Unsupported responses are not cached, so both invocations probe the
+        // gateway; the mock's `expect(2)` keeps that explicit.
+        let human = invoke(&config, cache_dir.path(), &["spend", "test"]);
+        assert!(
+            human.status.success(),
+            "HTTP {status}: {}",
+            String::from_utf8_lossy(&human.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&human.stdout),
+            "Spend unsupported by this gateway\n"
+        );
+
+        let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
+        assert!(
+            output.status.success(),
+            "HTTP {status}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["command"], "spend");
+        assert_eq!(report["data"], json!({ "status": "unsupported" }));
+    }
 }
 
 #[tokio::test]

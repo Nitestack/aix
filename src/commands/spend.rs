@@ -45,13 +45,38 @@ pub async fn run(
     };
 
     let (budget, cached_at) = match hit {
-        Some((budget, fetched_at)) => (budget, Some(fetched_at)),
-        None => {
-            let client = BudgetClient::with_timeout(base_url, api_key, timeout);
-            let fresh = client.key_info().await?;
-            cache.put(base_url, api_key, &fresh.to_cache_value());
-            (fresh, None)
+        Some((budget, fetched_at)) => (Some(budget), Some(fetched_at)),
+        None => match BudgetClient::with_timeout(base_url, api_key, timeout)
+            .key_info()
+            .await
+        {
+            Ok(fresh) => {
+                cache.put(base_url, api_key, &fresh.to_cache_value());
+                (Some(fresh), None)
+            }
+            // A gateway without the native budget endpoint is a capability gap,
+            // not a failure. Report it the way `aix status` does instead of
+            // failing scripts that scan spend across profiles.
+            Err(AixError::GatewayError {
+                status: 404 | 405 | 501,
+                ..
+            }) => (None, None),
+            Err(error) => return Err(error.into()),
+        },
+    };
+
+    let Some(budget) = budget else {
+        if json {
+            output::print_json(
+                "spend",
+                UnsupportedSpend {
+                    status: SpendStatus::Unsupported,
+                },
+            )?;
+        } else {
+            println!("Spend unsupported by this gateway");
         }
+        return Ok(());
     };
 
     let summary = SpendSummary::from_budget(&budget)?;
@@ -61,6 +86,20 @@ pub async fn run(
         print_human(&summary, cached_at);
     }
     Ok(())
+}
+
+/// Reported when the gateway does not implement `GET /v1/key/info`. The
+/// available summary keeps its original `spend`/`max_budget` shape; `status`
+/// only appears for this case.
+#[derive(Serialize)]
+struct UnsupportedSpend {
+    status: SpendStatus,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SpendStatus {
+    Unsupported,
 }
 
 #[derive(Serialize)]
