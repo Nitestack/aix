@@ -895,12 +895,21 @@ pub async fn run_named_tool(
         }
     };
     args.extend(resolved.codex_provider_overrides.iter().cloned());
+    // A plain launch leaves terminal Ctrl+C to the child: it already received the
+    // process-group SIGINT and may handle it without exiting. Only SIGTERM stops it.
+    let child_owns_ctrl_c = sidecar.is_none() && resolved.pi_agent_config.is_none();
+    let ignored_ctrl_c = AtomicBool::new(false);
+    let interrupt_requested = if child_owns_ctrl_c {
+        &ignored_ctrl_c
+    } else {
+        interrupt_requested.as_ref()
+    };
     let run_child = || {
         run_command_status_interruptible(
             &resolved.program,
             &args,
             &resolved.env,
-            &interrupt_requested,
+            interrupt_requested,
             &terminated,
         )
     };
@@ -910,15 +919,27 @@ pub async fn run_named_tool(
     }?;
     // process::exit skips destructors, so clear metadata before either exit below.
     drop(pane_label);
-    if let Some(interruption) = interruption_reason(&interrupt_requested, &terminated) {
+    if let Some(interruption) = interruption_reason(interrupt_requested, &terminated) {
         resolved.cleanup_tool_config_stages();
         std::process::exit(interruption.exit_code());
     }
     if !status.success() {
         resolved.cleanup_tool_config_stages();
-        std::process::exit(status.code().unwrap_or(1));
+        std::process::exit(child_exit_code(status));
     }
     Ok(())
+}
+
+/// Shell convention: a child killed by signal N exits as 128 + N.
+fn child_exit_code(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    status.code().unwrap_or(1)
 }
 
 pub(crate) async fn start_launch_sidecar(

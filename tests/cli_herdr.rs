@@ -1,10 +1,14 @@
 #![cfg(unix)]
 
 use nix::pty::{openpty, OpenptyResult};
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 use std::fs::{self, File, Permissions};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 struct Pane {
     dir: assert_fs::TempDir,
@@ -47,6 +51,12 @@ printf '%s\n' "${label:-$1}" >> "$AIX_TEST_AGENT_LABELS"
 if test "$2" = interrupt; then
     kill "-$3" "$PPID"
     exec sleep 1 >/dev/null 2>&1
+fi
+if test "$2" = ctrl-c; then
+    test "$3" = trap && trap ': > "$AIX_TEST_DIR/caught"' INT
+    : > "$AIX_TEST_DIR/ready"
+    while ! test -f "$AIX_TEST_DIR/release"; do sleep 0.05; done
+    exit 0
 fi
 exit "${2:-0}"
 "#,
@@ -97,6 +107,7 @@ local_gateway = {local_gateway}
             .env("AIX_STATE_DIR", self.path("state"))
             .env("AIX_AUTH_DIR", self.path("auth"))
             .env("HERDR_PANE_ID", "w1:p1")
+            .env("AIX_TEST_DIR", self.dir.path())
             .env("AIX_TEST_HERDR_LABEL", self.path("label"))
             .env("AIX_TEST_HERDR_REPORTS", self.path("reports"))
             .env("AIX_TEST_AGENT_LABELS", self.path("agent-labels"))
@@ -112,6 +123,14 @@ local_gateway = {local_gateway}
             .args(args)
             .output()
             .unwrap()
+    }
+
+    fn wait_for(&self, name: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.path(name).exists() {
+            assert!(Instant::now() < deadline, "timed out waiting for {name}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn assert_cleared(&self, tool: &str) {
@@ -213,12 +232,58 @@ fn nonzero_child_exit_clears_the_pane_label_and_preserves_the_exit_code() {
 
 #[test]
 fn interrupted_tool_clears_the_pane_label() {
-    for local_gateway in [false, true] {
-        for (signal, exit_code) in [("INT", 130), ("TERM", 143)] {
-            let pane = Pane::new(local_gateway);
-            let output = pane.launch("claude", &["claude", "interrupt", signal]);
-            assert_eq!(output.status.code(), Some(exit_code), "{output:?}");
-            pane.assert_cleared("claude");
+    // A plain launch leaves SIGINT to the child; see the terminal Ctrl+C test.
+    for (local_gateway, signal, exit_code) in [
+        (false, "TERM", 143),
+        (true, "INT", 130),
+        (true, "TERM", 143),
+    ] {
+        let pane = Pane::new(local_gateway);
+        let output = pane.launch("claude", &["claude", "interrupt", signal]);
+        assert_eq!(output.status.code(), Some(exit_code), "{output:?}");
+        pane.assert_cleared("claude");
+    }
+}
+
+#[test]
+fn terminal_ctrl_c_is_left_to_a_plain_launch_child() {
+    for (child_handles_ctrl_c, exit_code) in [(true, 0), (false, 130)] {
+        let pane = Pane::new(false);
+        let mode = if child_handles_ctrl_c {
+            "trap"
+        } else {
+            "default"
+        };
+        let aix = pane
+            .command(env!("CARGO_BIN_EXE_aix"))
+            .args([
+                "--profile",
+                "meta",
+                "claude",
+                "--",
+                "claude",
+                "ctrl-c",
+                mode,
+            ])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        pane.wait_for("ready");
+
+        // A terminal delivers Ctrl+C to the whole foreground process group.
+        kill(Pid::from_raw(-(aix.id() as i32)), Signal::SIGINT).unwrap();
+        if child_handles_ctrl_c {
+            pane.wait_for("caught");
+            assert_eq!(
+                fs::read_to_string(pane.path("label")).unwrap(),
+                "claude · meta\n",
+                "the label must stay while the tool keeps running"
+            );
+            File::create(pane.path("release")).unwrap();
         }
+
+        let output = aix.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(exit_code), "{output:?}");
+        pane.assert_cleared("claude");
     }
 }
