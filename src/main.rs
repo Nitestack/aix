@@ -9,6 +9,7 @@ mod config;
 mod duration;
 mod error;
 mod gateway;
+mod herdr;
 mod inference;
 mod local_gateway;
 mod output;

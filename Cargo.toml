@@ -39,7 +39,7 @@ url         = "2"
 webbrowser  = "1"
 ctrlc       = "3"
 time        = { version = "0.3", features = ["formatting"] }
-signal-hook = "0.3"
+signal-hook = { version = "0.3", features = ["extended-siginfo"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["process", "signal"] }
