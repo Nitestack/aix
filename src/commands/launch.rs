@@ -973,11 +973,12 @@ pub async fn run_named_tool(
         Some(sidecar) => sidecar.run_child(run_child).await,
         None => run_child(),
     }?;
+    let interruption = interruption_reason(interrupt_requested, &terminated);
     #[cfg(unix)]
     drop(directed_sigint);
     // process::exit skips destructors, so clear metadata before either exit below.
     drop(pane_label);
-    if let Some(interruption) = interruption_reason(interrupt_requested, &terminated) {
+    if let Some(interruption) = interruption {
         resolved.cleanup_tool_config_stages();
         std::process::exit(interruption.exit_code());
     }
