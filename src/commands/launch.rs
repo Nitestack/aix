@@ -825,7 +825,6 @@ pub(crate) fn scrub_parent_credential(env: &mut LaunchEnv, parent_key: &str) {
     env.remove_vars.dedup();
 }
 
-
 #[cfg(unix)]
 struct DirectedSigint {
     requested: Arc<AtomicBool>,
@@ -946,7 +945,9 @@ pub async fn run_named_tool(
     // reaches the child in the foreground process group.
     let child_owns_ctrl_c = sidecar.is_none() && resolved.pi_agent_config.is_none();
     #[cfg(unix)]
-    let directed_sigint = child_owns_ctrl_c.then(DirectedSigint::install).transpose()?;
+    let directed_sigint = child_owns_ctrl_c
+        .then(DirectedSigint::install)
+        .transpose()?;
     let ignored_ctrl_c = AtomicBool::new(false);
     #[cfg(unix)]
     let plain_sigint = directed_sigint
