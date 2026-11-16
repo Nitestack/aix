@@ -22,6 +22,9 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      - name: Verify committed Cargo.lock
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
