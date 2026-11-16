@@ -1,12 +1,26 @@
 use std::io::IsTerminal;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Sender};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+// Herdr expires the label after an unclean exit (including SIGKILL). Refresh
+// while the launch is active so even long-running agents retain their label.
+const LABEL_TTL_MS: u64 = 120_000;
+const LABEL_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 pub struct PaneLabel {
     pane: String,
+    stop: Sender<()>,
+    refresher: Option<JoinHandle<()>>,
 }
 
 impl Drop for PaneLabel {
     fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(refresher) = self.refresher.take() {
+            let _ = refresher.join();
+        }
         let _ = metadata_command(&self.pane)
             .arg("--clear-display-agent")
             .status();
@@ -25,14 +39,32 @@ pub fn label_pane(harness: &str, profile: &str) -> Option<PaneLabel> {
     }
     let pane = std::env::var("HERDR_PANE_ID").ok()?;
     let _ = report_command(&pane, harness, profile).status();
-    Some(PaneLabel { pane })
+
+    let (stop, stop_rx) = mpsc::channel();
+    let refresh_pane = pane.clone();
+    let harness = harness.to_owned();
+    let profile = profile.to_owned();
+    let refresher = thread::spawn(move || {
+        while let Err(mpsc::RecvTimeoutError::Timeout) =
+            stop_rx.recv_timeout(LABEL_REFRESH_INTERVAL)
+        {
+            let _ = report_command(&refresh_pane, &harness, &profile).status();
+        }
+    });
+    Some(PaneLabel {
+        pane,
+        stop,
+        refresher: Some(refresher),
+    })
 }
 
 fn report_command(pane: &str, harness: &str, profile: &str) -> Command {
     let mut command = metadata_command(pane);
     command
         .arg("--display-agent")
-        .arg(format!("{harness} · {profile}"));
+        .arg(format!("{harness} · {profile}"))
+        .arg("--ttl-ms")
+        .arg(LABEL_TTL_MS.to_string());
     command
 }
 
@@ -67,6 +99,8 @@ mod tests {
                 "aix",
                 "--display-agent",
                 "claude · work",
+                "--ttl-ms",
+                "120000",
             ]
         );
     }
