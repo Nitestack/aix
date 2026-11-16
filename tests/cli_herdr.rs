@@ -31,6 +31,7 @@ test "$1" = pane && test "$2" = report-metadata && test "$3" = w1:p1 &&
     test "$4" = --source && test "$5" = aix || exit 2
 case "$6" in
     --display-agent)
+        test "$8" = --ttl-ms && test "$9" = 120000 || exit 2
         printf '%s\n' "$7" > "$AIX_TEST_HERDR_LABEL"
         printf 'set:%s\n' "$7" >> "$AIX_TEST_HERDR_REPORTS"
         ;;
@@ -264,7 +265,15 @@ fn process_directed_sigint_reaches_plain_launch_child() {
     let pane = Pane::new(false);
     let aix = pane
         .command(env!("CARGO_BIN_EXE_aix"))
-        .args(["--profile", "meta", "claude", "--", "claude", "ctrl-c", "default"])
+        .args([
+            "--profile",
+            "meta",
+            "claude",
+            "--",
+            "claude",
+            "ctrl-c",
+            "default",
+        ])
         .spawn()
         .unwrap();
     pane.wait_for("ready");
