@@ -1,9 +1,11 @@
 #![cfg(unix)]
 
+use nix::libc;
 use nix::pty::{openpty, OpenptyResult};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use std::fs::{self, File, Permissions};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -245,6 +247,35 @@ fn interrupted_tool_clears_the_pane_label() {
     }
 }
 
+fn wait_for_exit(mut child: std::process::Child) -> Output {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("timed out waiting for aix to exit");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn process_directed_sigint_reaches_plain_launch_child() {
+    let pane = Pane::new(false);
+    let aix = pane
+        .command(env!("CARGO_BIN_EXE_aix"))
+        .args(["--profile", "meta", "claude", "--", "claude", "ctrl-c", "default"])
+        .spawn()
+        .unwrap();
+    pane.wait_for("ready");
+
+    // Only aix receives the signal. It must forward it to the child.
+    kill(Pid::from_raw(aix.id() as i32), Signal::SIGINT).unwrap();
+    let output = wait_for_exit(aix);
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+    pane.assert_cleared("claude");
+}
+
 #[test]
 fn terminal_ctrl_c_is_left_to_a_plain_launch_child() {
     for (child_handles_ctrl_c, exit_code) in [(true, 0), (false, 130)] {
@@ -254,8 +285,8 @@ fn terminal_ctrl_c_is_left_to_a_plain_launch_child() {
         } else {
             "default"
         };
-        let aix = pane
-            .command(env!("CARGO_BIN_EXE_aix"))
+        let mut command = pane.command(env!("CARGO_BIN_EXE_aix"));
+        command
             .args([
                 "--profile",
                 "meta",
@@ -265,13 +296,31 @@ fn terminal_ctrl_c_is_left_to_a_plain_launch_child() {
                 "ctrl-c",
                 mode,
             ])
-            .process_group(0)
-            .spawn()
-            .unwrap();
+            .stdin(File::from(pane.terminal.slave.try_clone().unwrap()));
+
+        // Make the PTY a controlling terminal with aix's process group in the
+        // foreground. A Ctrl+C byte then generates a kernel-origin SIGINT for
+        // both aix and its child, rather than a process-origin kill(-pgid).
+        // SAFETY: these libc calls are async-signal-safe in the pre-exec child.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp()) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let aix = command.spawn().unwrap();
         pane.wait_for("ready");
 
-        // A terminal delivers Ctrl+C to the whole foreground process group.
-        kill(Pid::from_raw(-(aix.id() as i32)), Signal::SIGINT).unwrap();
+        let mut master = File::from(pane.terminal.master.try_clone().unwrap());
+        master.write_all(b"\x03").unwrap();
         if child_handles_ctrl_c {
             pane.wait_for("caught");
             assert_eq!(
@@ -282,7 +331,7 @@ fn terminal_ctrl_c_is_left_to_a_plain_launch_child() {
             File::create(pane.path("release")).unwrap();
         }
 
-        let output = aix.wait_with_output().unwrap();
+        let output = wait_for_exit(aix);
         assert_eq!(output.status.code(), Some(exit_code), "{output:?}");
         pane.assert_cleared("claude");
     }
