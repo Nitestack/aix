@@ -11,7 +11,14 @@ Maintainer notes on how releases are cut and distributed.
    - `feat` bumps the minor version
    - `fix` bumps the patch version
    - `feat!` or `BREAKING CHANGE` bumps the major version
-2. Review and edit the PR if needed, then merge it. That is the only manual step.
+
+   Only `feat`, `fix`, and `perf` commits open or update a release PR, and only
+   when they touch files that ship in the crate. `ci`, `docs`, `build`, `chore`,
+   `test`, `style`, and `refactor` commits never trigger a release and are left
+   out of the changelog. Use those prefixes for pipeline and packaging work.
+   See [`release-plz.toml`](../release-plz.toml).
+2. Review and edit the PR if needed, then merge it when you want to release.
+   The PR can stay open as long as you like. It is the only manual step.
 3. [`release.yml`](../.github/workflows/release.yml) then:
    - publishes `aix-rs` to crates.io;
    - tags `vX.Y.Z` and creates the GitHub release;
@@ -32,6 +39,21 @@ the installers or package managers.
 - **A package-manager channel failed:** go to Actions → **Package managers** →
   **Run workflow** and enter the tag (for example `v1.1.0`). Every channel is
   safe to re-run.
+
+## Backfilling an existing release
+
+When the pipeline gains new assets or package channels, you don't need a new
+version to ship them. Go to Actions → **Backfill release assets**
+([`backfill.yml`](../.github/workflows/backfill.yml)) → **Run workflow** and enter an
+existing tag (for example `v1.0.0`). The workflow:
+
+1. rebuilds that tag's source with the current build and packaging pipeline;
+2. replaces the release's assets: binaries, `.deb`/`.rpm`, `SHA256SUMS`, and the
+   installers;
+3. runs the package-manager channels for that tag.
+
+It never publishes to crates.io. Crate metadata changes, such as cargo-binstall
+support, therefore still need a real release.
 
 ## Secrets and variables
 
