@@ -50,11 +50,15 @@ jobs:
 
           | File | Platform |
           |------|----------|
-          | \`aix-x86_64-unknown-linux-gnu\` | Linux x86_64 |
-          | \`aix-aarch64-unknown-linux-gnu\` | Linux aarch64 |
+          | \`aix-x86_64-unknown-linux-musl\` | Linux x86_64 (static) |
+          | \`aix-aarch64-unknown-linux-musl\` | Linux aarch64 (static) |
+          | \`aix-x86_64-unknown-linux-gnu\` | Linux x86_64 (glibc) |
+          | \`aix-aarch64-unknown-linux-gnu\` | Linux aarch64 (glibc) |
           | \`aix-aarch64-apple-darwin\` | macOS Apple Silicon |
           | \`aix-x86_64-apple-darwin\` | macOS Intel |
           | \`aix-x86_64-pc-windows-msvc.exe\` | Windows x86_64 |
+          | \`aix_*.deb\` / \`aix-*.rpm\` | Debian/Ubuntu, Fedora/RHEL/openSUSE packages |
+          | \`SHA256SUMS\` | Checksums for all of the above |
           EOF
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
           git tag -f nightly "$GITHUB_SHA"

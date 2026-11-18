@@ -77,10 +77,34 @@ jobs:
           path: binaries
           merge-multiple: true
 
+      - name: Install nfpm
+        env:
+          NFPM_VERSION: 2.48.0
+        run: |
+          base="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}"
+          tarball="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -fsSLO "${base}/${tarball}"
+          curl -fsSL "${base}/checksums.txt" | grep " ${tarball}\$" | sha256sum --check -
+          tar -xzf "${tarball}" nfpm
+          sudo install -m 755 nfpm /usr/local/bin/nfpm
+
+      - name: Build .deb and .rpm packages
+        run: |
+          VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          export VERSION
+          mkdir -p pkg
+          for arch in amd64 arm64; do
+            case "$arch" in amd64) triple=x86_64 ;; arm64) triple=aarch64 ;; esac
+            install -m 755 "binaries/aix-${triple}-unknown-linux-musl" pkg/aix
+            for format in deb rpm; do
+              ARCH="$arch" nfpm package -f scripts/packaging/nfpm.yaml -p "$format" -t binaries/
+            done
+          done
+
       - name: Add checksums and installer scripts
         working-directory: binaries
         run: |
-          sha256sum aix-* > SHA256SUMS
+          sha256sum aix-* aix_* > SHA256SUMS
           cat SHA256SUMS
           cp ../scripts/install.sh ../scripts/install.ps1 .
 

@@ -1,0 +1,34 @@
+# nfpm config for the .deb and .rpm release assets.
+# Run from the repo root with VERSION and ARCH (amd64|arm64) set and the
+# static musl binary staged at pkg/aix (nfpm does not expand env vars in
+# `src`). Local test:
+#   mkdir -p pkg && cp target/release/aix pkg/aix
+#   VERSION=1.0.0 ARCH=amd64 nfpm package -f scripts/packaging/nfpm.yaml -p deb -t dist/
+name: aix
+version: ${VERSION}
+arch: ${ARCH}
+platform: linux
+section: utils
+priority: optional
+maintainer: get-aix <https://github.com/get-aix/aix/issues>
+vendor: get-aix
+homepage: https://github.com/get-aix/aix
+license: AGPL-3.0-only
+description: |
+  Launch AI coding tools with the right AI gateway profile and credentials.
+  aix manages named profiles for LiteLLM-compatible AI gateways, resolves API
+  keys from env vars, files, or commands, and launches tools like Claude Code,
+  Codex, OpenCode, and Pi with the matching environment.
+
+contents:
+  - src: ./pkg/aix
+    dst: /usr/bin/aix
+    file_info:
+      mode: 0755
+  - src: ./LICENSE
+    dst: /usr/share/doc/aix/copyright
+    packager: deb
+  - src: ./LICENSE
+    dst: /usr/share/licenses/aix/LICENSE
+    packager: rpm
+    type: license
