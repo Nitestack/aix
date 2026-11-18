@@ -236,6 +236,9 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
         }
         Command::Runs { limit, action } => crate::commands::runs::run(action, limit, json),
         Command::Cache { action } => crate::commands::cache::run(action, config_path),
+        Command::Upgrade { check, force } => {
+            crate::commands::upgrade::run(check, force, timeout).await
+        }
         Command::Tool(raw) => {
             let tool = raw[0].clone();
             let rest = &raw[1..];

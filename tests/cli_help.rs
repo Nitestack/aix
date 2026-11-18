@@ -162,3 +162,68 @@ fn config_validate_invalid_config() {
         .assert()
         .failure();
 }
+
+#[test]
+fn upgrade_is_listed_and_update_alias_is_hidden() {
+    let output = cmd().arg("--help").output().unwrap();
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        help.lines()
+            .any(|line| line.trim_start().starts_with("upgrade ")),
+        "upgrade missing from help:\n{help}"
+    );
+    assert!(
+        !help
+            .lines()
+            .any(|line| line.trim_start().starts_with("update")),
+        "update alias must stay hidden:\n{help}"
+    );
+}
+
+#[test]
+fn upgrade_help_and_update_alias_help() {
+    for name in ["upgrade", "update"] {
+        cmd()
+            .args([name, "--help"])
+            .assert()
+            .success()
+            .stdout(contains("--check"))
+            .stdout(contains("--force"));
+    }
+}
+
+#[test]
+fn upgrade_check_and_force_conflict() {
+    cmd()
+        .args(["upgrade", "--check", "--force"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn upgrade_does_not_support_json() {
+    cmd().args(["upgrade", "--json"]).assert().failure().code(2);
+}
+
+/// The test binary lives in cargo's target dir, so it is detected as a source
+/// build: guidance only, no network, no changes.
+#[test]
+fn upgrade_from_a_source_build_only_prints_guidance() {
+    let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_aix"));
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let in_target_dir = exe
+        .components()
+        .any(|component| component.as_os_str() == "target");
+    if !in_target_dir {
+        eprintln!("skipping: test binary is outside a `target` dir ({exe:?})");
+        return;
+    }
+    for name in ["upgrade", "update"] {
+        cmd()
+            .arg(name)
+            .assert()
+            .success()
+            .stdout(contains("Installed via: source build"))
+            .stdout(contains("cargo build --release"));
+    }
+}

@@ -20,6 +20,7 @@ pub mod runs;
 pub mod shell;
 pub mod spend;
 pub mod status;
+pub mod upgrade;
 pub mod usage;
 
 #[derive(Clone, Debug)]

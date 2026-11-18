@@ -263,6 +263,17 @@ pub enum Command {
         #[command(subcommand)]
         action: Option<RunsAction>,
     },
+    /// Upgrade aix to the latest release using the method it was installed with
+    #[command(alias = "update")]
+    Upgrade {
+        /// Show how aix was installed and what an upgrade would do, without changing anything
+        #[arg(long)]
+        check: bool,
+        /// Reinstall even when the installed version is already the latest
+        /// (installer-script and .deb/.rpm installs only)
+        #[arg(long, conflicts_with = "check")]
+        force: bool,
+    },
     /// Manage the local response cache
     Cache {
         #[command(subcommand)]
