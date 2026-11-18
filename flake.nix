@@ -49,13 +49,6 @@
           }
         );
 
-        # Nix-generated example config for the wslstation deployment.
-        # Profiles and secret paths mirror configurations/nixos/wslstation/sops.nix.
-        # No real secret values appear here — everything is a file reference.
-        exampleWslstationConfig = pkgs.writeText "aix-wslstation.toml" (
-          builtins.readFile ./nix/wslstation-config.toml
-        );
-
         homeManagerConfigs = import ./tests/home-manager-models.nix {
           inherit pkgs;
           lib = pkgs.lib;
@@ -84,7 +77,6 @@
         packages = {
           aix-rs = aix-rs;
           default = aix-rs;
-          example-wslstation-config = exampleWslstationConfig;
         };
 
         # `nix run` launches the aix binary.
