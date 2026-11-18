@@ -1,0 +1,67 @@
+name: Nightly
+
+# Rolling `nightly` prerelease built from the tip of main. It is marked as a
+# prerelease and never as "latest", so the installer scripts
+# (releases/latest/download/...) keep pointing at the newest stable vX.Y.Z.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only the newest commit matters for a rolling build: cancel superseded runs.
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    if: github.repository_owner == 'get-aix'
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ github.sha }}
+
+  publish:
+    name: Publish nightly prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries
+          path: binaries
+
+      - name: Replace nightly prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          cat > notes.md <<EOF
+          Rolling build of [\`main\`](${REPO_URL}/commits/main) at [\`${SHORT}\`](${REPO_URL}/commit/${GITHUB_SHA}).
+
+          > **Unstable.** Rebuilt on every push to \`main\`. For stable builds use the
+          > [latest release](${REPO_URL}/releases/latest) or \`cargo install aix-rs\`.
+
+          | File | Platform |
+          |------|----------|
+          | \`aix-x86_64-unknown-linux-gnu\` | Linux x86_64 |
+          | \`aix-aarch64-unknown-linux-gnu\` | Linux aarch64 |
+          | \`aix-aarch64-apple-darwin\` | macOS Apple Silicon |
+          | \`aix-x86_64-apple-darwin\` | macOS Intel |
+          | \`aix-x86_64-pc-windows-msvc.exe\` | Windows x86_64 |
+          EOF
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          git tag -f nightly "$GITHUB_SHA"
+          git push -f origin nightly
+          gh release create nightly \
+            --title "Nightly (${SHORT})" \
+            --notes-file notes.md \
+            --prerelease \
+            --latest=false \
+            binaries/*
