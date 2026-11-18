@@ -89,7 +89,7 @@ the exception: they are retained in aix's owner-only local auth store. See
 
 | Platform | Command |
 |----------|---------|
-| macOS / Linux ([Homebrew](https://brew.sh)) | `brew install get-aix/tap/aix` |
+| macOS / Linux ([Homebrew](https://brew.sh)) | `brew tap get-aix/tap`<br>`brew install aix` |
 | Windows ([winget](https://learn.microsoft.com/windows/package-manager/)) | `winget install get-aix.aix` |
 | Windows ([Scoop](https://scoop.sh)) | `scoop bucket add get-aix https://github.com/get-aix/scoop-bucket`<br>`scoop install get-aix/aix` |
 | Debian / Ubuntu / Fedora / openSUSE | `.deb` / `.rpm` from the [latest release](https://github.com/get-aix/aix/releases/latest), see [Installation](docs/installation.md#debian-ubuntu-fedora-rhel-opensuse-deb--rpm) |

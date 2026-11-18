@@ -77,7 +77,7 @@ crates.io publishing uses Trusted Publishing (OIDC), so it needs no secret.
 | Channel | Where | Package |
 |---------|-------|---------|
 | crates.io | <https://crates.io/crates/aix-rs> | `aix-rs` (binstall metadata in `Cargo.toml`) |
-| Homebrew | <https://github.com/get-aix/homebrew-tap> | `get-aix/tap/aix` |
+| Homebrew | <https://github.com/get-aix/homebrew-tap> | `brew tap get-aix/tap` then `brew install aix` |
 | Scoop | <https://github.com/get-aix/scoop-bucket> | `get-aix/aix` |
 | AUR | <https://aur.archlinux.org/packages/aix-rs-bin> | `aix-rs-bin` |
 | winget | <https://github.com/microsoft/winget-pkgs> | `get-aix.aix` |

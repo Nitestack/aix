@@ -46,10 +46,13 @@ The packages below are updated automatically when a release is published.
 ### Homebrew (macOS, Linux)
 
 ```sh
-brew install get-aix/tap/aix
+brew tap get-aix/tap
+brew install aix
 ```
 
-The formula lives in [get-aix/homebrew-tap](https://github.com/get-aix/homebrew-tap).
+`brew upgrade` keeps it up to date. The one-liner `brew install get-aix/tap/aix`
+does the same thing. The formula lives in
+[get-aix/homebrew-tap](https://github.com/get-aix/homebrew-tap).
 
 ### winget (Windows)
 
