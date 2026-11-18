@@ -9,14 +9,16 @@ The Nix layer provides a declarative home-manager module for configuration and s
 Current layout:
 ```
 src/               — Rust CLI source
-tests/             — integration tests
-nix/               — Nix: home-manager module (home-manager.nix) + example deployment configs
-docs/              — design docs and architecture
+tests/             — integration tests; tests/manual/ holds written manual procedures;
+                     tests/home-manager-*.nix are the module rendering checks
+nix/               — Nix: home-manager module (home-manager.nix)
+docs/              — user docs (start at docs/README.md); docs/agents/ is agent guidance
+ARCHITECTURE.md    — module boundaries and invariants
+CONTRIBUTING.md    — dev setup, commit style, PR checklist, manual verification
 ```
 
 ## Ground rules
 
-- **Do not touch unrelated files.** Changes outside `nix/`, `src/`, `tests/`, or `flake.nix` require explicit user approval.
 - Prefer small commits and small diffs. One logical change per commit.
 - Run `cargo fmt && cargo clippy` before claiming Rust work is done.
 - Run `nixfmt` (`nixfmt-rfc-style`) on any Nix files you edit.
@@ -29,9 +31,9 @@ docs/              — design docs and architecture
 3. **Secret resolution is backend-agnostic.** The CLI accepts secrets via env vars, a config file, or a secret-store flag. It must not assume `pass`, `agenix`, or any specific Nix secret tool.
 4. **LiteLLM gateway compatibility is endpoint + profile config.** No provider-specific logic baked into command routing — use named profiles resolved at runtime.
 
-## WSL / Nix workflow
+## Cross-platform
 
-The primary dev environment is WSL2 + NixOS. Cross-platform support (macOS, plain Linux) is a goal of the Rust extraction.
+aix ships for Linux, macOS, and Windows; Nix is one install method, not a requirement.
 When adding dependencies, prefer crates that compile without OS-specific build tooling.
 
 ## Scoped rules

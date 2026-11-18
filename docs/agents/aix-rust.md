@@ -9,12 +9,24 @@ It must be self-contained and runnable outside Nix.
 
 ## Structure
 
-- `src/main.rs` — entry point, arg parsing only
-- `src/config.rs` — profile/endpoint resolution
-- `src/gateway/` — shared HTTP transport and gateway capability clients
-- `src/secrets.rs` — resolve configured literal, environment, file, or command sources
-- `src/commands/` — one module per subcommand
+- `src/main.rs` — module list and the tokio entry point; nothing else
+- `src/cli.rs` — clap definitions (global flags, subcommands)
+- `src/app.rs` — error-report setup, dispatch to command modules, exit codes
+- `src/config.rs` — config loading (TOML/YAML/JSON/JSON5), profile and endpoint resolution
+- `src/secrets.rs` — resolve literal, env, file, and command secret sources
+- `src/error.rs` — `AixError` (thiserror) and exit-code mapping
+- `src/output.rs` — shared `--json` envelope and human output helpers
+- `src/gateway/` — shared HTTP transport and gateway capability clients (models, budget)
+- `src/auth/` — ChatGPT OAuth protocol and the owner-only auth store
+- `src/local_gateway/` — per-launch loopback gateways (API-key, ChatGPT Responses); the OpenCode bridge is wired in `commands/launch/opencode.rs`
+- `src/usage_observer/`, `src/usage_event.rs`, `src/usage_store.rs` — token-usage parsing and the local usage-event store
+- `src/run_history.rs` — metadata-only managed-run records
+- `src/cache.rs` — local response cache for gateway reads
+- `src/inference.rs` — shared request path for `aix ask` and `aix prompt`
+- `src/herdr.rs` — herdr pane labels
+- `src/commands/` — one module (or directory) per subcommand; `launch` is shared by `aix <tool>` and `aix run`
 
+See `ARCHITECTURE.md` at the repo root for boundaries and invariants.
 Keep modules small. No god files.
 
 ## Config model
@@ -66,7 +78,8 @@ Emit structured errors to stderr; streaming output to stdout only.
 
 - Unit tests for config parsing and secret resolution.
 - Integration tests (behind `#[cfg(test)]` feature or separate binary) may hit a mock server.
-- Do not require a live AI Hub endpoint in CI.
+- Do not require a live gateway in CI; use `wiremock` for HTTP.
+- Checks that need real tools or accounts go in `tests/manual/` as written procedures.
 
 ## Cross-platform
 
