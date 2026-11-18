@@ -2,7 +2,7 @@
 # install.sh — download and install aix to ~/.local/bin (or $AIX_INSTALL_DIR)
 set -eu
 
-REPO="Nitestack/aix"
+REPO="get-aix/aix"
 BIN="aix"
 INSTALL_DIR="${AIX_INSTALL_DIR:-${HOME}/.local/bin}"
 
