@@ -1,0 +1,8 @@
+[workspace]
+# Publish + tag + GitHub release whenever main carries a version that is not
+# yet on crates.io (normally right after merging the release PR).
+release_always = true
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+# Keep Cargo.lock dependency versions as-is in release PRs.
+dependencies_update = false
