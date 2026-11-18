@@ -4,7 +4,7 @@ Start with [Installation](installation.md), then [Configuration](configuration.m
 
 ## Setup
 
-- [Installation](installation.md) — Homebrew, winget, Scoop, .deb/.rpm, installer scripts, Cargo, prebuilt binaries, Nix, nightly builds
+- [Installation](installation.md) — Homebrew, winget, Scoop, .deb/.rpm, AUR, installer scripts, Cargo, prebuilt binaries, Nix, nightly builds
 - [Configuration](configuration.md) — config file location and format, secret sources, model defaults and aliases
 - [Nix and home-manager](nix.md) — declarative config with the home-manager module
 - [ChatGPT authentication](chatgpt.md) — Sign in with ChatGPT profiles

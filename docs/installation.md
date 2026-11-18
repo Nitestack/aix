@@ -3,7 +3,7 @@
 aix is a single binary named `aix`. Pick one of the methods below; after
 installing, continue with [Configuration](configuration.md).
 
-- [Package managers](#package-managers): Homebrew, winget, Scoop, .deb/.rpm
+- [Package managers](#package-managers): Homebrew, winget, Scoop, .deb/.rpm, AUR
 - [Installer scripts](#installer-scripts): prebuilt binary, no package manager needed
 - [Cargo](#cargo): prebuilt via cargo-binstall, or build from crates.io
 - [Manual download](#manual-download) — place the binary yourself
@@ -92,11 +92,17 @@ These packages don't come from an apt or dnf repository, so `apt upgrade` and
 `dnf upgrade` won't update aix. Install the new release's package the same way
 to upgrade.
 
-### Arch Linux
+### AUR (Arch Linux)
 
-An AUR package (`aix-rs-bin`) is planned. Until then, use the
-[installer script](#installer-scripts), [Homebrew](#homebrew-macos-linux), or
-[Cargo](#cargo).
+The package is [`aix-rs-bin`](https://aur.archlinux.org/packages/aix-rs-bin)
+(prebuilt static binary). Install it with any AUR helper:
+
+```sh
+yay -S aix-rs-bin    # or: paru -S aix-rs-bin
+```
+
+It conflicts with the unrelated AUR packages `aix` and `aix-bin`, which also
+install a `/usr/bin/aix`.
 
 ## Installer scripts
 
