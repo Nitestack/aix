@@ -43,6 +43,26 @@ nixos-rebuild switch --flake .#your-host
 home-manager switch --flake .#your-user
 ```
 
+## Upgrading
+
+`aix upgrade` doesn't modify a Nix-installed aix. Your `flake.lock` pins the
+exact version, so Nix would undo any change at the next rebuild. Running it
+prints these steps instead.
+
+To move to the latest aix, update the flake input and rebuild:
+
+```bash
+nix flake update aix    # the name of the aix input in your flake.nix
+nixos-rebuild switch --flake .#your-host
+# or, standalone home-manager:
+home-manager switch --flake .#your-user
+```
+
+On Nix older than 2.19, the first command is `nix flake lock --update-input aix`.
+For a `nix profile install`, run `nix profile upgrade aix` (`nix profile list`
+shows the entry's name). With `nix run`, add `--refresh` to fetch the newest
+version: `nix run --refresh github:get-aix/aix -- --help`.
+
 ## Option mapping
 
 Module options mirror the config file with camelCase names. Each feature page

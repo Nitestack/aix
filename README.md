@@ -109,6 +109,10 @@ curl -fsSL https://github.com/get-aix/aix/releases/latest/download/install.sh | 
 irm https://github.com/get-aix/aix/releases/latest/download/install.ps1 | iex
 ```
 
+To upgrade later, run `aix upgrade`. It detects how aix was installed and
+upgrades it the same way (Nix installs get instructions instead, since Nix
+manages the version).
+
 The crate is called `aix-rs`, but every method installs a binary named `aix`.
 Prebuilt binaries cover Linux x86_64/aarch64 (static), macOS arm64/x86_64, and
 Windows x86_64. See [Installation](docs/installation.md) for checksums, manual

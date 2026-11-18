@@ -10,6 +10,9 @@ installing, continue with [Configuration](configuration.md).
 - [Nix](#nix) — flake, overlay, or home-manager module
 - [Nightly builds](#nightly-builds) — prebuilt binaries from `main`
 
+To upgrade later, run `aix upgrade`. It works out how aix was installed and
+upgrades it the same way; see [Upgrading](#upgrading).
+
 ## Releases
 
 Releases are versioned with [semver](https://semver.org/) and tagged `vX.Y.Z`,
@@ -50,7 +53,7 @@ brew tap get-aix/tap
 brew install aix
 ```
 
-`brew upgrade` keeps it up to date. The one-liner `brew install get-aix/tap/aix`
+`aix upgrade` (or `brew upgrade`) keeps it up to date. The one-liner `brew install get-aix/tap/aix`
 does the same thing. The formula lives in
 [get-aix/homebrew-tap](https://github.com/get-aix/homebrew-tap).
 
@@ -89,8 +92,9 @@ With the GitHub CLI, you can download the latest `.deb` in one step:
 `gh release download --repo get-aix/aix --pattern '*_amd64.deb'`.
 
 These packages don't come from an apt or dnf repository, so `apt upgrade` and
-`dnf upgrade` won't update aix. Install the new release's package the same way
-to upgrade.
+`dnf upgrade` won't update aix. Run `aix upgrade` instead: it downloads the new
+release's package, verifies its checksum, and installs it with apt, dnf, zypper,
+or rpm. You can also install the new package by hand, the same way as above.
 
 ### AUR (Arch Linux)
 
@@ -197,6 +201,59 @@ home.packages = [ pkgs.aix-rs ];
 ```bash
 nix run github:get-aix/aix -- --help
 ```
+
+## Upgrading
+
+```sh
+aix upgrade           # upgrade to the latest release
+aix upgrade --check   # show what it would do, change nothing
+```
+
+`aix upgrade` looks at where the running binary lives to work out how it was
+installed, then upgrades it the same way:
+
+| Installed with | What `aix upgrade` runs |
+|---|---|
+| Homebrew | `brew upgrade get-aix/tap/aix` |
+| Scoop | `scoop update aix` |
+| winget | `winget upgrade --id get-aix.aix --exact` |
+| `.deb` / `.rpm` | Downloads the new release package, verifies it against `SHA256SUMS`, and installs it with `apt`, `dpkg`, `dnf`, `zypper`, `yum`, or `rpm` (using `sudo` when needed) |
+| AUR | `paru -S --needed aix-rs-bin`, or `yay` if paru isn't installed |
+| `cargo binstall` | `cargo binstall aix-rs` |
+| `cargo install` | `cargo install --locked aix-rs` |
+| Installer script or manual download | Re-runs the installer script into the same directory |
+| Nix | Nothing; prints how to upgrade through Nix (see below) |
+| Source checkout (`target/…`) | Nothing; prints how to pull and rebuild |
+
+Package managers decide for themselves whether a newer version exists. For
+installer-script and `.deb`/`.rpm` installs, aix compares its version with the
+latest release first and stops if you're already up to date; pass `--force` to
+reinstall anyway. `aix update` is accepted as an alias.
+
+The package managers run with their own confirmation prompts turned off,
+because running `aix upgrade` already says you want the upgrade. `sudo` still
+asks for your password when it needs it.
+
+A few cases need you to step in, and `aix upgrade` prints what to run:
+
+- **Nix.** aix never modifies a Nix-managed binary, because Nix pins the version
+  and would undo the change at the next rebuild. Update the flake input
+  (`nix flake update aix`) and rebuild, or run `nix profile upgrade` for
+  `nix profile` installs. See [Nix and home-manager](nix.md#upgrading).
+- **A directory you can't write to**, such as `/usr/local/bin` after a manual
+  download: run `sudo aix upgrade` (on Windows, a terminal opened with "Run as
+  administrator").
+- **AUR without an AUR helper:** rebuild the package with `makepkg -si`.
+- **`cargo install` from a local path or git URL:** rebuild from that source, or
+  switch to the released crate with `cargo install --locked aix-rs`.
+
+On Windows, a running `aix.exe` can't be overwritten. For installer-script and
+Cargo installs, aix renames itself to `aix.exe.old` before upgrading and deletes
+that file the next time `aix upgrade` runs. Scoop and winget upgrades run in a
+new window that starts as soon as `aix upgrade` exits.
+
+`aix upgrade` exits 0 when it upgraded, found nothing newer, or only printed
+instructions. It exits non-zero only when an upgrade was attempted and failed.
 
 ## Nightly builds
 
