@@ -63,7 +63,8 @@ run.
 
 | Name | Kind | Used for | Value |
 |------|------|----------|-------|
-| `PACKAGING_TOKEN` | secret | Homebrew tap, Scoop bucket | Fine-grained PAT: resource owner `get-aix`; repositories `homebrew-tap` and `scoop-bucket`; permission **Contents: Read and write** |
+| `HOMEBREW_TAP_DEPLOY_KEY` | secret | Homebrew tap | Private SSH key; its public key is a write deploy key on `get-aix/homebrew-tap` |
+| `SCOOP_BUCKET_DEPLOY_KEY` | secret | Scoop bucket | Private SSH key; its public key is a write deploy key on `get-aix/scoop-bucket` |
 | `AUR_SSH_PRIVATE_KEY` | secret | AUR `aix-rs-bin` | Private SSH key whose public key is registered on the AUR account |
 | `AUR_USERNAME`, `AUR_EMAIL` | variables | AUR commit author | Optional |
 | `WINGET_TOKEN` | secret | winget | Classic PAT with the `public_repo` scope, owned by the account that forks `microsoft/winget-pkgs` |

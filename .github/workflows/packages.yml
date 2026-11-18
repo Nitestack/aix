@@ -5,12 +5,12 @@ name: Package managers
 # by hand (Actions → Package managers → Run workflow) to retry or backfill.
 #
 # Each channel is skipped cleanly when its secret is not configured:
-#   PACKAGING_TOKEN      fine-grained PAT: Contents read/write on
-#                        get-aix/homebrew-tap and get-aix/scoop-bucket
-#   AUR_SSH_PRIVATE_KEY  SSH key registered on the AUR account
-#   WINGET_TOKEN         classic PAT with `public_repo`, owner has a fork of
-#                        microsoft/winget-pkgs (set repo variable
-#                        WINGET_FORK_USER to that account)
+#   HOMEBREW_TAP_DEPLOY_KEY  write deploy key on get-aix/homebrew-tap
+#   SCOOP_BUCKET_DEPLOY_KEY  write deploy key on get-aix/scoop-bucket
+#   AUR_SSH_PRIVATE_KEY      SSH key registered on the AUR account
+#   WINGET_TOKEN             classic PAT with `public_repo`, owner has a fork of
+#                            microsoft/winget-pkgs (set repo variable
+#                            WINGET_FORK_USER to that account)
 
 on:
   workflow_call:
@@ -54,23 +54,23 @@ jobs:
     needs: render
     runs-on: ubuntu-latest
     env:
-      TOKEN: ${{ secrets.PACKAGING_TOKEN }}
+      KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
     steps:
-      - if: env.TOKEN == ''
-        run: echo "::notice::PACKAGING_TOKEN not set; skipping Homebrew tap"
-      - if: env.TOKEN != ''
+      - if: env.KEY == ''
+        run: echo "::notice::HOMEBREW_TAP_DEPLOY_KEY not set; skipping Homebrew tap"
+      - if: env.KEY != ''
         uses: actions/download-artifact@v8
         with:
           name: manifests
           path: manifests
-      - if: env.TOKEN != ''
+      - if: env.KEY != ''
         uses: actions/checkout@v7
         with:
           repository: get-aix/homebrew-tap
-          token: ${{ secrets.PACKAGING_TOKEN }}
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: tap
       - name: Commit formula
-        if: env.TOKEN != ''
+        if: env.KEY != ''
         working-directory: tap
         env:
           TAG: ${{ inputs.tag }}
@@ -89,23 +89,23 @@ jobs:
     needs: render
     runs-on: ubuntu-latest
     env:
-      TOKEN: ${{ secrets.PACKAGING_TOKEN }}
+      KEY: ${{ secrets.SCOOP_BUCKET_DEPLOY_KEY }}
     steps:
-      - if: env.TOKEN == ''
-        run: echo "::notice::PACKAGING_TOKEN not set; skipping Scoop bucket"
-      - if: env.TOKEN != ''
+      - if: env.KEY == ''
+        run: echo "::notice::SCOOP_BUCKET_DEPLOY_KEY not set; skipping Scoop bucket"
+      - if: env.KEY != ''
         uses: actions/download-artifact@v8
         with:
           name: manifests
           path: manifests
-      - if: env.TOKEN != ''
+      - if: env.KEY != ''
         uses: actions/checkout@v7
         with:
           repository: get-aix/scoop-bucket
-          token: ${{ secrets.PACKAGING_TOKEN }}
+          ssh-key: ${{ secrets.SCOOP_BUCKET_DEPLOY_KEY }}
           path: bucket-repo
       - name: Commit manifest
-        if: env.TOKEN != ''
+        if: env.KEY != ''
         working-directory: bucket-repo
         env:
           TAG: ${{ inputs.tag }}
