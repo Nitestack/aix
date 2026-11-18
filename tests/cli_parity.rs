@@ -1,8 +1,8 @@
 /// Parity tests: verify the Rust CLI preserves the important behaviors of the
 /// old Nix-generated `aix` shell wrapper.
 ///
-/// Each test is tagged with the old-wrapper behavior it covers.
-/// Intentional differences are noted in `docs/aix/migration.md`.
+/// Each test is tagged with the old-wrapper behavior it covers. The main
+/// intentional difference: `aix shell -- CMD` became `aix exec -- CMD`.
 use assert_cmd::Command;
 use assert_fs::prelude::*;
 

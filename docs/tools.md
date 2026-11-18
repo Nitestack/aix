@@ -73,6 +73,44 @@ programs.aix.tools.review = {
 };
 ```
 
+### Local gateway for API-key tools
+
+Set `local_gateway = true` on a tool to route it through a gateway that aix
+starts on `127.0.0.1` for that one launch and stops when the tool exits:
+
+```toml
+[tools.claude]
+api_format = "anthropic"
+local_gateway = true
+```
+
+```nix
+programs.aix.tools.claude = {
+  apiFormat = "anthropic";
+  localGateway = true;
+};
+```
+
+The tool receives a local `ANTHROPIC_BASE_URL` and/or `OPENAI_BASE_URL` (per
+`api_format`) and a random per-launch token instead of the real API key. aix
+forwards requests to the configured gateway with the real key. This gives you
+two things:
+
+- **Local usage tracking.** aix records request and token counts for each call
+  (no prompts or responses) so `aix usage` can report them. See
+  [Local usage](gateway.md#local-usage).
+- **Model restrictions.** A run policy with `allowed_models` can only be
+  enforced through a local gateway; see [Run policies](runs.md#run-policies).
+
+The child process must be on `$PATH` and must honor the base-URL variables.
+`--dry-run` shows the local-gateway wiring without starting anything.
+
+## herdr pane labels
+
+When aix launches a tool inside a herdr terminal pane (`HERDR_PANE_ID` is set
+and stdout is a terminal), it labels the pane `<tool> · <profile>` and keeps
+the label fresh while the tool runs. Nothing changes outside herdr.
+
 ## Environment variables emitted
 
 For API-key profiles, `aix env` and `aix exec` always inject all seven variables.

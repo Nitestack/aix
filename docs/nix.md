@@ -74,6 +74,7 @@ shows the Home Manager form next to the TOML:
 | `auth = { type = "chatgpt" }` | `programs.aix.profiles.<name>.auth = "chatgpt"` | [ChatGPT authentication](chatgpt.md) |
 | `[prompts.<name>]` | `programs.aix.prompts` | [Reusable prompt presets](inference.md#reusable-prompt-presets) |
 | `[tools.<name>]` | `programs.aix.tools.<name>` | [Named tool launch configuration](tools.md#named-tool-launch-configuration) |
+| `[tools.<name>] local_gateway` | `programs.aix.tools.<name>.localGateway` | [Local gateway for API-key tools](tools.md#local-gateway-for-api-key-tools) |
 | `[tools.<name>.chatgpt]` | `programs.aix.tools.<name>.chatgpt` | [Codex app-server](tools.md#codex-app-server-with-chatgpt-plan-authentication) |
 | `[profiles.<name>.tool_configs.codex]` | `programs.aix.profiles.<name>.toolConfigs.codex.configDir` | [Codex](tools.md#profile-specific-codex-configuration) |
 | `[profiles.<name>.tool_configs.pi]` | `programs.aix.profiles.<name>.toolConfigs.pi.agentDir` | [Pi](tools.md#profile-specific-pi-configuration) |

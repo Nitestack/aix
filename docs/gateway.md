@@ -138,6 +138,16 @@ profile. It reads aix's local usage-event store only: it does not contact a
 gateway, resolve API keys or gateway URLs, or fetch upstream history. For current
 gateway-reported budget information, use `aix spend`.
 
+aix only sees traffic that passes through it, so events are recorded for:
+
+- API-key tools with [`local_gateway = true`](tools.md#local-gateway-for-api-key-tools)
+- ChatGPT-plan tools that go through a local bridge: the `opencode` binding and
+  Codex app-server with `transport = "local_gateway"` (see
+  [ChatGPT plan integrations](tools.md#chatgpt-plan-integrations))
+
+A tool that talks to the gateway directly (the default for API-key tools) is
+not counted; use `aix spend` for those.
+
 ```bash
 # Default: the last 30 local calendar dates, including today
 aix usage work

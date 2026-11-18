@@ -1,64 +1,350 @@
-# Architecture checklist for PRs
+# aix — architecture
 
-## Manual verification before release
+## Purpose
 
-These scenarios need real shells or locally installed tools and are not fully covered by automated tests. Verify the relevant items before merging to `main` (pushes to main trigger a rolling `latest` release rebuild).
-
-- [ ] **Interactive profile selector** — run a profile-resolving command with no explicit profile, no `AIX_PROFILE`, and no `default_profile` in a real TTY; confirm the picker appears and selecting a profile works.
-- [ ] **Shell profile switching** — initialize a supported shell with `aix init`, run `aix use <profile>`, and confirm `aix current` reports it in the parent shell. Confirm only `AIX_PROFILE` persists there; credentials are not resolved or exported.
-- [ ] **`aix current`** — verify environment, default, and no-profile cases in a non-interactive session; confirm it never opens the picker.
-- [ ] **`aix shell`** — run `aix shell <profile>` in a real shell; confirm the child receives `AIX_PROFILE` and the seven generated credential variables (not `AIX_API_KEY`/`AIX_BASE_URL`).
-- [ ] **Configured named tool** — configure a generic `[tools.<name>]` entry with an executable alias and non-default `api_format`; confirm `aix <name>` launches that executable with tool env. Also confirm unconfigured `claude` and another tool retain their legacy fallbacks.
-- [ ] **Managed run** — run an interactive child with `aix run -- ...`; confirm streams stay attached, `AIX_RUN_ID` reaches the child, and `aix runs show` displays metadata without command arguments or output.
-- [ ] **Local usage** — run `aix usage` for an API-key or ChatGPT profile with no usable gateway/key secret; confirm it reports local events without contacting the gateway.
-- [ ] **Native key budget** — against a gateway implementing `GET /v1/key/info`, confirm spend/status use the authenticated key's native budget response and expose no other credential data.
-- [ ] **PowerShell env output** — run `aix env <profile> --format powershell` in a real PowerShell session and pipe to `Invoke-Expression`; confirm `$env:AIX_PROFILE` is set.
-- [ ] **Nushell env loading** — run `aix env <profile> --format nu` in a real Nushell session and source the output; confirm `$env.AIX_PROFILE` is set.
-- [ ] **cmd.exe env output** — run `aix env <profile> --format cmd > "%TEMP%\aix-env.cmd" && call "%TEMP%\aix-env.cmd"` in a real cmd.exe session; confirm `%AIX_PROFILE%` is set.
+`aix` is a standalone Rust CLI that resolves named profiles and secret sources
+from configuration. It launches downstream tools, offers OpenAI-compatible and
+LiteLLM gateway capabilities, provides one-shot inference, manages ChatGPT OAuth
+sign-in state, and can record metadata-only provenance around arbitrary child
+processes. Nix is a deployment mechanism and config generator, not a runtime
+dependency.
 
 ---
 
+## Module boundaries
 
+### `src/cli.rs` — CLI parsing
 
-Before submitting a PR, confirm each item below.
+Owns the CLI surface: flags, subcommands, value types.  
+**Rule:** contains no business logic. Parsing only.
+
+- Global flags: `--profile`, `--non-interactive`, `--timeout`, `--config`, `--json`
+- Subcommands: `init`, `use`, `current`, `profiles`, `policies`, `policy`, `env`, `shell`, `exec`, `config`, `auth`, `spend`, `status`, `gate`, `doctor`, `models`, `usage`, `ask`, `prompt`, `run`, `runs`, `cache`, `upgrade` (hidden alias `update`), `<tool>` (external catch-all)
+- Format enum (`EnvFormat`): sh / json / nu / fish / powershell / cmd
+
+`src/main.rs` only declares modules and calls `app::run()`. `src/app.rs` installs
+the error reporter, rejects `--json` for commands without JSON support, and
+dispatches each subcommand to its module under `src/commands/`.
+
+### `src/config.rs` — Config loading and validation
+
+Owns the config file data model and all file I/O related to config.  
+**Rule:** no knowledge of secrets resolution or process launching.
+
+| Function | Responsibility |
+|---|---|
+| `find_config_path()` | Discover config file: explicit path → XDG dirs |
+| `load()` | Parse by extension: TOML · YAML · JSON · JSON5 |
+| `validate()` | Check profile labels, model settings, prompt presets, tool names/commands/env names, and related config invariants |
+| `load_env_files()` | Load `.env` files listed under `env_files`; real env wins |
+| `sorted_profiles()` | Return `(name, label)` pairs sorted by name |
+
+Config types: `Config`, `Endpoint`, `Profile`, `ProfileAuth`, `Provider`, `Gateway`, `CacheConfig`, `ModelConfig`, `PromptPreset`, `RunPolicy`, and `Tool`. A profile has exactly one auth source: a legacy `api_key` or `auth = { type = "chatgpt" }`. ChatGPT profiles may omit the shared endpoint and cannot set a profile `base_url`.
+A profile can override `endpoint.base_url` with `base_url` and append custom, secret-backed variables with `env`; those custom values can override generated variables.
+`gateway` and `provider` are optional metadata. Run policies constrain profile, duration, allowed models, and tags; `max_budget` is not supported and is rejected during config parsing.
+`models` contains defaults and aliases. `tools.<name>` contains optional `command`, required `api_format`, and optional secret-backed `env` launch settings. Its optional `chatgpt` block declares the access-token environment name, prepended arguments, and inherited variables to clear. `ApiFormat` is serialized as `anthropic`, `openai`, or `both` for tool entries.
+
+### `src/secrets.rs` — Secret resolution
+
+Owns the `SecretSource` enum and `SecretString` wrapper.  
+**Rule:** resolved values must never appear in `Debug`, `Display`, or error messages.
+
+| Secret source | Specified as (TOML) |
+|---|---|
+| `SecretSource::Direct` | `api_key = "literal"` |
+| `SecretSource::Env` | `api_key = { env = "VAR" }` |
+| `SecretSource::File` | `api_key = { file = "/path" }` (tilde expanded) |
+| `SecretSource::Command` | `api_key = { command = "op read ..." }` (stdout) |
+
+`SecretString` zeroes its memory on drop. Its `Debug` and `Display` impls
+emit `[secret]` — never the actual value.
+
+### `src/auth/` and `src/commands/auth.rs` — ChatGPT auth lifecycle
+
+`AuthService` owns sign-in, offline status, logout, and the access-token refresh
+path. `protocol.rs` builds the PKCE authorization request, validates the loopback
+callback, exchanges authorization codes, verifies ID-token signatures and
+claims from OpenID metadata/JWKS, discovers revocation, and refreshes tokens.
+`store.rs` writes versioned, profile-scoped records atomically and uses file
+locks to serialize login/logout/refresh across processes. Direct ChatGPT tool
+bindings receive a usable access token at launch. Gateway-backed bindings use
+the shared Responses bridge, which asks `AuthService` for a token per upstream
+inference request instead.
+
+The store lives under the platform local application-data directory (or
+`AIX_AUTH_DIR`). On Unix, the directory and files are restricted to the owner
+(0700/0600). OAuth tokens are persisted as local JSON and are not encrypted at
+rest. The status command reads only local state and never returns token values.
+The ordinary launch boundary exposes only the short-lived access token, under
+the configured `access_token_env`; refresh tokens, ID tokens, client IDs, and
+tokens for other profiles remain in the auth service/store. OpenCode and
+Codex-local-gateway children instead receive only a random bridge bearer token;
+the ChatGPT access token is added to a request inside aix and is never placed
+in the child environment. No OAuth token is exported through `env`, `shell`,
+generic `exec`, inference, or an unconfigured tool.
+`aix run` uses the same explicit binding. Run policies apply local profile,
+duration, model, and tag constraints; they do not create gateway credentials or
+enforce spend caps.
+
+### `src/gateway/` — Gateway capability clients
+
+Gateway HTTP responsibilities are split between a shared transport and
+capability-specific clients:
+
+- `transport.rs` owns the normalized bare gateway URL, API key, and bounded
+  `reqwest::Client`; it provides bearer-authenticated JSON request helpers and
+  common HTTP error handling.
+- `openai.rs` exposes OpenAI-compatible `/v1/*` endpoints.
+- `budget.rs` fetches current-key budget information from the native
+  `GET /v1/key/info` endpoint. The returned native budget data is sanitized
+  before `aix spend`, `aix status`, and `aix doctor` use it.
+- `aix models` discovers model IDs and `aix ask` / `aix prompt` send one-shot text requests
+  through the OpenAI-compatible client. `aix status` uses its models endpoint
+  for a live authenticated connectivity probe.
+
+Keep endpoint-specific behavior in the corresponding capability client rather
+than growing a single catch-all gateway client.
+
+### `src/commands/doctor/`, `gate/`, and `policies.rs` — Preflight checks
+
+`aix doctor` runs ordered, read-only checks (config, secrets, gateway
+capabilities, budget, cache) and maps the first failing layer to the stable
+exit-code categories in `error.rs`. `aix gate --policy NAME` runs the same kind
+of checks for one run policy before a run starts. `aix policies` / `aix policy
+show` only read config.
+
+### Usage observation — `src/local_gateway/`, `src/usage_observer/`, `usage_event.rs`, `usage_store.rs`
+
+Usage is recorded only for traffic that passes through aix. `local_gateway/`
+holds the per-launch loopback servers: `api_key.rs` (opt-in with
+`tools.<name>.local_gateway = true` for API-key profiles) forwards to the
+profile's gateway with the real key, and `chatgpt_responses.rs` serves the
+ChatGPT bridges. In both cases the child gets only a random local bearer token.
+`usage_observer/` parses Anthropic and OpenAI responses (JSON and SSE) for
+token counts without keeping content; `usage_event.rs` builds metadata-only
+events and `usage_store.rs` appends them to the local store that `aix usage`
+reads.
+
+### `src/commands/usage.rs` — Local usage reporting
+
+`aix usage` reads `UsageStore` events and never calls a gateway client or
+resolves API-key/base-URL secrets. Date bounds and exact model, protocol, tool,
+and run filters apply to local events; reports preserve token completeness,
+run attribution, and cost provenance. Unknown costs remain unavailable, and
+ChatGPT plan usage is not represented as USD spend.
+
+### `src/inference.rs` — Shared one-shot inference service
+
+Owns the common `ask`/`prompt` input collection, model and profile resolution,
+env-file loading, gateway request, response parsing, and output behavior.
+Command modules provide the instruction and options; they do not duplicate HTTP
+or context handling.
+
+Prompt presets are generic user configuration. They add no template language,
+implicit filesystem/Git discovery, shell execution, or domain-specific dispatch.
+
+### `src/commands/env.rs` — Credential collection and env rendering
+
+Owns reusable profile credential collection and `aix env` output formatting.
+**Rule:** credential output order is deterministic; format functions are pure.
+
+- `resolve_profile()`: effective explicit profile → config `default_profile` → interactive TUI (TTY only); `app.rs` gives a subcommand positional profile precedence over global `--profile`/`AIX_PROFILE`
+- `collect_vars()`: builds the ordered `(name, value)` list for a given `ApiFormat`
+- `format_vars()`: dispatches to one of six format functions (sh / json / nu / fish / powershell / cmd)
+
+For API-key profiles, `env` hardcodes `ApiFormat::Both` and emits all seven
+variables. ChatGPT profiles are rejected rather than exporting OAuth tokens:
+
+| Variable | Value |
+|---|---|
+| `AIX_PROFILE` | Selected profile name |
+| `ANTHROPIC_API_KEY` | Resolved API key |
+| `ANTHROPIC_BASE_URL` | Gateway base URL |
+| `OPENAI_API_KEY` | Resolved API key |
+| `OPENAI_BASE_URL` | Gateway base URL with `/v1` appended |
+| `LITELLM_API_KEY` | Resolved API key |
+| `LITELLM_BASE_URL` | Gateway base URL with `/v1` appended |
+
+`collect_vars()` accepts an `ApiFormat` argument so named-tool dispatch can emit a subset:
+Anthropic → 5 vars (`AIX_PROFILE` + `ANTHROPIC_*` + `LITELLM_*`), OpenAi → 5 vars (`AIX_PROFILE` + `OPENAI_*` + `LITELLM_*`).
+`AIX_API_KEY` and `AIX_BASE_URL` are not generated by aix; profile or tool env may set them explicitly.
+
+### `src/commands/launch.rs` — Process launching
+
+Shared by `exec`, `shell`, `run`, and external named-tool dispatch.
+**Rule:** resolve config and credentials, compose the appropriate environment,
+launch a child, and preserve its exit behavior. API-key launches keep the
+generated/profile/tool precedence and legacy named-tool fallbacks. ChatGPT
+launches require `tools.<name>.chatgpt`, clear standard inherited API-key
+variables and configured `clear_env`, then apply profile env and tool env.
+Direct bindings receive the selected access token last; OpenCode and opted-in
+Codex app-server launches instead receive a local bridge bearer. Codex's
+dynamic provider overrides are appended after caller arguments so they win over
+endpoint settings from inherited or caller configuration. Dry-run reports the
+selected transport, arguments, and variable names without starting a bridge or
+loading/refreshing OAuth credentials. An unconfigured API-key `aix run`
+command receives both credential formats.
+
+### `src/local_gateway/chatgpt_responses.rs` — ChatGPT Responses transport
+
+This reusable SIWC adapter binds an ephemeral listener to `127.0.0.1`, generates
+a per-launch bridge secret, accepts only authenticated `POST /v1/responses` and
+`GET /v1/models`, and fixes the upstream base to `https://api.openai.com/v1/`.
+The real access token is fetched from `AuthService` for each upstream request.
+Request normalization, SSE forwarding, and metadata-only usage observation live
+here rather than in tool-specific launch code. Dropping the sidecar cancels the
+listener and in-flight requests. It does not implement a general proxy.
+
+### OpenCode and Codex launch adapters
+
+`src/commands/launch/opencode.rs` supplies OpenCode v2's process-local
+`aix-chatgpt` Responses provider configuration while delegating traffic to the
+shared bridge. For Codex, `src/commands/launch/chatgpt.rs` adds one-shot `-c`
+overrides for a unique `aix_chatgpt_plan` provider and the runtime loopback URL.
+Only configured OpenCode and Codex app-server bindings may select the local
+ChatGPT transport; other ChatGPT tools remain direct by default. Neither adapter
+writes the tool's config, auth, session, or project files.
+
+### Named-tool dispatch (`aix <tool>`) — in `src/app.rs`
+
+`aix <tool>` is handled by the `Command::Tool` external subcommand in `app.rs`.
+The launcher checks `tools.<name>` first, then applies compatibility fallback.
+The only harness-specific behavior is process-local provider setup for OpenCode
+and Codex app-server; both reuse the shared ChatGPT Responses bridge.
+
+- API-key profile + configured `[tools.<name>]` → configured command, format, and env
+- API-key profile + unconfigured `aix claude` → `ApiFormat::Anthropic`
+- API-key profile + other unconfigured `aix <tool>` → `ApiFormat::OpenAi`
+- ChatGPT profile + configured direct tool → explicit access-token handoff
+- ChatGPT profile + configured `opencode` tool → local bridge credential only
+- ChatGPT profile + configured Codex app-server with `transport = "local_gateway"` → local bridge credential only
+- ChatGPT profile + missing binding → capability error; no API-key fallback
+
+Usage: `aix <tool> [PROFILE] [--dry-run] [-- TOOL_ARGS...]`
+
+### Managed run history — `src/commands/run.rs`, `runs.rs`, and `src/run_history.rs`
+
+`aix run` wraps an arbitrary child with a UUID and a versioned local record.
+The child receives informational `AIX_RUN_*` metadata; standard streams remain
+inherited. A configured tool's prepend arguments and ChatGPT binding are also
+used by plain managed runs. OAuth tokens are never recorded. `RunStore` owns
+state-directory selection, atomic record writes, listing, and record lookup. It
+never captures command arguments or child content. Existing records remain
+available offline, including records with historical lease metadata; an
+upgrade does not contact the gateway or revoke previously exported keys.
+`aix exec` remains stateless.
+
+### `src/herdr.rs` — Terminal pane labels
+
+When an interactive launch runs inside a herdr terminal
+pane (`HERDR_PANE_ID` is set and stdout is a terminal), aix labels the pane
+`<tool> · <profile>` and refreshes the label while the tool runs. It is best
+effort and a no-op everywhere else.
+
+### `src/commands/upgrade/` — Self-upgrade
+
+`aix upgrade` detects the install method from the running binary's path and the
+system package databases (`detect.rs`), then hands off to that method: a package
+manager, a verified `.deb`/`.rpm` from the GitHub release (`release.rs`), or the
+installer script. Nix installs and source builds only get printed guidance
+(`nix.rs`); aix never modifies a Nix-managed binary. It reads no aix config.
+
+### `src/error.rs` — Error types
+
+All application errors. Uses `thiserror`.  
+**Rule:** error messages must name identifiers (env var names, file paths, command strings) — never resolved secret values.
+
+### Nix integration (`nix/home-manager.nix`)
+
+Generates the TOML config file read by the CLI, including profile/model settings,
+generic `programs.aix.prompts` presets, and `programs.aix.tools` launch wiring.
+**Rule:** this layer may only generate config. No runtime dependency on Nix from Rust.
+
+---
 
 ## Invariants
 
-- [ ] No Nix paths hardcoded in Rust (`/run/secrets`, `/nix/store`, etc.)
-- [ ] No profile names hardcoded in Rust (`"swtb"`, `"work"`, etc.)
-- [ ] No JSON hand-rolled — use `serde_json`
-- [ ] No silent `.env` auto-loading — user must opt in via `env_files` in config
-- [ ] No secret values in logs, errors, or non-env output
-- [ ] `aix use`/`aix current` do not resolve or export credentials
-- [ ] Run history stores metadata only: no args, prompts, streams, or resolved secrets
+These invariants must hold across all future changes.
 
-## Adding a new provider or gateway
+1. **Rust core does not know Nix paths.**  
+   No `/run/secrets`, `/nix/store`, or NixOS-specific paths hardcoded in Rust. The CLI
+   accepts secrets through config fields backed by literal values, env vars, files, or commands.
 
-- [ ] Added as a named profile in user config — no Rust changes needed
-- [ ] If a new credential format is required: update `ApiFormat`, config parsing, the Home Manager enum, credential collection, and tests
-- [ ] Keep process launching generic; tool-specific executable/format/env wiring belongs in `[tools.<name>]`, not harness-specific branches
+2. **Nix generates config; Rust reads it.**  
+   Business logic lives in Rust. Nix produces the config file consumed by the CLI.
 
-## Adding a new output format
+3. **Secret values must never be logged or printed unless intentionally requested.**  
+   `SecretString::Debug` and `SecretString::Display` emit `[secret]`.  
+   `SecretSource::Direct::Debug` emits `[redacted]`.  
+   Error messages include the source identifier (env var name, file path, command string)
+    but not the resolved value. ChatGPT OAuth tokens are intentionally persisted
+    in the owner-only auth store, but never printed or exported.
 
-- [ ] Format function added in `commands/env.rs`
-- [ ] Unit tests for correct syntax and special-character escaping
-- [ ] Integration test in `tests/cli_env.rs`
+4. **Output formats must be tested.**  
+    Every format function (sh, json, nu, fish, powershell, cmd) has unit tests for:
+   - correct syntax for the target shell
+   - proper escaping of special characters (quotes, backslashes, newlines)
 
-## Adding a new secret source
+5. **Gateway and tool configuration stays declarative.**
+   Gateway endpoints and metadata belong in profiles/config. Tool-specific
+   executable, credential format, and extra env belong in `[tools.<name>]`;
+   launch logic stays generic except for the narrowly scoped local gateways
+   (API-key usage observation, the OpenCode SIWC bridge, and Codex app-server),
+   which must not grow into a general harness proxy framework.
 
-- [ ] New variant in `SecretSource` with custom `Debug` that hides the value
-- [ ] Resolution errors include source identifier (name/path), not the resolved value
-- [ ] Unit tests for deserialization and resolution
+6. **Config format is stable.**  
+   TOML, YAML, JSON, and JSON5 config files must parse to identical in-memory
+   representations. Any structural change to config types such as `Config`,
+   `Endpoint`, `Profile`, `ModelConfig`, or `Tool` requires updating all four
+   format fixtures in tests.
 
-## Tests
+---
 
-- [ ] Config change? Update all four format fixtures (TOML, YAML, JSON, JSON5)
-- [ ] Home Manager config change? Add or update a rendering check
-- [ ] Nix file changed? Run `nixfmt` (`nixfmt-rfc-style`)
-- [ ] New invariant? Add a named test that asserts it explicitly
-- [ ] `cargo fmt --all && cargo clippy --all-targets -- -D warnings` passes
+## How to add a new gateway or provider
 
-## Full reference
+No Rust changes are required for most provider additions.
 
-See [`docs/aix/architecture.md`](../../docs/aix/architecture.md) for module
-boundaries, invariants, and rationale.
+1. Set `base_url` to the gateway URL via env var, file, or command.
+2. Add a named profile under `[profiles.<name>]` with the appropriate `api_key`.
+3. Optionally set `provider` and `gateway` as metadata. `aix spend` uses the
+   gateway's native current-key budget endpoint; `aix usage` is local-only and
+   does not depend on gateway metadata.
+
+For API-key profiles, `aix env` and `aix exec` emit Anthropic, OpenAI, and
+LiteLLM credential sets. ChatGPT profiles are rejected by those commands rather
+than exporting OAuth tokens. Configured tools select a format in `[tools.<name>]`
+for API-key profiles; unconfigured named tools retain the `claude`/OpenAI
+compatibility defaults. ChatGPT launches require an explicit auth binding.
+Tool env overrides profile env, which overrides generated credentials for
+API-key launches.
+
+If a new credential format is needed, update `ApiFormat`, its config
+deserialization and Home Manager enum, `collect_vars()`, and the corresponding
+tests. Do **not** add a new subcommand or provider-specific branch to process
+launching.
+
+---
+
+## Do not
+
+| Rule | Reason |
+|---|---|
+| Do not hardcode `/run/secrets` or any Nix path in Rust | The CLI must work without Nix at runtime |
+| Do not hardcode profile names (e.g. `"swtb"`, `"work"`) in Rust | Profile names are user config, not code |
+| Do not hand-roll JSON | Use `serde_json`; malformed JSON in env output breaks downstream consumers |
+| Do not auto-load `.env` files by default | The user must opt in via `env_files` in config; silent auto-loading causes surprising precedence behaviour |
+| Do not print secret values | Any log, debug output, or error message that contains a resolved secret is a security defect |
+| Do not add harness-specific workflow logic to launch commands | `[tools]` describes executable, credential format, and env only; routing and records stay generic |
+| Do not add a new subcommand for a new AI tool unless it needs special argv construction | Use `exec` instead |
+
+---
+
+## Testing requirements
+
+Before adding a feature, verify that:
+
+- Config parsing tests cover all four formats (TOML, YAML, JSON, JSON5) and assert
+  identical effective behaviour.
+- Every new `ApiFormat` variant has a `collect_vars` unit test.
+- Every new format function has escape-sequence unit tests (currently six: sh, json, nu, fish, powershell, cmd).
+- Secret values never appear in non-env output (`exec --dry-run`, `profiles`, error messages).

@@ -154,7 +154,7 @@ Release notes are in the [changelog](CHANGELOG.md).
 
 | | |
 |---|---|
-| [Installation](docs/installation.md) | Installer scripts, Cargo, prebuilt binaries, Nix, nightly builds |
+| [Installation](docs/installation.md) | Package managers, installer scripts, Cargo, Nix, nightly builds, `aix upgrade` |
 | [Configuration](docs/configuration.md) | Config location and format, secret sources, models and aliases |
 | [Running AI tools](docs/tools.md) | `aix <tool>`, `[tools.<name>]`, emitted variables, Codex/Pi/OpenCode specifics |
 | [Shell integration](docs/shell-integration.md) | `aix use`, `aix env`, `aix exec`, `aix shell` |
@@ -166,6 +166,8 @@ Release notes are in the [changelog](CHANGELOG.md).
 | [Command reference](docs/commands.md) | All commands and global options |
 | [JSON output and exit codes](docs/json-output.md) | Scripting contract |
 | [Security notes](docs/security.md) | How secrets and credentials are handled |
+
+Working on aix itself? See [CONTRIBUTING.md](CONTRIBUTING.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## License
 

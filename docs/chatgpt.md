@@ -55,4 +55,3 @@ app-server only, not the Codex TUI or other Codex modes.
 - [OpenCode v2 with ChatGPT plan authentication](tools.md#opencode-v2-with-chatgpt-plan-authentication)
 - [Named tool launch configuration](tools.md#named-tool-launch-configuration) for the `[tools.<name>.chatgpt]` binding
 - [ChatGPT OAuth credentials](security.md#chatgpt-oauth-credentials): where the auth store lives and how it is protected
-- [ChatGPT Responses local gateway](aix/chatgpt-local-gateway.md): design notes for the local-gateway transport
