@@ -27,8 +27,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "aix"
-version = "0.1.0"
+name = "aix-rs"
+version = "1.0.0"
 dependencies = [
  "assert_cmd",
  "assert_fs",
