@@ -67,9 +67,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # Packaging tooling (nfpm.yaml, installer scripts) comes from the commit
+      # running this workflow, so older tags can be rebuilt with current
+      # tooling; the version comes from the built ref's Cargo.toml.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref }}
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v8
         with:
@@ -89,8 +92,11 @@ jobs:
           sudo install -m 755 nfpm /usr/local/bin/nfpm
 
       - name: Build .deb and .rpm packages
+        env:
+          REF: ${{ inputs.ref }}
         run: |
-          VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          VERSION="$(git show "${REF}:Cargo.toml" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n1)"
+          test -n "$VERSION"
           export VERSION
           mkdir -p pkg
           for arch in amd64 arm64; do

@@ -1,0 +1,62 @@
+name: Backfill release assets
+
+# Rebuild an existing release tag with the current build/packaging pipeline,
+# replace its assets (binaries, .deb/.rpm, SHA256SUMS, installers), then publish
+# it to the package managers. Use when the pipeline gains new assets or
+# channels and you don't want to cut a release just for that.
+# Does not touch crates.io.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild (e.g. v1.0.0)
+        required: true
+        type: string
+
+concurrency:
+  group: backfill-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check release exists
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName
+
+  build:
+    name: Build
+    needs: check
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ inputs.tag }}
+
+  upload:
+    name: Replace release assets
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries
+          path: binaries
+
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" binaries/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  packages:
+    name: Package managers
+    needs: upload
+    uses: ./.github/workflows/packages.yml
+    with:
+      tag: ${{ inputs.tag }}
+    secrets: inherit
