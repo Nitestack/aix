@@ -87,31 +87,31 @@ the exception: they are retained in aix's owner-only local auth store. See
 
 ## Installation
 
-**Linux / macOS:**
+| Platform | Command |
+|----------|---------|
+| macOS / Linux ([Homebrew](https://brew.sh)) | `brew install get-aix/tap/aix` |
+| Windows ([winget](https://learn.microsoft.com/windows/package-manager/)) | `winget install get-aix.aix` |
+| Windows ([Scoop](https://scoop.sh)) | `scoop bucket add get-aix https://github.com/get-aix/scoop-bucket`<br>`scoop install get-aix/aix` |
+| Arch Linux ([AUR](https://aur.archlinux.org/packages/aix-rs-bin)) | `yay -S aix-rs-bin` |
+| Any, via Rust ([crates.io](https://crates.io/crates/aix-rs)) | `cargo binstall aix-rs` or `cargo install aix-rs` |
+| Nix | `nix run github:get-aix/aix -- --help`, or the [home-manager module](docs/nix.md) |
+
+Or use the installer script, which needs no package manager:
 
 ```sh
+# Linux / macOS
 curl -fsSL https://github.com/get-aix/aix/releases/latest/download/install.sh | sh
 ```
 
-**Windows (PowerShell):**
-
 ```powershell
+# Windows (PowerShell)
 irm https://github.com/get-aix/aix/releases/latest/download/install.ps1 | iex
 ```
 
-**Cargo** (the crate is `aix-rs`; the binary is `aix`):
-
-```sh
-cargo install aix-rs
-```
-
-**Nix:** `nix run github:get-aix/aix -- --help`, or use the
-[home-manager module](docs/nix.md).
-
-The installers fetch the latest stable [release](https://github.com/get-aix/aix/releases).
-Prebuilt binaries cover Linux x86_64/aarch64, macOS arm64/x86_64, and Windows
-x86_64. See [Installation](docs/installation.md) for custom install locations,
-manual downloads, and [nightly builds](https://github.com/get-aix/aix/releases/tag/nightly).
+The crate is called `aix-rs`, but every method installs a binary named `aix`.
+Prebuilt binaries cover Linux x86_64/aarch64 (static), macOS arm64/x86_64, and
+Windows x86_64. See [Installation](docs/installation.md) for checksums, manual
+downloads, custom install locations, and [nightly builds](https://github.com/get-aix/aix/releases/tag/nightly).
 Release notes are in the [changelog](CHANGELOG.md).
 
 ## Quick start

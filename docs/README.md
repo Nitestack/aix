@@ -4,7 +4,7 @@ Start with [Installation](installation.md), then [Configuration](configuration.m
 
 ## Setup
 
-- [Installation](installation.md) — installer scripts, Cargo, prebuilt binaries, Nix, nightly builds
+- [Installation](installation.md) — Homebrew, winget, Scoop, AUR, installer scripts, Cargo, prebuilt binaries, Nix, nightly builds
 - [Configuration](configuration.md) — config file location and format, secret sources, model defaults and aliases
 - [Nix and home-manager](nix.md) — declarative config with the home-manager module
 - [ChatGPT authentication](chatgpt.md) — Sign in with ChatGPT profiles
@@ -25,6 +25,7 @@ Start with [Installation](installation.md), then [Configuration](configuration.m
 
 ## Design and maintainer docs
 
+- [Releasing](releasing.md) — release flow, package-manager publishing, required secrets
 - [Architecture](aix/architecture.md)
 - [Current behavior](aix/current-behavior.md)
 - [Migration notes](aix/migration.md)

@@ -3,8 +3,9 @@
 aix is a single binary named `aix`. Pick one of the methods below; after
 installing, continue with [Configuration](configuration.md).
 
-- [Installer scripts](#installer-scripts) — prebuilt binary, recommended for most users
-- [Cargo](#cargo) — build from crates.io
+- [Package managers](#package-managers): Homebrew, winget, Scoop, AUR
+- [Installer scripts](#installer-scripts): prebuilt binary, no package manager needed
+- [Cargo](#cargo): prebuilt via cargo-binstall, or build from crates.io
 - [Manual download](#manual-download) — place the binary yourself
 - [Nix](#nix) — flake, overlay, or home-manager module
 - [Nightly builds](#nightly-builds) — prebuilt binaries from `main`
@@ -19,11 +20,59 @@ includes prebuilt binaries for:
 
 | Platform | Asset name |
 |----------|-----------|
-| Linux x86_64 | `aix-x86_64-unknown-linux-gnu` |
-| Linux aarch64 | `aix-aarch64-unknown-linux-gnu` |
+| Linux x86_64 (static, any distro) | `aix-x86_64-unknown-linux-musl` |
+| Linux aarch64 (static, any distro) | `aix-aarch64-unknown-linux-musl` |
+| Linux x86_64 (glibc) | `aix-x86_64-unknown-linux-gnu` |
+| Linux aarch64 (glibc) | `aix-aarch64-unknown-linux-gnu` |
 | macOS arm64 | `aix-aarch64-apple-darwin` |
 | macOS x86_64 | `aix-x86_64-apple-darwin` |
 | Windows x86_64 | `aix-x86_64-pc-windows-msvc.exe` |
+
+The static `musl` builds are what the installer scripts and package managers
+use. The `gnu` builds are kept for existing download links. Each release also
+includes a `SHA256SUMS` file. The installer scripts verify against it
+automatically. To check a manual download yourself:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+## Package managers
+
+The packages below are updated automatically when a release is published.
+
+### Homebrew (macOS, Linux)
+
+```sh
+brew install get-aix/tap/aix
+```
+
+The formula lives in [get-aix/homebrew-tap](https://github.com/get-aix/homebrew-tap).
+
+### winget (Windows)
+
+```powershell
+winget install get-aix.aix
+```
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add get-aix https://github.com/get-aix/scoop-bucket
+scoop install get-aix/aix
+```
+
+### AUR (Arch Linux)
+
+The package is [`aix-rs-bin`](https://aur.archlinux.org/packages/aix-rs-bin)
+(prebuilt static binary). Install it with any AUR helper:
+
+```sh
+yay -S aix-rs-bin    # or: paru -S aix-rs-bin
+```
+
+It conflicts with the unrelated AUR packages `aix` and `aix-bin`, which also
+install a `/usr/bin/aix`.
 
 ## Installer scripts
 
@@ -68,8 +117,8 @@ the installed binary is still called `aix`:
 cargo install aix-rs
 ```
 
-If you use [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), you
-can install a prebuilt binary instead of compiling:
+With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), you get the
+prebuilt release binary instead of compiling:
 
 ```bash
 cargo binstall aix-rs
