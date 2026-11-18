@@ -59,7 +59,7 @@ Add the flake input, import the module, and declare your config declaratively. N
 
 ```nix
 # flake.nix
-inputs.aix.url = "github:Nitestack/aix";
+inputs.aix.url = "github:get-aix/aix";
 ```
 
 ```nix
@@ -103,7 +103,7 @@ home.packages = [ pkgs.aix-rs ];
 #### One-off / try it out
 
 ```bash
-nix run github:Nitestack/aix -- --help
+nix run github:get-aix/aix -- --help
 ```
 
 ### Via Cargo
@@ -130,7 +130,7 @@ The quickest way to install — the script auto-detects your platform, downloads
 **Linux / macOS:**
 
 ```sh
-curl -fsSL https://github.com/Nitestack/aix/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/get-aix/aix/releases/latest/download/install.sh | sh
 ```
 
 Installs to `~/.local/bin` by default. Adds the directory to your shell rc file (`~/.zshrc`, `~/.bashrc`, `~/.config/fish/config.fish`, or `~/.profile`). Restart your terminal or source the rc file after installing.
@@ -138,7 +138,7 @@ Installs to `~/.local/bin` by default. Adds the directory to your shell rc file 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://github.com/Nitestack/aix/releases/latest/download/install.ps1 | iex
+irm https://github.com/get-aix/aix/releases/latest/download/install.ps1 | iex
 ```
 
 Installs to `%LOCALAPPDATA%\Programs\aix` by default. Adds the directory to the user `Path` environment variable. Restart your terminal after installing.
@@ -148,16 +148,16 @@ Installs to `%LOCALAPPDATA%\Programs\aix` by default. Adds the directory to the 
 Set `AIX_INSTALL_DIR` before running either script to override the default destination:
 
 ```sh
-AIX_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/Nitestack/aix/releases/latest/download/install.sh | sh
+AIX_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/get-aix/aix/releases/latest/download/install.sh | sh
 ```
 
 ```powershell
-$env:AIX_INSTALL_DIR = 'C:\Tools\aix'; irm https://github.com/Nitestack/aix/releases/latest/download/install.ps1 | iex
+$env:AIX_INSTALL_DIR = 'C:\Tools\aix'; irm https://github.com/get-aix/aix/releases/latest/download/install.ps1 | iex
 ```
 
 #### Manual download
 
-To place the binary yourself, download the appropriate asset directly from the [latest release](https://github.com/Nitestack/aix/releases/latest):
+To place the binary yourself, download the appropriate asset directly from the [latest release](https://github.com/get-aix/aix/releases/latest):
 
 | Platform | Asset name |
 |----------|-----------|
