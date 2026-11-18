@@ -85,6 +85,14 @@ jobs:
           TAG: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
         run: gh release upload "$TAG" binaries/* --clobber --repo "$GITHUB_REPOSITORY"
 
+  packages:
+    name: Package managers
+    needs: [release, upload]
+    uses: ./.github/workflows/packages.yml
+    with:
+      tag: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+    secrets: inherit
+
   release-pr:
     name: Update release PR
     if: github.repository_owner == 'get-aix'

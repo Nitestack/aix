@@ -1,0 +1,162 @@
+name: Package managers
+
+# Publishes a GitHub release to Homebrew (own tap), Scoop (own bucket), AUR and
+# winget. Called by release.yml after binaries are attached; can also be run
+# by hand (Actions → Package managers → Run workflow) to retry or backfill.
+#
+# Each channel is skipped cleanly when its secret is not configured:
+#   PACKAGING_TOKEN      fine-grained PAT: Contents read/write on
+#                        get-aix/homebrew-tap and get-aix/scoop-bucket
+#   AUR_SSH_PRIVATE_KEY  SSH key registered on the AUR account
+#   WINGET_TOKEN         classic PAT with `public_repo`, owner has a fork of
+#                        microsoft/winget-pkgs (set repo variable
+#                        WINGET_FORK_USER to that account)
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (e.g. v1.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: Render manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir .
+
+      - name: Render
+        run: scripts/packaging/render.sh "${{ inputs.tag }}" SHA256SUMS manifests
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: manifests
+          path: manifests/
+
+  homebrew:
+    name: Homebrew tap
+    needs: render
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.PACKAGING_TOKEN }}
+    steps:
+      - if: env.TOKEN == ''
+        run: echo "::notice::PACKAGING_TOKEN not set; skipping Homebrew tap"
+      - if: env.TOKEN != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: manifests
+          path: manifests
+      - if: env.TOKEN != ''
+        uses: actions/checkout@v7
+        with:
+          repository: get-aix/homebrew-tap
+          token: ${{ secrets.PACKAGING_TOKEN }}
+          path: tap
+      - name: Commit formula
+        if: env.TOKEN != ''
+        working-directory: tap
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p Formula
+          cp ../manifests/homebrew/Formula/aix.rb Formula/aix.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/aix.rb
+          git diff --cached --quiet && { echo "Formula already up to date"; exit 0; }
+          git commit -m "aix ${TAG#v}"
+          git push
+
+  scoop:
+    name: Scoop bucket
+    needs: render
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.PACKAGING_TOKEN }}
+    steps:
+      - if: env.TOKEN == ''
+        run: echo "::notice::PACKAGING_TOKEN not set; skipping Scoop bucket"
+      - if: env.TOKEN != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: manifests
+          path: manifests
+      - if: env.TOKEN != ''
+        uses: actions/checkout@v7
+        with:
+          repository: get-aix/scoop-bucket
+          token: ${{ secrets.PACKAGING_TOKEN }}
+          path: bucket-repo
+      - name: Commit manifest
+        if: env.TOKEN != ''
+        working-directory: bucket-repo
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p bucket
+          cp ../manifests/scoop/bucket/aix.json bucket/aix.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/aix.json
+          git diff --cached --quiet && { echo "Manifest already up to date"; exit 0; }
+          git commit -m "aix: Update to version ${TAG#v}"
+          git push
+
+  aur:
+    name: AUR (aix-rs-bin)
+    needs: render
+    runs-on: ubuntu-latest
+    env:
+      KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - if: env.KEY == ''
+        run: echo "::notice::AUR_SSH_PRIVATE_KEY not set; skipping AUR"
+      - if: env.KEY != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: manifests
+          path: manifests
+      - if: env.KEY != ''
+        uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
+        with:
+          pkgname: aix-rs-bin
+          pkgbuild: manifests/aur/PKGBUILD
+          commit_username: ${{ vars.AUR_USERNAME || 'aix-release-bot' }}
+          commit_email: ${{ vars.AUR_EMAIL || 'aix-release-bot@users.noreply.github.com' }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ inputs.tag }}"
+          test: true
+
+  winget:
+    name: winget
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - if: env.TOKEN == ''
+        run: echo "::notice::WINGET_TOKEN not set; skipping winget"
+      - if: env.TOKEN != ''
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: get-aix.aix
+          installers-regex: '-pc-windows-msvc\.exe$'
+          release-tag: ${{ inputs.tag }}
+          fork-user: ${{ vars.WINGET_FORK_USER || github.repository_owner }}
+          token: ${{ secrets.WINGET_TOKEN }}
