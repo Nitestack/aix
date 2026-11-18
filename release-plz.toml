@@ -6,3 +6,15 @@ git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 # Keep Cargo.lock dependency versions as-is in release PRs.
 dependencies_update = false
+# Only user-facing changes open/update a release PR. ci:, docs:, build:,
+# chore:, test:, style: and refactor: commits never trigger a release.
+release_commits = "^(feat|fix|perf)(\\(.*\\))?!?:"
+
+[changelog]
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^(ci|docs|build|chore|test|style|refactor)", skip = true },
+  { message = ".*", group = "Other" },
+]
