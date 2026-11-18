@@ -3,7 +3,7 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ErrorActionPreference = 'Stop'
 
-$Repo       = 'Nitestack/aix'
+$Repo       = 'get-aix/aix'
 $Target     = 'x86_64-pc-windows-msvc'
 $InstallDir = if ($env:AIX_INSTALL_DIR) { $env:AIX_INSTALL_DIR } `
               else { Join-Path $env:LOCALAPPDATA 'Programs\aix' }
