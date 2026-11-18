@@ -1,9 +1,23 @@
 [package]
-name = "aix"
-version = "0.1.0"
+name = "aix-rs"
+version = "1.0.0"
 edition = "2021"
+description = "Manage AI gateway profiles and launch AI coding tools with the right credentials"
 readme = "README.md"
 license = "AGPL-3.0-only"
+repository = "https://github.com/get-aix/aix"
+homepage = "https://github.com/get-aix/aix"
+keywords = ["ai", "llm", "litellm", "gateway", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
 
 [[bin]]
 name = "aix"
