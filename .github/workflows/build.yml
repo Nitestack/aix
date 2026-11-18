@@ -18,6 +18,10 @@ jobs:
       fail-fast: true
       matrix:
         include:
+          # musl: fully static, runs on any distro (used by installers/packages).
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, cross: true }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl, cross: true }
+          # gnu: kept for existing direct-download URLs.
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, cross: true }
           - { os: ubuntu-latest, target: aarch64-unknown-linux-gnu, cross: true }
           - { os: macos-latest, target: aarch64-apple-darwin }
@@ -73,8 +77,12 @@ jobs:
           path: binaries
           merge-multiple: true
 
-      - name: Add installer scripts
-        run: cp scripts/install.sh scripts/install.ps1 binaries/
+      - name: Add checksums and installer scripts
+        working-directory: binaries
+        run: |
+          sha256sum aix-* > SHA256SUMS
+          cat SHA256SUMS
+          cp ../scripts/install.sh ../scripts/install.ps1 .
 
       - uses: actions/upload-artifact@v7
         with:
