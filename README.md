@@ -92,6 +92,7 @@ the exception: they are retained in aix's owner-only local auth store. See
 | macOS / Linux ([Homebrew](https://brew.sh)) | `brew install get-aix/tap/aix` |
 | Windows ([winget](https://learn.microsoft.com/windows/package-manager/)) | `winget install get-aix.aix` |
 | Windows ([Scoop](https://scoop.sh)) | `scoop bucket add get-aix https://github.com/get-aix/scoop-bucket`<br>`scoop install get-aix/aix` |
+| Debian / Ubuntu / Fedora / openSUSE | `.deb` / `.rpm` from the [latest release](https://github.com/get-aix/aix/releases/latest), see [Installation](docs/installation.md#debian-ubuntu-fedora-rhel-opensuse-deb--rpm) |
 | Arch Linux ([AUR](https://aur.archlinux.org/packages/aix-rs-bin)) | `yay -S aix-rs-bin` |
 | Any, via Rust ([crates.io](https://crates.io/crates/aix-rs)) | `cargo binstall aix-rs` or `cargo install aix-rs` |
 | Nix | `nix run github:get-aix/aix -- --help`, or the [home-manager module](docs/nix.md) |

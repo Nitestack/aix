@@ -3,7 +3,7 @@
 aix is a single binary named `aix`. Pick one of the methods below; after
 installing, continue with [Configuration](configuration.md).
 
-- [Package managers](#package-managers): Homebrew, winget, Scoop, AUR
+- [Package managers](#package-managers): Homebrew, winget, Scoop, .deb/.rpm, AUR
 - [Installer scripts](#installer-scripts): prebuilt binary, no package manager needed
 - [Cargo](#cargo): prebuilt via cargo-binstall, or build from crates.io
 - [Manual download](#manual-download) — place the binary yourself
@@ -27,6 +27,8 @@ includes prebuilt binaries for:
 | macOS arm64 | `aix-aarch64-apple-darwin` |
 | macOS x86_64 | `aix-x86_64-apple-darwin` |
 | Windows x86_64 | `aix-x86_64-pc-windows-msvc.exe` |
+| Debian/Ubuntu package | `aix_<version>_amd64.deb`, `aix_<version>_arm64.deb` |
+| Fedora/RHEL/openSUSE package | `aix-<version>-1.x86_64.rpm`, `aix-<version>-1.aarch64.rpm` |
 
 The static `musl` builds are what the installer scripts and package managers
 use. The `gnu` builds are kept for existing download links. Each release also
@@ -61,6 +63,31 @@ winget install get-aix.aix
 scoop bucket add get-aix https://github.com/get-aix/scoop-bucket
 scoop install get-aix/aix
 ```
+
+### Debian, Ubuntu, Fedora, RHEL, openSUSE (.deb / .rpm)
+
+Each release includes `.deb` and `.rpm` packages for x86_64 and aarch64. They
+install the static binary to `/usr/bin/aix`. Download the package for your
+system from the [latest release](https://github.com/get-aix/aix/releases/latest),
+then install it:
+
+```sh
+# Debian, Ubuntu, Mint, …
+sudo apt install ./aix_<version>_amd64.deb      # arm64: aix_<version>_arm64.deb
+
+# Fedora, RHEL, Rocky, Alma, …
+sudo dnf install ./aix-<version>-1.x86_64.rpm   # arm64: aix-<version>-1.aarch64.rpm
+
+# openSUSE
+sudo zypper install ./aix-<version>-1.x86_64.rpm
+```
+
+With the GitHub CLI, you can download the latest `.deb` in one step:
+`gh release download --repo get-aix/aix --pattern '*_amd64.deb'`.
+
+These packages don't come from an apt or dnf repository, so `apt upgrade` and
+`dnf upgrade` won't update aix. Install the new release's package the same way
+to upgrade.
 
 ### AUR (Arch Linux)
 
