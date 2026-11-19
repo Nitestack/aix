@@ -1,4 +1,5 @@
 use crate::cli::{Cli, Command};
+use crate::commands::spend::report::CachePolicy;
 use crate::commands::{GatewayRequestOptions, ProfileSelection};
 use clap::Parser;
 use std::process::ExitCode;
@@ -124,13 +125,31 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
             )
             .await
         }
-        Command::Spend { profile, no_cache } => {
-            crate::commands::spend::run(request_options_for(profile), config_path, json, no_cache)
-                .await
+        Command::Spend {
+            profile,
+            no_cache,
+            max_age,
+        } => {
+            crate::commands::spend::run(
+                request_options_for(profile),
+                config_path,
+                json,
+                CachePolicy::from_flags(no_cache, max_age),
+            )
+            .await
         }
-        Command::Status { profile, refresh } => {
-            crate::commands::status::run(request_options_for(profile), config_path, json, refresh)
-                .await
+        Command::Status {
+            profile,
+            refresh,
+            max_age,
+        } => {
+            crate::commands::status::run(
+                request_options_for(profile),
+                config_path,
+                json,
+                CachePolicy::from_flags(refresh, max_age),
+            )
+            .await
         }
         Command::Gate { policy } => {
             crate::commands::gate::run(crate::commands::gate::GateOptions {

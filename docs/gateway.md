@@ -55,13 +55,34 @@ aix spend work --json
 aix --json spend work
 
 # Always fetch fresh data (result is still cached for future calls)
-aix spend work --no-cache
+aix spend work --no-cache   # --refresh is an alias
+
+# Use the cache only if it is younger than 5 minutes
+aix spend work --max-age 5m
 ```
 
 Responses are cached locally for 1 hour by default (configurable via `[cache]`).
 Use `--no-cache` to bypass the cache for one call; the fresh response is still
-written to cache for subsequent calls. The endpoint is a gateway capability and
-does not require a `gateway = "litellm"` metadata value.
+written to cache for subsequent calls. `--max-age DURATION` replaces the
+configured TTL for one call: a younger cached record is used, an older one is
+refetched and written back. It accepts seconds (`90`) or a number with `s`, `m`,
+`h`, or `d`; `--max-age 0` behaves like `--no-cache`. The endpoint is a gateway
+capability and does not require a `gateway = "litellm"` metadata value.
+
+aix reads the native layered shape (`key_spent_usd`, `remaining_usd`,
+`limited_by`, `layers`) and the older LiteLLM shape
+(`{ "info": { "spend", "max_budget", "budget_duration", "budget_reset_at" } }`).
+When `/v1/key/info` is missing, aix also tries `/key/info`, which older LiteLLM
+proxies serve without the `/v1` prefix. A LiteLLM key budget becomes a single
+`key` layer.
+
+`aix spend --json` reports the full budget object, including each layer's
+reset time, the project id, a non-secret key fingerprint, and the detected
+gateway kind, without the connectivity probe that `aix status` makes. See
+[Budget fields](json-output.md#budget-fields). Each layer shows its reset date
+in human output when it is known. When the gateway reports only a period start
+on the first of a month, aix assumes a calendar-month window and marks the
+reset as `inferred_monthly`.
 
 A gateway that does not implement the endpoint (`404`, `405`, or `501`) is a
 missing capability, not a failure: `aix spend` prints
@@ -81,19 +102,23 @@ from `GET /v1/key/info`:
 aix status
 aix status work
 
-# Refresh budget data instead of using the cache
+# Refresh budget data instead of using the cache (--no-cache is an alias)
 aix status work --refresh
+
+# Use cached budget data only if it is younger than 5 minutes
+aix status work --max-age 5m
 
 # Emit the shared JSON envelope
 aix --json status work
 ```
 
 The OpenAI-compatible `GET /v1/models` probe is always live, including when
-budget data comes from cache. `--refresh` bypasses only the budget cache; a
-successful probe reports its latency and authenticated state. The header
+budget data comes from cache. `--refresh` and `--max-age` apply only to the
+budget cache; a successful probe reports its latency and authenticated state. The header
 handling described under model discovery applies here as well, so native
 Anthropic endpoints report `reachable · authenticated` with
-`Spend unsupported`. The output shows configured gateway/provider metadata and
+`Spend unsupported`. The output shows the gateway kind and provider (from config, then from the
+budget response, then from well-known hosts) and
 only the API key's final four characters (short keys are fully redacted). The
 resolved gateway URL and full key are never printed. If native budget
 information is unsupported or unavailable, status reports that separately

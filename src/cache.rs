@@ -17,6 +17,32 @@ pub struct Cache {
 
 const CACHE_VERSION: u8 = 2;
 
+/// Independent records kept per endpoint and key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheSlot {
+    /// Native key budget (`/v1/key/info`).
+    Budget,
+}
+
+impl CacheSlot {
+    fn file_name(self, user_id: &str) -> String {
+        match self {
+            Self::Budget => format!("{user_id}.json"),
+        }
+    }
+}
+
+/// How old a cached record may be for one read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Freshness {
+    /// Use the configured `cache.ttl_secs` (0 means no expiry).
+    Configured,
+    /// Override the configured TTL for this call.
+    MaxAgeSecs(u64),
+    /// Ignore age, for reads that only need a hint.
+    AnyAge,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CacheEntry {
@@ -46,8 +72,25 @@ impl Cache {
         }
     }
 
-    /// Returns `(data, fetched_at_unix_secs)` when a fresh-enough entry exists.
+    /// Returns `(data, fetched_at_unix_secs)` when a fresh-enough budget entry exists.
+    #[cfg(test)]
     pub fn get(&self, base_url: &str, api_key: &str) -> Option<(Value, u64)> {
+        self.get_slot(CacheSlot::Budget, base_url, api_key, Freshness::Configured)
+    }
+
+    pub fn put(&self, base_url: &str, api_key: &str, data: &Value) {
+        self.put_slot(CacheSlot::Budget, base_url, api_key, data);
+    }
+
+    /// Returns `(data, fetched_at_unix_secs)` for `slot` when an entry exists
+    /// that satisfies `freshness`.
+    pub fn get_slot(
+        &self,
+        slot: CacheSlot,
+        base_url: &str,
+        api_key: &str,
+        freshness: Freshness,
+    ) -> Option<(Value, u64)> {
         if self.disabled {
             return None;
         }
@@ -56,14 +99,19 @@ impl Cache {
             let index = load_index(&dir);
             let identity = key_identity(api_key);
             let user_id = index.get(&identity)?.clone();
-            let content = std::fs::read_to_string(dir.join(format!("{user_id}.json"))).ok()?;
+            let content = std::fs::read_to_string(dir.join(slot.file_name(&user_id))).ok()?;
             let entry: CacheEntry = serde_json::from_str(&content).ok()?;
             if entry.version != CACHE_VERSION || entry.key_hash != identity {
                 return None;
             }
-            if self.ttl_secs > 0 {
+            let max_age = match freshness {
+                Freshness::Configured => (self.ttl_secs > 0).then_some(self.ttl_secs),
+                Freshness::MaxAgeSecs(max_age) => Some(max_age),
+                Freshness::AnyAge => None,
+            };
+            if let Some(max_age) = max_age {
                 let age = now_secs().saturating_sub(entry.fetched_at);
-                if age >= self.ttl_secs {
+                if age >= max_age {
                     return None;
                 }
             }
@@ -71,7 +119,7 @@ impl Cache {
         })()
     }
 
-    pub fn put(&self, base_url: &str, api_key: &str, data: &Value) {
+    pub fn put_slot(&self, slot: CacheSlot, base_url: &str, api_key: &str, data: &Value) {
         if self.disabled {
             return;
         }
@@ -90,7 +138,7 @@ impl Cache {
                 key_hash: identity.clone(),
             };
             let json = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
-            write_atomic(&dir.join(format!("{user_id}.json")), &json)?;
+            write_atomic(&dir.join(slot.file_name(&user_id)), &json)?;
             index.insert(identity, user_id);
             save_index(&dir, &index)
         })();

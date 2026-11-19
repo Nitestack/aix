@@ -3,17 +3,21 @@ use crate::commands::env::resolve_profile;
 use crate::commands::GatewayRequestOptions;
 use crate::config;
 use crate::error::AixError;
-use crate::gateway::{BudgetClient, BudgetInfo};
+use crate::gateway::identity::{self, GatewayIdentity};
+use crate::gateway::BudgetInfo;
 use crate::output;
 use color_eyre::Result;
+use report::{lookup_budget, CachePolicy, SpendAvailability, SpendData};
 use serde::Serialize;
 use std::path::PathBuf;
+
+pub(crate) mod report;
 
 pub async fn run(
     options: GatewayRequestOptions,
     config_path: Option<PathBuf>,
     json: bool,
-    no_cache: bool,
+    policy: CachePolicy,
 ) -> Result<()> {
     let GatewayRequestOptions { selection, timeout } = options;
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
@@ -29,6 +33,12 @@ pub async fn run(
             name: profile_name.clone(),
             available_hint: config::format_available_profiles(&cfg),
         })?;
+    let label = profile
+        .label
+        .as_ref()
+        .map(|label| label.resolve())
+        .transpose()?
+        .unwrap_or_else(|| profile_name.clone());
 
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
     let api_key = profile.resolve_api_key()?;
@@ -36,41 +46,33 @@ pub async fn run(
     let api_key = api_key.expose_secret();
     let cache = Cache::from_config(&cfg.cache);
 
-    let hit = if no_cache {
-        None
-    } else {
-        cache.get(base_url, api_key).and_then(|(data, fetched_at)| {
-            BudgetInfo::from_cache_value(&data).map(|budget| (budget, fetched_at))
-        })
-    };
+    // A gateway without the native budget endpoint is a capability gap, not a
+    // failure: report it instead of failing scripts that scan spend across
+    // profiles. Other gateway errors keep their exit codes.
+    let lookup = lookup_budget(&cache, base_url, api_key, policy, timeout).await?;
 
-    let (budget, cached_at) = match hit {
-        Some((budget, fetched_at)) => (Some(budget), Some(fetched_at)),
-        None => match BudgetClient::with_timeout(base_url, api_key, timeout)
-            .key_info()
-            .await
-        {
-            Ok(fresh) => {
-                cache.put(base_url, api_key, &fresh.to_cache_value());
-                (Some(fresh), None)
-            }
-            // A gateway without the native budget endpoint is a capability gap,
-            // not a failure. Report it the way `aix status` does instead of
-            // failing scripts that scan spend across profiles.
-            Err(AixError::GatewayError {
-                status: 404 | 405 | 501,
-                ..
-            }) => (None, None),
-            Err(error) => return Err(error.into()),
-        },
-    };
+    let gateway = identity::identify(
+        &cfg.endpoint,
+        base_url,
+        lookup
+            .as_ref()
+            .and_then(|lookup| lookup.budget.gateway.as_deref()),
+    );
+    let key_fingerprint = identity::key_fingerprint(base_url, api_key);
 
-    let Some(budget) = budget else {
+    let Some(lookup) = lookup else {
         if json {
             output::print_json(
                 "spend",
-                UnsupportedSpend {
-                    status: SpendStatus::Unsupported,
+                SpendJson {
+                    summary: None,
+                    details: SpendData::unavailable(SpendAvailability::Unsupported),
+                    profile: ProfileData {
+                        name: profile_name,
+                        label,
+                    },
+                    key_fingerprint,
+                    gateway,
                 },
             )?;
         } else {
@@ -79,27 +81,46 @@ pub async fn run(
         return Ok(());
     };
 
-    let summary = SpendSummary::from_budget(&budget)?;
+    let summary = SpendSummary::from_budget(&lookup.budget)?;
     if json {
-        output::print_json("spend", summary)?;
+        output::print_json(
+            "spend",
+            SpendJson {
+                summary: Some(summary),
+                details: SpendData::available(&lookup),
+                profile: ProfileData {
+                    name: profile_name,
+                    label,
+                },
+                key_fingerprint,
+                gateway,
+            },
+        )?;
     } else {
+        let cached_at = (lookup.source == report::SpendSource::Cache).then_some(lookup.fetched_at);
         print_human(&summary, cached_at);
     }
     Ok(())
 }
 
-/// Reported when the gateway does not implement `GET /v1/key/info`. The
-/// available summary keeps its original `spend`/`max_budget` shape; `status`
-/// only appears for this case.
+/// `spend.data`: the original `spend`/`max_budget` summary (present only when
+/// a budget is available) plus the same budget object as `status.data.spend`,
+/// and the non-secret profile, key, and gateway identity.
 #[derive(Serialize)]
-struct UnsupportedSpend {
-    status: SpendStatus,
+struct SpendJson {
+    #[serde(flatten)]
+    summary: Option<SpendSummary>,
+    #[serde(flatten)]
+    details: SpendData,
+    profile: ProfileData,
+    key_fingerprint: String,
+    gateway: GatewayIdentity,
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum SpendStatus {
-    Unsupported,
+pub(crate) struct ProfileData {
+    pub(crate) name: String,
+    pub(crate) label: String,
 }
 
 #[derive(Serialize)]

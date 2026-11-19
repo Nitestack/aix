@@ -133,6 +133,12 @@ aix env --format cmd > "%TEMP%\aix-env.cmd" && call "%TEMP%\aix-env.cmd"
 aix env work --format json | jq .
 ```
 
+`aix env` also exports `AIX_GATEWAY_KIND` (for example `litellm` or `aihub`)
+in every format when the kind is known: from the endpoint's `gateway` config,
+from a budget response already in the cache, or from a well-known host. It
+never contacts the gateway to find out, and a profile `env` entry with the same
+name wins. The variable is omitted when the kind is unknown.
+
 ## Running commands with a profile
 
 For launching AI tools such as `claude`, `codex`, or `opencode`, see [Running AI tools](tools.md). `aix exec` and `aix shell` below are the generic, stateless wrappers; use [`aix run`](runs.md) when you need run history.

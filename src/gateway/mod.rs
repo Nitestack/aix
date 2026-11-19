@@ -1,4 +1,5 @@
 mod budget;
+pub(crate) mod identity;
 pub(crate) mod openai;
 mod transport;
 

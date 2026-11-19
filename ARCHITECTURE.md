@@ -96,8 +96,11 @@ capability-specific clients:
   common HTTP error handling.
 - `openai.rs` exposes OpenAI-compatible `/v1/*` endpoints.
 - `budget.rs` fetches current-key budget information from the native
-  `GET /v1/key/info` endpoint. The returned native budget data is sanitized
-  before `aix spend`, `aix status`, and `aix doctor` use it.
+  `GET /v1/key/info` endpoint, falling back to the legacy LiteLLM `/key/info`.
+  Both shapes are normalized into budget layers with reset times and
+  sanitized before `aix spend`, `aix status`, and `aix doctor` use them.
+- `identity.rs` derives non-secret identity: the key fingerprint and the
+  gateway kind/provider (config, then budget response, then well-known host).
 - `aix models` discovers model IDs and `aix ask` / `aix prompt` send one-shot text requests
   through the OpenAI-compatible client. `aix status` uses its models endpoint
   for a live authenticated connectivity probe.

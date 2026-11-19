@@ -95,7 +95,7 @@ async fn spend_json_preserves_the_original_spend_and_max_budget_fields() {
     let report: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(report["schema_version"], 1);
     assert_eq!(report["command"], "spend");
-    assert_eq!(report["data"], json!({"spend": 8.0, "max_budget": 20.0}));
+    assert_original_summary(&report["data"], 8.0, Some(20.0));
     for secret in [
         API_KEY,
         "raw-server-key-secret",
@@ -122,7 +122,7 @@ async fn spend_maps_a_key_limit_without_fabricating_or_expanding_the_summary() {
     let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
     assert!(output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["data"], json!({"spend": 41.53, "max_budget": 100.0}));
+    assert_original_summary(&report["data"], 41.53, Some(100.0));
 }
 
 #[tokio::test]
@@ -204,7 +204,7 @@ async fn spend_omits_an_unlimited_budget_and_displays_the_original_no_budget_sum
     let output = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
     assert!(output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["data"], json!({"spend": 41.53}));
+    assert_original_summary(&report["data"], 41.53, None);
 
     let human = invoke(&config, cache_dir.path(), &["spend", "test", "--no-cache"]);
     assert!(human.status.success());
@@ -249,7 +249,9 @@ async fn spend_reports_unsupported_endpoints_without_failing() {
         let report: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["schema_version"], 1);
         assert_eq!(report["command"], "spend");
-        assert_eq!(report["data"], json!({ "status": "unsupported" }));
+        assert_eq!(report["data"]["status"], "unsupported");
+        assert!(report["data"].get("spend").is_none());
+        assert_eq!(report["data"]["cache"]["source"], "none");
     }
 }
 
@@ -307,7 +309,7 @@ async fn cache_is_key_scoped_secret_safe_and_legacy_records_are_refetched() {
     let second = invoke(&config, cache_dir.path(), &["spend", "test", "--json"]);
     assert!(second.status.success());
     let report: Value = serde_json::from_slice(&second.stdout).unwrap();
-    assert_eq!(report["data"], json!({"spend": 8.0, "max_budget": 20.0}));
+    assert_original_summary(&report["data"], 8.0, Some(20.0));
 
     for entry in std::fs::read_dir(cache_dir.path()).unwrap() {
         let endpoint = entry.unwrap().path();
@@ -385,4 +387,15 @@ async fn no_cache_forces_each_request() {
         let output = invoke(&config, cache_dir.path(), &["spend", "test", "--no-cache"]);
         assert!(output.status.success());
     }
+}
+
+/// The original `spend`/`max_budget` summary stays in `spend.data`; newer
+/// fields are added beside it.
+fn assert_original_summary(data: &Value, spend: f64, max_budget: Option<f64>) {
+    assert_eq!(data["spend"], spend, "{data}");
+    match max_budget {
+        Some(max_budget) => assert_eq!(data["max_budget"], max_budget, "{data}"),
+        None => assert!(data.get("max_budget").is_none(), "{data}"),
+    }
+    assert_eq!(data["status"], "available", "{data}");
 }

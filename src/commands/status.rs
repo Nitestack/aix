@@ -1,21 +1,26 @@
 use crate::cache::Cache;
 use crate::commands::env::resolve_profile;
 use crate::commands::spend::format_age;
+use crate::commands::spend::report::{
+    lookup_budget, CachePolicy, SpendAvailability, SpendData, SpendSource,
+};
+use crate::commands::spend::ProfileData;
 use crate::commands::GatewayRequestOptions;
-use crate::config::{self, Gateway, KnownGateway, KnownProvider, Provider};
+use crate::config;
 use crate::error::AixError;
-use crate::gateway::{openai::OpenAiClient, BudgetClient, BudgetInfo, BudgetLayer};
+use crate::gateway::identity::{self, DetectedFrom};
+use crate::gateway::openai::OpenAiClient;
 use crate::output;
 use color_eyre::Result;
 use serde::Serialize;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub async fn run(
     options: GatewayRequestOptions,
     config_path: Option<PathBuf>,
     json_output: bool,
-    refresh: bool,
+    policy: CachePolicy,
 ) -> Result<()> {
     let GatewayRequestOptions { selection, timeout } = options;
     let path = config::find_config_path(config_path.as_deref())?.ok_or(AixError::NoConfigFile)?;
@@ -48,30 +53,35 @@ pub async fn run(
         .await?;
     let latency_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    let spend = load_spend(&cfg, base_url, api_key, refresh, timeout).await?;
+    let cache = Cache::from_config(&cfg.cache);
+    let (spend, reported_gateway) =
+        match lookup_budget(&cache, base_url, api_key, policy, timeout).await {
+            Ok(Some(lookup)) => (SpendData::available(&lookup), lookup.budget.gateway.clone()),
+            Ok(None) => (SpendData::unavailable(SpendAvailability::Unsupported), None),
+            Err(AixError::HttpError(error)) if error.is_timeout() => {
+                return Err(AixError::HttpError(error).into())
+            }
+            Err(AixError::GatewayProtocolError(message)) => {
+                return Err(AixError::GatewayProtocolError(message).into())
+            }
+            Err(_) => (SpendData::unavailable(SpendAvailability::Unavailable), None),
+        };
+    let gateway = identity::identify(&cfg.endpoint, base_url, reported_gateway.as_deref());
     let status = StatusData {
         profile: ProfileData {
             name: profile_name,
             label,
         },
         gateway: GatewayData {
-            gateway: cfg
-                .endpoint
-                .gateway
-                .as_ref()
-                .map(gateway_name)
-                .map(str::to_owned),
-            provider: cfg
-                .endpoint
-                .provider
-                .as_ref()
-                .map(provider_name)
-                .map(str::to_owned),
+            gateway: gateway.gateway,
+            provider: gateway.provider,
+            detected_from: gateway.detected_from,
             status: "reachable",
             authentication_status: "authenticated",
             latency_ms,
         },
         key_suffix: key_suffix(api_key),
+        key_fingerprint: identity::key_fingerprint(base_url, api_key),
         spend,
     };
 
@@ -83,147 +93,23 @@ pub async fn run(
     Ok(())
 }
 
-async fn load_spend(
-    cfg: &config::Config,
-    base_url: &str,
-    api_key: &str,
-    refresh: bool,
-    timeout: Duration,
-) -> std::result::Result<SpendData, AixError> {
-    let cache = Cache::from_config(&cfg.cache);
-    if !refresh {
-        if let Some((data, fetched_at)) = cache.get(base_url, api_key) {
-            if let Some(budget) = BudgetInfo::from_cache_value(&data) {
-                return Ok(SpendData::available(
-                    &budget,
-                    SpendSource::Cache,
-                    Some(fetched_at),
-                ));
-            }
-        }
-    }
-
-    match BudgetClient::with_timeout(base_url, api_key, timeout)
-        .key_info()
-        .await
-    {
-        Ok(budget) => {
-            cache.put(base_url, api_key, &budget.to_cache_value());
-            Ok(SpendData::available(&budget, SpendSource::Live, None))
-        }
-        Err(AixError::GatewayError {
-            status: 404 | 405 | 501,
-            ..
-        }) => Ok(SpendData::unavailable(SpendAvailability::Unsupported)),
-        Err(AixError::HttpError(error)) if error.is_timeout() => Err(AixError::HttpError(error)),
-        Err(AixError::GatewayProtocolError(message)) => {
-            Err(AixError::GatewayProtocolError(message))
-        }
-        Err(_) => Ok(SpendData::unavailable(SpendAvailability::Unavailable)),
-    }
-}
-
 #[derive(Serialize)]
 struct StatusData {
     profile: ProfileData,
     gateway: GatewayData,
     key_suffix: Option<String>,
+    key_fingerprint: String,
     spend: SpendData,
-}
-
-#[derive(Serialize)]
-struct ProfileData {
-    name: String,
-    label: String,
 }
 
 #[derive(Serialize)]
 struct GatewayData {
     gateway: Option<String>,
     provider: Option<String>,
+    detected_from: Option<DetectedFrom>,
     status: &'static str,
     authentication_status: &'static str,
     latency_ms: u64,
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum SpendAvailability {
-    Available,
-    Unsupported,
-    Unavailable,
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum SpendSource {
-    Cache,
-    Live,
-    None,
-}
-
-#[derive(Serialize)]
-struct SpendCacheData {
-    source: SpendSource,
-    age_seconds: Option<u64>,
-}
-
-#[derive(Serialize)]
-struct SpendData {
-    status: SpendAvailability,
-    key_spent_usd: Option<f64>,
-    remaining_usd: Option<f64>,
-    limited_by: Option<String>,
-    layers: Option<Vec<BudgetLayer>>,
-    expires_at: Option<String>,
-    cache: SpendCacheData,
-}
-
-impl SpendData {
-    fn available(budget: &BudgetInfo, source: SpendSource, fetched_at: Option<u64>) -> Self {
-        let age_seconds = fetched_at.map(|time| crate::cache::now_secs().saturating_sub(time));
-        Self {
-            status: SpendAvailability::Available,
-            key_spent_usd: Some(budget.key_spent_usd),
-            remaining_usd: budget.remaining_usd,
-            limited_by: budget.limited_by.clone(),
-            layers: Some(budget.layers.clone()),
-            expires_at: budget.expires_at.clone(),
-            cache: SpendCacheData {
-                source,
-                age_seconds,
-            },
-        }
-    }
-
-    fn unavailable(status: SpendAvailability) -> Self {
-        Self {
-            status,
-            key_spent_usd: None,
-            remaining_usd: None,
-            limited_by: None,
-            layers: None,
-            expires_at: None,
-            cache: SpendCacheData {
-                source: SpendSource::None,
-                age_seconds: None,
-            },
-        }
-    }
-}
-
-fn gateway_name(gateway: &Gateway) -> &str {
-    match gateway {
-        Gateway::Known(KnownGateway::Litellm) => "litellm",
-        Gateway::Custom(name) => name,
-    }
-}
-
-fn provider_name(provider: &Provider) -> &str {
-    match provider {
-        Provider::Known(KnownProvider::LiteLlm) => "litellm",
-        Provider::Custom(name) => name,
-    }
 }
 
 fn key_suffix(api_key: &str) -> Option<String> {

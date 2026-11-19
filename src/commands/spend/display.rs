@@ -84,8 +84,11 @@ pub(crate) fn budget_lines(
             "Budget", "Spent / Limit"
         ));
         for (label, amounts, remaining, layer) in rows {
+            let resets = layer.resets_at.as_deref().map_or(String::new(), |time| {
+                format!(" · resets {}", short_date(time))
+            });
             lines.push(format!(
-                "{label:<label_width$}  {amounts:<amount_width$}  {remaining}"
+                "{label:<label_width$}  {amounts:<amount_width$}  {remaining}{resets}"
             ));
             if let Some(limit) = layer.budget_usd {
                 lines.push(format!("  {}", progress_bar(layer.spent_usd, limit)));
@@ -110,6 +113,16 @@ pub(crate) fn budget_lines(
         lines.push(format!("{:<12}{expiry}", "Expires"));
     }
     lines
+}
+
+fn short_date(timestamp: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .map(|time| {
+            time.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .unwrap_or_else(|_| timestamp.to_owned())
 }
 
 fn money(amount: f64) -> String {
@@ -224,7 +237,10 @@ mod tests {
             budget_usd: limit,
             spent_usd: spent,
             remaining_usd: remaining,
-            period_start: "2026-11-01T00:00:00Z".into(),
+            period_start: Some("2026-11-01T00:00:00Z".into()),
+            resets_at: None,
+            budget_duration: None,
+            reset_source: None,
         }
     }
 

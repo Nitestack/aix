@@ -33,6 +33,30 @@ pub struct Cli {
     pub command: Command,
 }
 
+/// Cache age limit in whole seconds: `0`, a bare number of seconds, or a
+/// number with `s`, `m`, `h`, or `d`.
+fn parse_max_age(value: &str) -> Result<u64, String> {
+    let invalid = || "expected a cache age such as 0, 60s, 5m, 1h, or 1d".to_string();
+    let (number, multiplier) = match value.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        None => (value, 1),
+        Some((index, _)) => {
+            let multiplier = match &value[index..] {
+                "s" => 1,
+                "m" => 60,
+                "h" => 60 * 60,
+                "d" => 24 * 60 * 60,
+                _ => return Err(invalid()),
+            };
+            (&value[..index], multiplier)
+        }
+    };
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|amount| amount.checked_mul(multiplier))
+        .ok_or_else(invalid)
+}
+
 fn parse_duration(value: &str) -> Result<Duration, String> {
     let (number, unit) = if let Some(number) = value.strip_suffix("ms") {
         (number, "ms")
@@ -143,16 +167,22 @@ pub enum Command {
         /// Profile name (positional; overrides the global --profile flag)
         profile: Option<String>,
         /// Always fetch fresh data, bypassing the cache (result is still cached)
-        #[arg(long)]
+        #[arg(long, visible_alias = "refresh", conflicts_with = "max_age")]
         no_cache: bool,
+        /// Use cached budget data only if younger than this (for example 60s, 5m, 1h; 0 always refreshes)
+        #[arg(long, value_name = "DURATION", value_parser = parse_max_age)]
+        max_age: Option<u64>,
     },
     /// Show profile, gateway connectivity, and budget status
     Status {
         /// Profile name (positional; overrides the global --profile flag)
         profile: Option<String>,
         /// Refresh spend data instead of using a cached response
-        #[arg(long)]
+        #[arg(long, visible_alias = "no-cache", conflicts_with = "max_age")]
         refresh: bool,
+        /// Use cached budget data only if younger than this (for example 60s, 5m, 1h; 0 always refreshes)
+        #[arg(long, value_name = "DURATION", value_parser = parse_max_age)]
+        max_age: Option<u64>,
     },
     /// Check whether a configured run policy can execute right now
     Gate {
@@ -429,6 +459,26 @@ mod tests {
                 "accepted invalid timeout {timeout:?}"
             );
         }
+    }
+
+    #[test]
+    fn parses_budget_max_age_and_refresh_aliases() {
+        for (value, seconds) in [("0", 0), ("90", 90), ("60s", 60), ("5m", 300), ("1h", 3600)] {
+            let cli = Cli::try_parse_from(["aix", "status", "--max-age", value]).unwrap();
+            let Command::Status { max_age, .. } = cli.command else {
+                panic!("expected status");
+            };
+            assert_eq!(max_age, Some(seconds), "{value}");
+        }
+        for value in ["", "-1", "5x", "1mo", "s"] {
+            assert!(
+                Cli::try_parse_from(["aix", "spend", "--max-age", value]).is_err(),
+                "accepted invalid max age {value:?}"
+            );
+        }
+        assert!(Cli::try_parse_from(["aix", "spend", "--refresh"]).is_ok());
+        assert!(Cli::try_parse_from(["aix", "status", "--no-cache"]).is_ok());
+        assert!(Cli::try_parse_from(["aix", "spend", "--no-cache", "--max-age", "60s"]).is_err());
     }
 
     #[test]

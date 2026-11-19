@@ -29,17 +29,39 @@ pub fn run(
     let api_key = profile.resolve_api_key()?;
     let base_url = config::resolve_base_url(profile, &cfg.endpoint)?;
 
-    let vars = collect_profile_vars(
+    let mut vars = collect_profile_vars(
         &profile_name,
         api_key.expose_secret(),
         base_url.expose_secret(),
         &config::ApiFormat::Both,
         profile,
     )?;
+    // Informational only and never sent anywhere: the configured gateway kind,
+    // or the one a previous budget read reported (cache only, no request), or
+    // a first-party API host. Omitted when unknown. Profile env may override.
+    if !vars.iter().any(|(name, _)| *name == GATEWAY_KIND_VAR) {
+        let cache = crate::cache::Cache::from_config(&cfg.cache);
+        let reported = crate::commands::spend::report::cached_gateway_kind(
+            &cache,
+            base_url.expose_secret(),
+            api_key.expose_secret(),
+        );
+        let identity = crate::gateway::identity::identify(
+            &cfg.endpoint,
+            base_url.expose_secret(),
+            reported.as_deref(),
+        );
+        if let Some(kind) = identity.gateway {
+            vars.push((GATEWAY_KIND_VAR.to_string(), kind));
+        }
+    }
 
     print!("{}", format_vars(&vars, &format));
     Ok(())
 }
+
+/// Gateway kind hint emitted by `aix env` only; launches do not receive it.
+pub(crate) const GATEWAY_KIND_VAR: &str = "AIX_GATEWAY_KIND";
 
 pub(crate) fn append_v1(base_url: &str) -> String {
     let (base, query) = match base_url.split_once('?') {
