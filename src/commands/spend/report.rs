@@ -169,7 +169,7 @@ impl SpendData {
     }
 }
 
-fn format_unix(seconds: u64) -> Option<String> {
+pub(crate) fn format_unix(seconds: u64) -> Option<String> {
     let seconds = i64::try_from(seconds).ok()?;
     chrono::DateTime::from_timestamp(seconds, 0)
         .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))

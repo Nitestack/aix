@@ -20,7 +20,7 @@ positional argument; see [Global options](#global-options) for how a profile is 
 | `aix gate --policy NAME` | Check whether a run policy can execute right now | [Managed runs](runs.md#run-policies) |
 | `aix ask "..."` | Send a one-shot request to the gateway | [One-shot inference](inference.md) |
 | `aix prompt NAME` / `aix prompt --list` | Run or list configured prompt presets | [Prompt presets](inference.md#reusable-prompt-presets) |
-| `aix models [PROFILE]` | List model IDs from the gateway | [Model discovery](gateway.md#model-discovery) |
+| `aix models [PROFILE]` | List model IDs; `--detailed` adds limits, pricing, and reasoning efforts | [Model discovery](gateway.md#model-discovery) |
 | `aix spend [PROFILE]` | Show current key spend and budget | [Spend and budget](gateway.md#spend-and-budget) |
 | `aix status [PROFILE]` | Profile, gateway connectivity, and budget overview | [Gateway status](gateway.md#gateway-status) |
 | `aix doctor [PROFILE]` | Read-only diagnostics for config, secrets, gateway, cache | [Diagnostics](gateway.md#diagnostics) |

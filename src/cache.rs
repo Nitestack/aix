@@ -22,12 +22,15 @@ const CACHE_VERSION: u8 = 2;
 pub enum CacheSlot {
     /// Native key budget (`/v1/key/info`).
     Budget,
+    /// Detailed model metadata (`aix models --detailed`).
+    ModelCatalog,
 }
 
 impl CacheSlot {
     fn file_name(self, user_id: &str) -> String {
         match self {
             Self::Budget => format!("{user_id}.json"),
+            Self::ModelCatalog => format!("{user_id}.models.json"),
         }
     }
 }

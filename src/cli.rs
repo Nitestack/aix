@@ -218,6 +218,21 @@ pub enum Command {
         /// Filter model IDs by a case-insensitive substring
         #[arg(long, value_name = "TEXT")]
         filter: Option<String>,
+        /// Include limits, pricing, reasoning efforts, and capabilities
+        /// (LiteLLM `/v2/model/info`; cached like budget data)
+        #[arg(long)]
+        detailed: bool,
+        /// Fetch fresh model metadata (with --detailed); the result is still cached
+        #[arg(
+            long,
+            visible_alias = "no-cache",
+            requires = "detailed",
+            conflicts_with = "max_age"
+        )]
+        refresh: bool,
+        /// Use cached model metadata only if younger than DURATION (with --detailed)
+        #[arg(long, value_name = "DURATION", value_parser = parse_max_age, requires = "detailed")]
+        max_age: Option<u64>,
     },
     /// Show locally observed usage; no upstream history is requested
     Usage {

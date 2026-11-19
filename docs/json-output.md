@@ -14,7 +14,7 @@ JSON mode writes exactly one JSON document to stdout on success. Errors and diag
 }
 ```
 
-`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` preserves the original spend/budget summary and adds the full budget object; `status.data.spend` holds the same budget object (see [Budget fields](#budget-fields)). `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used). `status.data` also includes profile and gateway-probe information. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; failed doctor reports go to stderr so automation can inspect the findings there. Cache source is `live`, `cache`, or `none`. `usage.data` contains a local date range, observed request/token metrics, daily and attribution breakdowns, and billing status as described in [Local usage](gateway.md#local-usage). `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose credentials, prompts, or raw upstream inference responses.
+`schema_version` is an integer that starts at `1`; `command` is the canonical command name. `current.data` contains `name`, `label`, and `source` (`env`, `default`, or `none`); without a selection, `name` and `label` are `null`. `profiles.data` contains profile names and labels only. `spend.data` preserves the original spend/budget summary and adds the full budget object; `status.data.spend` holds the same budget object (see [Budget fields](#budget-fields)). `models.data` contains sorted `{ "id" }` entries and the requested `filter` (or `null` when no filter was used); `--detailed` adds metadata (see [Detailed models](#detailed-models)). `status.data` also includes profile and gateway-probe information. `doctor.data.checks` contains ordered check objects with `name`, `status`, `message`, and `duration_ms`; failed doctor reports go to stderr so automation can inspect the findings there. Cache source is `live`, `cache`, or `none`. `usage.data` contains a local date range, observed request/token metrics, daily and attribution breakdowns, and billing status as described in [Local usage](gateway.md#local-usage). `prompt --list` returns sorted `{ "name", "model", "has_system" }` entries without preset bodies; prompt execution returns the same resolved `model`, assistant `content`, and `usage` fields as `ask`. `runs.data` contains non-secret records only; `runs show` returns one complete record. These commands do not expose credentials, prompts, or raw upstream inference responses.
 
 ## Budget fields
 
@@ -82,6 +82,58 @@ object without the summary, profile, fingerprint, or gateway fields.
 
 Gateway-reported budget exhaustion uses exit code `6`; failed JSON commands
 leave stdout empty and report the error on stderr.
+
+## Detailed models
+
+`aix models --detailed --json` keeps `models[].id` and `filter` and adds
+metadata to each entry, plus `wildcard_routes`, `sources`, and `cache`:
+
+```json
+{
+  "schema_version": 1,
+  "command": "models",
+  "data": {
+    "models": [
+      {
+        "id": "claude-opus-5-5",
+        "route": "claude-opus-5-5*",
+        "mode": "chat",
+        "provider": "google",
+        "display_name": null,
+        "deployments": 1,
+        "context_tokens": 1000000,
+        "max_output_tokens": 128000,
+        "capabilities": {},
+        "reasoning": { "efforts": ["low", "medium", "high", "xhigh", "max"], "default_effort": null },
+        "pricing": {
+          "input_per_million": 4.0,
+          "output_per_million": 20.0,
+          "cache_read_per_million": 0.2,
+          "cache_write_per_million": 5.0
+        }
+      }
+    ],
+    "filter": null,
+    "wildcard_routes": ["openai/*"],
+    "sources": { "model_info": true, "model_group_info": false },
+    "cache": { "source": "live", "age_seconds": null, "fetched_at": "2026-11-19T17:04:07Z" }
+  }
+}
+```
+
+- `route` is the gateway route when it differs from `id` (a passthrough
+  wildcard); send `id` as the model.
+- `mode` is reported as-is (`chat`, `responses`, `embedding`,
+  `image_generation`, …), so callers choose which modes to offer. Every listed
+  model is included.
+- `capabilities` holds the gateway's `supports_*` flags without the prefix
+  (`vision`, `function_calling`, `pdf_input`, …), excluding reasoning flags.
+- `reasoning` is `null` when the model does not reason. `efforts` is ordered
+  `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and is empty when
+  the model reasons without an effort setting.
+- `pricing` is USD per million tokens; it and each of its fields are `null`
+  when unknown or when deployments disagree.
+- `deployments` is `0` when the gateway has no metadata for a listed ID.
 
 ## Errors
 

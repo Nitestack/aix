@@ -99,6 +99,10 @@ capability-specific clients:
   `GET /v1/key/info` endpoint, falling back to the legacy LiteLLM `/key/info`.
   Both shapes are normalized into budget layers with reset times and
   sanitized before `aix spend`, `aix status`, and `aix doctor` use them.
+- `catalog.rs` reads LiteLLM model metadata (`/v1/models` with wildcard
+  routes, paginated `/v2/model/info`, optional `/model_group/info`) and
+  normalizes it for `aix models --detailed`; deployment parameters never leave
+  the module.
 - `identity.rs` derives non-secret identity: the key fingerprint and the
   gateway kind/provider (config, then budget response, then well-known host).
 - `aix models` discovers model IDs and `aix ask` / `aix prompt` send one-shot text requests

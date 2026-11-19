@@ -1,10 +1,10 @@
 # Gateway commands
 
-These commands inspect the gateway behind a profile, or what aix observed locally: `aix models`, `aix spend`, `aix status`, `aix doctor`, `aix usage`, and the `aix cache` that backs spend and status.
+These commands inspect the gateway behind a profile, or what aix observed locally: `aix models`, `aix spend`, `aix status`, `aix doctor`, `aix usage`, and the `aix cache` that backs spend, status, and detailed models.
 
 ## Model discovery
 
-`aix models` fetches model IDs live from the selected profile's OpenAI-compatible `/v1/models` endpoint. It does not cache the response or assume provider-specific metadata.
+`aix models` fetches model IDs live from the selected profile's OpenAI-compatible `/v1/models` endpoint. Plain `aix models` does not cache the response or assume provider-specific metadata; see [Detailed model metadata](#detailed-model-metadata) for limits, pricing, and reasoning efforts.
 
 Every authenticated request also carries `anthropic-version: 2023-06-01`, so a
 profile whose `base_url` points at a native Anthropic endpoint (for example
@@ -25,6 +25,51 @@ aix --json models work
 ```
 
 Human output contains one sorted model ID per line. If no IDs match a filter, the command succeeds with empty output. Use `--filter <TEXT>` rather than a second positional argument so the profile position remains unambiguous.
+
+### Detailed model metadata
+
+`aix models --detailed` adds limits, pricing, reasoning efforts, and
+capabilities from a LiteLLM-compatible gateway. It reads three endpoints:
+
+- `GET /v1/models?return_wildcard_routes=true` for the listed IDs,
+- `GET /v2/model/info?page=N&size=100` for per-deployment metadata. aix follows
+  `total_pages` and fails with a protocol error (exit `5`) when the pages are
+  inconsistent.
+- `GET /model_group/info` (optional) for each group's
+  `supported_reasoning_efforts`.
+
+```bash
+aix models work --detailed
+aix models work --detailed --json
+aix models work --detailed --max-age 1h   # cache younger than an hour is fine
+aix models work --detailed --refresh      # always fetch; --no-cache is an alias
+```
+
+```text
+gpt-6-sol  chat · 922K ctx · 128K out · reasoning none..max · $2.40/$12.00 per 1M
+```
+
+The result is cached per endpoint and key like budget data, using the same
+`[cache]` TTL. `--max-age` and `--refresh` work as they do for `aix spend` and
+need `--detailed`. A gateway without `/v2/model/info` still lists its IDs with
+no metadata, and `sources.model_info` is `false`.
+
+aix merges deployments of the same model conservatively. Limits use the
+smallest value. Provider, mode, pricing, and each capability are reported only
+when every deployment agrees. Reasoning efforts are the ones every deployment
+supports, unless the group endpoint lists them. A passthrough wildcard route
+such as `claude-opus-5-5*` is reported as the selectable ID `claude-opus-5-5`
+with `route` set. Routes that do not name one model, such as `*`, `openai/*`, or
+a wildcard that routes to a different model, are listed in `wildcard_routes`.
+Only the normalized fields leave aix; deployment parameters such as upstream
+keys and API bases are never printed or cached.
+
+Pricing is USD per million tokens, converted from LiteLLM's per-token
+`input_cost_per_token`, `output_cost_per_token`, `cache_read_input_token_cost`,
+and `cache_creation_input_token_cost`. When the gateway reports it, this is the
+price the gateway charges. Callers can use it in place of LiteLLM's public
+`model_prices_and_context_window.json`, which lists list prices for upstream
+providers and does not know gateway-specific models or markups.
 
 ## Spend and budget
 

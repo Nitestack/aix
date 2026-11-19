@@ -176,9 +176,22 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
         Command::Doctor { profile } => {
             crate::commands::doctor::run(request_options_for(profile), config_path, json).await
         }
-        Command::Models { profile, filter } => {
-            crate::commands::models::run(request_options_for(profile), config_path, json, filter)
-                .await
+        Command::Models {
+            profile,
+            filter,
+            detailed,
+            refresh,
+            max_age,
+        } => {
+            let detail = detailed.then(|| CachePolicy::from_flags(refresh, max_age));
+            crate::commands::models::run(
+                request_options_for(profile),
+                config_path,
+                json,
+                filter,
+                detail,
+            )
+            .await
         }
         Command::Usage {
             profile,
