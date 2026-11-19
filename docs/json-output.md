@@ -83,6 +83,51 @@ object without the summary, profile, fingerprint, or gateway fields.
 Gateway-reported budget exhaustion uses exit code `6`; failed JSON commands
 leave stdout empty and report the error on stderr.
 
+## Errors
+
+By default a failed command writes human-readable text to stderr. Pass the
+global `--error-format json` to get one JSON line instead, for any command
+(including `aix env --format json` and argument errors that clap rejects):
+
+```json
+{"schema_version":1,"command":"status","error":{"code":"profile_not_found","category":"config","exit_code":2,"message":"profile \"missing\" is not defined\n\nAvailable profiles:\n  work"}}
+```
+
+`category` names the exit code (`internal`, `config`, `secret`,
+`authentication`, `network`, `budget`, or `timeout`). `message` is the same
+text the human format prints. `code` is stable and only gains new values;
+treat an unknown code like its category. `doctor` and `gate` keep writing their
+failed-check report to stderr.
+
+| `code` | Meaning |
+|---|---|
+| `config_not_found` | No config file was found |
+| `profile_not_found` | The named profile is not defined |
+| `no_profile_selected` | No profile argument, `AIX_PROFILE`, or `default_profile`, and no picker |
+| `selection_cancelled` | The interactive picker was cancelled |
+| `chatgpt_unsupported` | The command needs an API-key profile, or the profile is not a ChatGPT profile |
+| `chatgpt_tool_unsupported` | The tool is not configured to use ChatGPT-plan credentials |
+| `chatgpt_login_required` | ChatGPT credentials are missing or invalid; run `aix auth login` |
+| `chatgpt_auth_failed` | ChatGPT sign-in or token refresh failed |
+| `auth_store_unavailable` | Local ChatGPT credential storage could not be read or written |
+| `secret_unavailable` | The API key could not be resolved from its secret source |
+| `gateway_auth_failed` | The gateway answered HTTP 401 or 403 |
+| `budget_exceeded` | The gateway answered HTTP 402 |
+| `gateway_rate_limited` | The gateway answered HTTP 429 |
+| `gateway_http_error` | The gateway answered another HTTP error |
+| `gateway_protocol_error` | The gateway answered with an unexpected payload |
+| `gateway_timeout` | The request exceeded `--timeout` |
+| `gateway_unreachable` | The request failed before an HTTP answer |
+| `prompt_not_found`, `policy_not_found`, `run_not_found` | The named item does not exist |
+| `policy_violation`, `policy_duration_reached` | A run policy refused or stopped the run |
+| `executable_not_found` | The tool or command to launch was not found |
+| `json_unsupported` | `--json` was used with a command that has no JSON output |
+| `command_removed` | The command was removed from aix |
+| `doctor_checks_failed`, `gate_checks_failed` | Reserved; these commands print their own report |
+| `invalid_arguments` | Command-line arguments were rejected (`command` is `aix`) |
+| `invalid_input` | Other configuration or input validation failures |
+| `internal` | Anything else |
+
 ## Exit codes
 
 Process exit codes are stable:

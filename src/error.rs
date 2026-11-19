@@ -525,6 +525,98 @@ impl AixError {
     }
 }
 
+impl AixError {
+    /// Stable machine-readable error code for the JSON error envelope.
+    /// Codes are only added, never renamed; callers should treat an unknown
+    /// code like its category.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NoConfigFile => "config_not_found",
+            Self::ProfileNotFound { .. } => "profile_not_found",
+            Self::NoProfile | Self::NoInteractiveTerminal => "no_profile_selected",
+            Self::SelectionCancelled => "selection_cancelled",
+            Self::ChatGptAuthUnsupported
+            | Self::PiAgentConfigChatGptUnsupported
+            | Self::AuthProfileNotChatGpt => "chatgpt_unsupported",
+            Self::ChatGptToolNotConfigured { .. } | Self::ChatGptLocalGatewayUnsupported { .. } => {
+                "chatgpt_tool_unsupported"
+            }
+            Self::AuthIdentityInvalid
+            | Self::AuthRefreshTokenUnavailable
+            | Self::AuthPlanUsageDisabled => "chatgpt_login_required",
+            Self::AuthLoginRequiresInteractive
+            | Self::AuthAuthorizationDenied
+            | Self::AuthCallbackInvalid
+            | Self::AuthCallbackTimeout
+            | Self::AuthOAuthRejected { .. }
+            | Self::AuthIdentityMismatch
+            | Self::AuthRefreshNotYetAllowed
+            | Self::AuthNetwork { .. }
+            | Self::AuthProtocol => "chatgpt_auth_failed",
+            Self::AuthStoreIo(_) | Self::AuthStoreMalformed => "auth_store_unavailable",
+            Self::SecretMissingEnvVar { .. }
+            | Self::SecretFileRead { .. }
+            | Self::SecretCommandFailed { .. }
+            | Self::SecretCommandSpawn { .. }
+            | Self::SecretCommandEncoding { .. }
+            | Self::EnvFileLoad { .. }
+            | Self::AmbiguousSecretSource { .. } => "secret_unavailable",
+            Self::GatewayError {
+                status: 401 | 403, ..
+            }
+            | Self::GatewayRequestFailed { status: 401 | 403 } => "gateway_auth_failed",
+            Self::GatewayError { status: 402, .. } | Self::GatewayRequestFailed { status: 402 } => {
+                "budget_exceeded"
+            }
+            Self::GatewayError { status: 429, .. } | Self::GatewayRequestFailed { status: 429 } => {
+                "gateway_rate_limited"
+            }
+            Self::GatewayError { .. } | Self::GatewayRequestFailed { .. } => "gateway_http_error",
+            Self::GatewayProtocolError(_) => "gateway_protocol_error",
+            Self::HttpError(error) if error.is_timeout() => "gateway_timeout",
+            Self::HttpError(_) => "gateway_unreachable",
+            Self::PromptNotFound { .. } => "prompt_not_found",
+            Self::RunPolicyNotFound { .. } => "policy_not_found",
+            Self::RunNotFound { .. } => "run_not_found",
+            Self::RunPolicyProfileConflict
+            | Self::RunPolicyDurationExceeded { .. }
+            | Self::RunPolicyModelNotAllowed
+            | Self::RunPolicyEnforcementUnavailable { .. } => "policy_violation",
+            Self::RunPolicyDurationReached { .. } => "policy_duration_reached",
+            Self::ExecutableNotFound { .. } => "executable_not_found",
+            Self::JsonUnsupportedCommand => "json_unsupported",
+            Self::RemovedCommand { .. } => "command_removed",
+            Self::DoctorChecksFailed { .. } => "doctor_checks_failed",
+            Self::GateChecksFailed { .. } => "gate_checks_failed",
+            _ => match self.exit_code() {
+                2 => "invalid_input",
+                3 => "secret_unavailable",
+                _ => "internal",
+            },
+        }
+    }
+}
+
+/// Category name for an exit code, as reported in the JSON error envelope.
+pub fn exit_category(code: i32) -> &'static str {
+    match code {
+        2 => "config",
+        3 => "secret",
+        4 => "authentication",
+        5 => "network",
+        6 => "budget",
+        124 => "timeout",
+        _ => "internal",
+    }
+}
+
+/// Stable error code for any report; non-aix errors are `internal`.
+pub fn error_code(error: &color_eyre::Report) -> &'static str {
+    error
+        .downcast_ref::<AixError>()
+        .map_or("internal", AixError::code)
+}
+
 pub fn exit_code(error: &color_eyre::Report) -> i32 {
     error
         .downcast_ref::<AixError>()
@@ -674,5 +766,33 @@ mod tests {
             5
         );
         assert_eq!(AixError::NotImplemented("example").exit_code(), 1);
+    }
+
+    #[test]
+    fn error_codes_are_stable_for_the_cases_callers_match() {
+        let gateway = |status| AixError::GatewayError {
+            status,
+            body: String::new(),
+        };
+        assert_eq!(AixError::NoConfigFile.code(), "config_not_found");
+        assert_eq!(
+            AixError::NoInteractiveTerminal.code(),
+            "no_profile_selected"
+        );
+        assert_eq!(
+            AixError::ChatGptAuthUnsupported.code(),
+            "chatgpt_unsupported"
+        );
+        assert_eq!(gateway(401).code(), "gateway_auth_failed");
+        assert_eq!(gateway(402).code(), "budget_exceeded");
+        assert_eq!(gateway(429).code(), "gateway_rate_limited");
+        assert_eq!(gateway(502).code(), "gateway_http_error");
+        assert_eq!(
+            AixError::GatewayProtocolError("bad").code(),
+            "gateway_protocol_error"
+        );
+        assert_eq!(AixError::EmptyToolName.code(), "invalid_input");
+        assert_eq!(AixError::NotImplemented("x").code(), "internal");
+        assert_eq!(exit_category(gateway(402).exit_code()), "budget");
     }
 }

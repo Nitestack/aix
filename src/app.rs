@@ -17,22 +17,33 @@ pub async fn run() -> ExitCode {
         Ok(cli) => cli,
         Err(error) => {
             let code = error.exit_code();
-            let _ = error.print();
+            if code != 0 && json_errors_requested(std::env::args().skip(1)) {
+                let message = error.render().to_string().trim_end().to_string();
+                crate::output::print_json_usage_error(code, message);
+            } else {
+                let _ = error.print();
+            }
             return ExitCode::from(code as u8);
         }
     };
 
+    let json_error_command =
+        (cli.error_format == crate::cli::ErrorFormat::Json).then(|| cli.command.json_name());
     match dispatch(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let code = crate::error::exit_code(&error);
-            if !matches!(
+            // Doctor and gate have already written their failed report to stderr.
+            if matches!(
                 error.downcast_ref::<crate::error::AixError>(),
                 Some(
                     crate::error::AixError::DoctorChecksFailed { .. }
                         | crate::error::AixError::GateChecksFailed { .. }
                 )
             ) {
+            } else if let Some(command) = json_error_command {
+                crate::output::print_json_error(command, &error);
+            } else {
                 eprintln!("{error:?}");
             }
             ExitCode::from(code as u8)
@@ -285,6 +296,22 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
     }
 }
 
+/// Whether `--error-format json` appears before any `--` separator. Used only
+/// when clap could not parse the command line.
+fn json_errors_requested(args: impl IntoIterator<Item = String>) -> bool {
+    let mut previous_was_flag = false;
+    for arg in args {
+        if arg == "--" {
+            return false;
+        }
+        if arg == "--error-format=json" || (previous_was_flag && arg == "json") {
+            return true;
+        }
+        previous_was_flag = arg == "--error-format";
+    }
+    false
+}
+
 fn tool_non_interactive(global_flag: bool, pre_separator_args: &[String]) -> bool {
     global_flag
         || pre_separator_args
@@ -294,7 +321,25 @@ fn tool_non_interactive(global_flag: bool, pre_separator_args: &[String]) -> boo
 
 #[cfg(test)]
 mod tests {
-    use super::tool_non_interactive;
+    use super::{json_errors_requested, tool_non_interactive};
+
+    #[test]
+    fn json_error_format_is_detected_without_a_successful_parse() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        assert!(json_errors_requested(args(&[
+            "--error-format",
+            "json",
+            "x"
+        ])));
+        assert!(json_errors_requested(args(&["x", "--error-format=json"])));
+        assert!(!json_errors_requested(args(&["--error-format", "text"])));
+        assert!(!json_errors_requested(args(&[
+            "exec",
+            "--",
+            "--error-format=json"
+        ])));
+        assert!(!json_errors_requested(args(&["json"])));
+    }
 
     #[test]
     fn named_tool_selection_honors_non_interactive_before_separator() {

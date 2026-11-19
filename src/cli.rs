@@ -29,6 +29,16 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Report a failed command on stderr as text or as one JSON object
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        value_name = "FORMAT",
+        default_value = "text"
+    )]
+    pub error_format: ErrorFormat,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -83,6 +93,12 @@ fn parse_duration(value: &str) -> Result<Duration, String> {
             .ok_or_else(|| "duration is too large".to_string()),
         _ => unreachable!("unit is selected above"),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ErrorFormat {
+    Text,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -353,6 +369,48 @@ impl Command {
                     action: AuthAction::Status { .. }
                 }
         )
+    }
+
+    /// The `command` field of this command's JSON envelope.
+    pub fn json_name(&self) -> &'static str {
+        match self {
+            Self::Init { .. } => "init",
+            Self::Use { .. } => "use",
+            Self::Current { .. } => "current",
+            Self::Profiles => "profiles",
+            Self::Policies => "policies",
+            Self::Policy { .. } => "policy show",
+            Self::Env { .. } => "env",
+            Self::Shell { .. } => "shell",
+            Self::Exec { .. } => "exec",
+            Self::Config { .. } => "config",
+            Self::Auth {
+                action: AuthAction::Status { .. },
+            } => "auth status",
+            Self::Auth {
+                action: AuthAction::Login { .. },
+            } => "auth login",
+            Self::Auth {
+                action: AuthAction::Logout { .. },
+            } => "auth logout",
+            Self::Spend { .. } => "spend",
+            Self::Status { .. } => "status",
+            Self::Gate { .. } => "gate",
+            Self::Doctor { .. } => "doctor",
+            Self::Models { .. } => "models",
+            Self::Usage { .. } => "usage",
+            Self::Ask { .. } => "ask",
+            Self::Prompt { .. } => "prompt",
+            Self::Run { .. } => "run",
+            Self::Runs {
+                action: Some(RunsAction::Show { .. }),
+                ..
+            } => "runs show",
+            Self::Runs { .. } => "runs",
+            Self::Upgrade { .. } => "upgrade",
+            Self::Cache { .. } => "cache",
+            Self::Tool(_) => "tool",
+        }
     }
 }
 
