@@ -75,7 +75,7 @@ impl Installed {
                 .ok_or_else(|| eyre!("invalid installed release in aix update state"))?;
             return Ok(Self::Release(version));
         }
-        bail!("invalid installed build in aix update state")
+        bail!("invalid installed build in aix update state");
     }
 
     pub(crate) fn as_state_value(&self) -> String {
@@ -125,8 +125,12 @@ impl UpgradeState {
             match key {
                 "target" if target.is_none() => target = Some(Target::parse(value)?),
                 "installed" if installed.is_none() => installed = Some(Installed::parse(value)?),
-                "target" | "installed" => bail!("duplicate {key} in {}", path.display()),
-                _ => bail!("unknown key {key:?} in {}", path.display()),
+                "target" | "installed" => {
+                    bail!("duplicate {key} in {}", path.display());
+                }
+                _ => {
+                    bail!("unknown key {key:?} in {}", path.display());
+                }
             }
         }
 

@@ -119,7 +119,9 @@ pub async fn set_target(
                 .wrap_err("could not select an update target")?
                 .target
         }
-        (Some(_), Some(_)) => bail!("choose either --channel or --release, not both"),
+        (Some(_), Some(_)) => {
+            bail!("choose either --channel or --release, not both");
+        }
     };
 
     if proposed == state.target && state.installed.is_some() {
@@ -665,7 +667,9 @@ fn standalone_asset() -> Result<&'static str> {
         ("macos", "x86_64") => Ok("aix-x86_64-apple-darwin"),
         ("macos", "aarch64") => Ok("aix-aarch64-apple-darwin"),
         ("windows", "x86_64") => Ok("aix-x86_64-pc-windows-msvc.exe"),
-        (os, arch) => bail!("no standalone aix release binary is published for {os}/{arch}"),
+        (os, arch) => {
+            bail!("no standalone aix release binary is published for {os}/{arch}");
+        }
     }
 }
 
