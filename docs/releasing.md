@@ -4,22 +4,26 @@ Maintainer notes on how releases are cut and distributed.
 
 ## Flow
 
-1. Every push to `main` runs [release-plz](https://release-plz.dev/), which keeps a
-   **"chore: release vX.Y.Z"** PR open. The PR bumps `Cargo.toml`/`Cargo.lock` and adds a
-   [`CHANGELOG.md`](../CHANGELOG.md) entry generated from
-   [Conventional Commits](https://www.conventionalcommits.org/):
-   - `feat` bumps the minor version
-   - `fix` bumps the patch version
-   - `feat!` or `BREAKING CHANGE` bumps the major version
+1. When you are ready to cut a release, go to Actions → **Prepare release**
+   ([`prepare-release.yml`](../.github/workflows/prepare-release.yml)) →
+   **Run workflow** against `main` and choose:
+   - **bump:** `patch` (default), `minor`, or `major`; or
+   - **version:** an explicit SemVer version (for example `1.2.3` or `v1.2.3`),
+     which overrides `bump`.
 
-   Only `feat`, `fix`, and `perf` commits open or update a release PR, and only
-   when they touch files that ship in the crate. `ci`, `docs`, `build`, `chore`,
-   `test`, `style`, and `refactor` commits never trigger a release and are left
-   out of the changelog. Use those prefixes for pipeline and packaging work.
-   See [`release-plz.toml`](../release-plz.toml).
-2. Review and edit the PR if needed, then merge it when you want to release.
-   The PR can stay open as long as you like. It is the only manual step.
-3. [`release.yml`](../.github/workflows/release.yml) then:
+   The workflow runs `release-plz update` to draft the
+   [`CHANGELOG.md`](../CHANGELOG.md) entry from
+   [Conventional Commits](https://www.conventionalcommits.org/) (`feat`, `fix`,
+   and `perf` are grouped into `Added`, `Fixed`, and `Performance`; `ci`,
+   `docs`, `build`, `chore`, `test`, `style`, and `refactor` are skipped; see
+   [`release-plz.toml`](../release-plz.toml)), runs `release-plz set-version` to
+   apply your chosen version to `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`,
+   and opens (or updates) a **`chore: release vX.Y.Z`** PR from `release/next`.
+   Re-running **Prepare release** with a different bump or after more commits
+   land on `main` updates that same PR in place.
+2. Review and edit the PR (for example to polish changelog entries), then merge
+   it.
+3. [`release.yml`](../.github/workflows/release.yml) then runs on `main` and:
    - publishes `aix-rs` to crates.io;
    - tags `vX.Y.Z` and creates the GitHub release;
    - builds binaries with [`build.yml`](../.github/workflows/build.yml) and attaches them

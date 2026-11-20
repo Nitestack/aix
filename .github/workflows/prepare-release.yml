@@ -1,0 +1,271 @@
+name: Prepare release
+
+# Opens (or updates) a "chore: release vX.Y.Z" PR on demand so you choose
+# whether the next release is a patch, minor, major, or explicit version bump.
+#
+# Flow:
+#   1. Run this workflow manually (Actions -> Prepare release -> Run workflow)
+#      against `main` and pick a bump (`patch`, `minor`, `major`) or an
+#      explicit version (e.g. `1.2.3` or `v1.2.3`).
+#   2. `release-plz update` drafts the CHANGELOG.md entry from commits since
+#      the last release, and `release-plz set-version` stamps your chosen
+#      version into Cargo.toml, Cargo.lock, and CHANGELOG.md.
+#   3. A PR is opened/updated from `release/next` targeting `main`. Review or
+#      edit the changelog if needed, then merge it. Merging triggers
+#      `release.yml` to publish to crates.io, tag, build binaries, and update
+#      package managers.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: SemVer bump to apply (ignored if version is set)
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: Explicit target version (e.g. 1.2.3 or v1.2.3); overrides bump
+        type: string
+        required: false
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release PR
+    if: github.repository_owner == 'get-aix'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Require main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Prepare release must be run from the main branch (got $GITHUB_REF)."
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # PRs opened with GITHUB_TOKEN don't trigger CI. Set a
+          # RELEASE_PLZ_TOKEN (fine-grained PAT or GitHub App token with
+          # Contents + Pull requests write) to get CI on the release PR.
+          token: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install release-plz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz
+
+      - name: Compute target version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPLICIT_VERSION: ${{ inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          import tomllib
+
+          with open("Cargo.toml", "rb") as f:
+              current = tomllib.load(f)["package"]["version"]
+
+          explicit = os.environ.get("EXPLICIT_VERSION", "").strip()
+          bump = os.environ.get("BUMP", "patch").strip()
+
+          semver_re = re.compile(
+              r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+              r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+              r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+          )
+
+          if explicit:
+              target = explicit[1:] if explicit.startswith("v") else explicit
+              if not semver_re.match(target):
+                  sys.exit(f"Invalid SemVer version: {explicit!r}")
+          else:
+              m = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", current)
+              if not m:
+                  sys.exit(
+                      f"Current version {current!r} is not a plain X.Y.Z release; "
+                      "pass an explicit `version` input instead."
+                  )
+              major, minor, patch = (int(x) for x in m.groups())
+              if bump == "patch":
+                  target = f"{major}.{minor}.{patch + 1}"
+              elif bump == "minor":
+                  target = f"{major}.{minor + 1}.0"
+              elif bump == "major":
+                  target = f"{major + 1}.0.0"
+              else:
+                  sys.exit(f"Unsupported bump type: {bump!r}")
+
+          if target == current:
+              sys.exit(f"Target version {target} is the same as current version {current}.")
+
+          tag_check = subprocess.run(
+              ["git", "rev-parse", "-q", "--verify", f"refs/tags/v{target}"],
+              capture_output=True,
+              text=True,
+          )
+          if tag_check.returncode == 0:
+              sys.exit(f"Tag v{target} already exists.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"current={current}\n")
+              out.write(f"target={target}\n")
+
+          print(f"Preparing release: v{current} -> v{target}")
+          PY
+
+      - name: Update version and changelog
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          TARGET: ${{ steps.version.outputs.target }}
+        run: |
+          # Draft the new CHANGELOG.md entry from commits since the last release.
+          release-plz update
+
+          AFTER_UPDATE=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          echo "Version after release-plz update: $AFTER_UPDATE"
+
+          if [ "$AFTER_UPDATE" != "$CURRENT" ]; then
+            # release-plz update bumped Cargo.toml and prepended a new CHANGELOG.md
+            # section; rewrite both to the requested target version if it differs.
+            if [ "$AFTER_UPDATE" != "$TARGET" ]; then
+              release-plz set-version "$TARGET"
+            fi
+          else
+            # release-plz update found no crate-level changes (e.g. only docs/nix/ci
+            # commits), so CHANGELOG.md was not touched. Preserve CHANGELOG.md around
+            # set-version (which otherwise rewrites the previous release heading) and
+            # prepend a fresh section for the new version.
+            cp CHANGELOG.md "$RUNNER_TEMP/CHANGELOG.md.bak"
+            release-plz set-version "$TARGET"
+            mv "$RUNNER_TEMP/CHANGELOG.md.bak" CHANGELOG.md
+
+            python3 - <<'PY'
+          import datetime
+          import os
+
+          current = os.environ["CURRENT"]
+          target = os.environ["TARGET"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          server = os.environ["GITHUB_SERVER_URL"]
+          today = datetime.date.today().isoformat()
+
+          heading = (
+              f"## [{target}]({server}/{repo}/compare/v{current}...v{target}) - {today}\n\n"
+          )
+
+          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+              content = f.read()
+
+          marker = "\n## "
+          idx = content.find(marker)
+          if idx != -1:
+              updated = content[: idx + 1] + heading + content[idx + 1 :]
+          else:
+              updated = content.rstrip() + "\n\n" + heading
+
+          with open("CHANGELOG.md", "w", encoding="utf-8") as f:
+              f.write(updated)
+          PY
+          fi
+
+          # Verify Cargo.lock matches the updated Cargo.toml.
+          cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Create or update release PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          CURRENT: ${{ steps.version.outputs.current }}
+          TARGET: ${{ steps.version.outputs.target }}
+        run: |
+          BRANCH="release/next"
+          TITLE="chore: release v${TARGET}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B "$BRANCH"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "$TITLE"
+          git push --force origin "$BRANCH"
+
+          BODY_FILE="$RUNNER_TEMP/pr-body.md"
+          python3 - "$BODY_FILE" <<'PY'
+          import os
+          import sys
+
+          body_path = sys.argv[1]
+          current = os.environ["CURRENT"]
+          target = os.environ["TARGET"]
+
+          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+              lines = f.readlines()
+
+          section = []
+          in_section = False
+          for line in lines:
+              if line.startswith("## "):
+                  if in_section:
+                      break
+                  in_section = True
+              if in_section:
+                  section.append(line)
+
+          changelog_preview = "".join(section).strip()
+
+          body = (
+              f"Prepares **`v{target}`** (from `v{current}`).\n\n"
+              "Merging this PR will publish `aix-rs` to crates.io, tag "
+              f"`v{target}`, build release binaries, and update the package managers.\n\n"
+              "---\n\n"
+              f"{changelog_preview}\n"
+          )
+
+          with open(body_path, "w", encoding="utf-8") as out:
+              out.write(body)
+          PY
+
+          PR_NUMBER=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "$BRANCH" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr edit "$PR_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE"
+            PR_URL=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json url --jq .url)
+          else
+            PR_URL=$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body-file "$BODY_FILE")
+          fi
+
+          {
+            echo "### Release PR ready: \`v${TARGET}\`"
+            echo ""
+            echo "- Version: \`v${CURRENT}\` → \`v${TARGET}\`"
+            echo "- PR: ${PR_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"

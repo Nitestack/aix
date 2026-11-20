@@ -28,9 +28,10 @@ and [docs/releasing.md](docs/releasing.md) for how releases are cut.
 ## Commits
 
 Use [Conventional Commits](https://www.conventionalcommits.org/). The commit
-type decides whether a change shows up in a release: `feat`, `fix`, and `perf`
-open or update the release PR; `docs`, `ci`, `chore`, `build`, `test`, `style`,
-and `refactor` do not. Keep commits small: one logical change each.
+type decides whether a change shows up in [`CHANGELOG.md`](CHANGELOG.md):
+`feat`, `fix`, and `perf` are included; `docs`, `ci`, `chore`, `build`, `test`,
+`style`, and `refactor` are skipped. Keep commits small: one logical change
+each.
 
 ## PR checklist
 
