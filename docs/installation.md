@@ -8,10 +8,11 @@ installing, continue with [Configuration](configuration.md).
 - [Cargo](#cargo): prebuilt via cargo-binstall, or build from crates.io
 - [Manual download](#manual-download) — place the binary yourself
 - [Nix](#nix) — flake, overlay, or home-manager module
-- [Nightly builds](#nightly-builds) — prebuilt binaries from `main`
+- [Nightly builds](#nightly-builds) — prebuilt binaries and installer scripts from `main`
 
-To upgrade later, run `aix upgrade`. It works out how aix was installed and
-upgrades it the same way; see [Upgrading](#upgrading).
+For stable installs, run `aix upgrade` to upgrade the same way aix was
+installed. Nightly script installs and Nix installs have channel-specific
+update steps; see [Upgrading](#upgrading) and [Nightly builds](#nightly-builds).
 
 ## Releases
 
@@ -135,7 +136,7 @@ Installs to `%LOCALAPPDATA%\Programs\aix` by default. Adds the directory to the 
 Set `AIX_INSTALL_DIR` before running either script to override the default destination:
 
 ```sh
-AIX_INSTALL_DIR=/usr/local/bin curl -fsSL https://github.com/get-aix/aix/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/get-aix/aix/releases/latest/download/install.sh | AIX_INSTALL_DIR=/usr/local/bin sh
 ```
 
 ```powershell
@@ -198,15 +199,26 @@ home.packages = [ pkgs.aix-rs ];
 
 ### One-off / try it out
 
+Nix refs select the channel. See [Nix and home-manager](nix.md#stable-and-nightly-refs)
+for how to choose a stable release tag or the nightly `main` branch.
+
 ```bash
-nix run github:get-aix/aix -- --help
+# Nightly tip of main
+nix run --refresh github:get-aix/aix/main -- --help
+
+# Stable release (replace v1.0.1 with the release tag you want)
+nix run github:get-aix/aix/v1.0.1 -- --help
 ```
 
 ## Upgrading
 
 ```sh
-aix upgrade           # upgrade to the latest release
-aix upgrade --check   # show what it would do, change nothing
+aix upgrade                            # apply the saved target (stable by default)
+aix upgrade --check                    # preview without changing anything
+aix upgrade set                        # interactively choose a target
+aix upgrade set --channel nightly      # follow the rolling nightly build
+aix upgrade set --channel stable       # return to latest stable
+aix upgrade set --release v1.0.1       # pin to one stable release
 ```
 
 `aix upgrade` looks at where the running binary lives to work out how it was
@@ -221,14 +233,25 @@ installed, then upgrades it the same way:
 | AUR | `paru -S --needed aix-rs-bin`, or `yay` if paru isn't installed |
 | `cargo binstall` | `cargo binstall aix-rs` |
 | `cargo install` | `cargo install --locked aix-rs` |
-| Installer script or manual download | Re-runs the installer script into the same directory |
+| Standalone installer script or manual download | Downloads and verifies the saved target's binary directly into the same directory |
 | Nix | Nothing; prints how to upgrade through Nix (see below) |
 | Source checkout (`target/…`) | Nothing; prints how to pull and rebuild |
 
-Package managers decide for themselves whether a newer version exists. For
-installer-script and `.deb`/`.rpm` installs, aix compares its version with the
-latest release first and stops if you're already up to date; pass `--force` to
-reinstall anyway. `aix update` is accepted as an alias.
+The standalone target defaults to the latest stable release. `aix upgrade set`
+opens a picker with stable, nightly, and available stable release tags; choose
+one and confirm to save it. The `--channel` and `--release` forms select the
+same targets directly. Setting a target does not install anything; the next
+`aix upgrade` follows it. Use `--yes` to confirm a flag-selected change without
+a prompt, for example `aix upgrade set --channel nightly --yes`. The target is
+saved in `.aix-update-state` next to the standalone binary.
+
+Target selection is only available for standalone installs. Package managers
+continue to manage stable releases themselves, and Nix follows the ref in your
+flake input. Package managers decide for themselves whether a newer version
+exists. For standalone installs, aix checks the saved target; for `.deb`/`.rpm`
+installs, it checks the latest stable release. Both stop if you're already up
+to date; pass `--force` to reinstall anyway. `aix update` is accepted as an
+alias for `aix upgrade`.
 
 The package managers run with their own confirmation prompts turned off,
 because running `aix upgrade` already says you want the upgrade. `sudo` still
@@ -259,5 +282,26 @@ instructions. It exits non-zero only when an upgrade was attempted and failed.
 
 A rolling [`nightly` prerelease](https://github.com/get-aix/aix/releases/tag/nightly)
 is rebuilt from `main` with binaries for the same platforms. Use it if you want
-unreleased changes; download the asset for your platform from that release page.
-Stable releases are recommended otherwise.
+unreleased changes. Stable releases are recommended otherwise.
+
+**Linux / macOS:**
+
+```sh
+curl -fsSL https://github.com/get-aix/aix/releases/download/nightly/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://github.com/get-aix/aix/releases/download/nightly/install.ps1 | iex
+```
+
+The nightly installers detect the platform, verify the downloaded binary with
+`SHA256SUMS`, and use the same default install locations and PATH setup as the
+stable installers. They also honor `AIX_INSTALL_DIR` and save `nightly` as the
+update target, so `aix upgrade` follows new nightly builds automatically. To
+return to stable, run `aix upgrade set --channel stable`; to pin a particular
+stable release, use `aix upgrade set --release vX.Y.Z`. Nix users can instead
+point the flake input at `main`; see
+[Stable and nightly refs](nix.md#stable-and-nightly-refs). Other package-manager
+channels continue to provide stable releases.

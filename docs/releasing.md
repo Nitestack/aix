@@ -28,8 +28,13 @@ Maintainer notes on how releases are cut and distributed.
      the AUR and winget.
 
 [`nightly.yml`](../.github/workflows/nightly.yml) rebuilds the `nightly` prerelease on
-every push to `main`. It is never marked as the latest release, so it doesn't affect
-the installers or package managers.
+every push to `main`. It is never marked as the latest release, so it doesn't change
+the stable installer URLs or package-manager channels. The nightly release includes
+its own `install.sh` and `install.ps1`, configured to download from the rolling
+`nightly` tag. It also publishes `NIGHTLY_VERSION` (the full source commit ID)
+in `SHA256SUMS`; the installers and `aix upgrade` use that ID to detect a new
+nightly even though the Cargo version may not change between builds. Nightly
+installer scripts save the nightly update target beside the installed binary.
 
 ## Retrying
 

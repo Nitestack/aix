@@ -279,9 +279,27 @@ async fn dispatch(cli: Cli) -> color_eyre::Result<()> {
         }
         Command::Runs { limit, action } => crate::commands::runs::run(action, limit, json),
         Command::Cache { action } => crate::commands::cache::run(action, config_path),
-        Command::Upgrade { check, force } => {
-            crate::commands::upgrade::run(check, force, timeout).await
-        }
+        Command::Upgrade {
+            action,
+            check,
+            force,
+        } => match action {
+            Some(crate::cli::UpgradeAction::Set {
+                channel,
+                release,
+                yes,
+            }) => {
+                crate::commands::upgrade::set_target(
+                    channel,
+                    release,
+                    yes,
+                    non_interactive,
+                    timeout,
+                )
+                .await
+            }
+            None => crate::commands::upgrade::run(check, force, timeout).await,
+        },
         Command::Tool(raw) => {
             let tool = raw[0].clone();
             let rest = &raw[1..];

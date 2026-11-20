@@ -324,14 +324,16 @@ pub enum Command {
         #[command(subcommand)]
         action: Option<RunsAction>,
     },
-    /// Upgrade aix to the latest release using the method it was installed with
-    #[command(alias = "update")]
+    /// Upgrade aix using its saved release target and installation method
+    #[command(alias = "update", args_conflicts_with_subcommands = true)]
     Upgrade {
+        #[command(subcommand)]
+        action: Option<UpgradeAction>,
         /// Show how aix was installed and what an upgrade would do, without changing anything
         #[arg(long)]
         check: bool,
-        /// Reinstall even when the installed version is already the latest
-        /// (installer-script and .deb/.rpm installs only)
+        /// Reinstall even when the saved target is already installed
+        /// (standalone and .deb/.rpm installs only)
         #[arg(long, conflicts_with = "check")]
         force: bool,
     },
@@ -348,6 +350,28 @@ pub enum Command {
     /// Home Manager option descriptions for path and replacement behavior.
     #[command(external_subcommand)]
     Tool(Vec<String>),
+}
+
+#[derive(Subcommand)]
+pub enum UpgradeAction {
+    /// Choose which release `aix upgrade` follows on standalone installs
+    Set {
+        /// Release channel to follow (stable or nightly)
+        #[arg(long, value_enum, conflicts_with = "release")]
+        channel: Option<UpgradeChannel>,
+        /// Pin to a specific stable release tag (for example, v1.0.1)
+        #[arg(long, value_name = "TAG", conflicts_with = "channel")]
+        release: Option<String>,
+        /// Confirm the target change without prompting
+        #[arg(long, short)]
+        yes: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum UpgradeChannel {
+    Stable,
+    Nightly,
 }
 
 #[derive(Args, Default)]

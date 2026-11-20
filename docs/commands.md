@@ -28,7 +28,10 @@ positional argument; see [Global options](#global-options) for how a profile is 
 | `aix auth login\|status\|logout [PROFILE]` | Manage ChatGPT sign-in for a profile | [ChatGPT authentication](chatgpt.md) |
 | `aix config path` / `aix config validate` | Print the config path or validate the config | [Configuration](configuration.md#config-path-resolution) |
 | `aix cache clear` | Delete cached gateway responses | [Cache](gateway.md#clearing-the-cache) |
-| `aix upgrade [--check] [--force]` | Upgrade aix the same way it was installed (alias: `aix update`) | [Upgrading](installation.md#upgrading) |
+| `aix upgrade [--check] [--force]` | Apply or preview the saved target; standalone installs default to latest stable (alias: `aix update`) | [Upgrading](installation.md#upgrading) |
+| `aix upgrade set` | Interactively choose and confirm a standalone install's update target | [Upgrading](installation.md#upgrading) |
+| `aix upgrade set --channel CHANNEL [--yes]` | Set the target to `stable` or `nightly` | [Upgrading](installation.md#upgrading) |
+| `aix upgrade set --release TAG [--yes]` | Pin to a specific stable release | [Upgrading](installation.md#upgrading) |
 
 ## Global options
 

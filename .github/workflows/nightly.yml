@@ -1,8 +1,9 @@
 name: Nightly
 
 # Rolling `nightly` prerelease built from the tip of main. It is marked as a
-# prerelease and never as "latest", so the installer scripts
-# (releases/latest/download/...) keep pointing at the newest stable vX.Y.Z.
+# prerelease and never as "latest", so stable installer URLs continue to point
+# at the newest stable vX.Y.Z. The nightly release has its own installers that
+# target the rolling `nightly` tag.
 
 on:
   push:
@@ -36,6 +37,26 @@ jobs:
           name: binaries
           path: binaries
 
+      - name: Point installer scripts at the nightly release
+        run: |
+          sed 's|/releases/latest/download|/releases/download/nightly|' \
+            scripts/install.sh > binaries/install.sh
+          sed 's|/releases/latest/download|/releases/download/nightly|' \
+            scripts/install.ps1 > binaries/install.ps1
+          chmod +x binaries/install.sh
+          grep -Fq '/releases/download/nightly' binaries/install.sh
+          grep -Fq '/releases/download/nightly' binaries/install.ps1
+          ! grep -Fq '/releases/latest/download' binaries/install.sh
+          ! grep -Fq '/releases/latest/download' binaries/install.ps1
+
+      - name: Add nightly build ID and refresh checksums
+        working-directory: binaries
+        env:
+          NIGHTLY_BUILD: ${{ github.sha }}
+        run: |
+          printf '%s\n' "$NIGHTLY_BUILD" > NIGHTLY_VERSION
+          sha256sum aix-* aix_* NIGHTLY_VERSION > SHA256SUMS
+
       - name: Replace nightly prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,7 +79,9 @@ jobs:
           | \`aix-x86_64-apple-darwin\` | macOS Intel |
           | \`aix-x86_64-pc-windows-msvc.exe\` | Windows x86_64 |
           | \`aix_*.deb\` / \`aix-*.rpm\` | Debian/Ubuntu, Fedora/RHEL/openSUSE packages |
-          | \`SHA256SUMS\` | Checksums for all of the above |
+          | \`SHA256SUMS\` | Checksums for binary and package assets |
+          | \`NIGHTLY_VERSION\` | Full commit ID for update detection |
+          | \`install.sh\` / \`install.ps1\` | Nightly installers for Linux/macOS and Windows |
           EOF
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
           git tag -f nightly "$GITHUB_SHA"

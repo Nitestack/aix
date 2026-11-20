@@ -95,7 +95,7 @@ the exception: they are retained in aix's owner-only local auth store. See
 | Debian / Ubuntu / Fedora / openSUSE | `.deb` / `.rpm` from the [latest release](https://github.com/get-aix/aix/releases/latest), see [Installation](docs/installation.md#debian-ubuntu-fedora-rhel-opensuse-deb--rpm) |
 | Arch Linux ([AUR](https://aur.archlinux.org/packages/aix-rs-bin)) | `yay -S aix-rs-bin` |
 | Any, via Rust ([crates.io](https://crates.io/crates/aix-rs)) | `cargo binstall aix-rs` or `cargo install aix-rs` |
-| Nix | `nix run github:get-aix/aix -- --help`, or the [home-manager module](docs/nix.md) |
+| Nix | [Stable release or nightly branch](docs/nix.md#stable-and-nightly-refs), or the [home-manager module](docs/nix.md) |
 
 Or use the installer script, which needs no package manager:
 
@@ -109,14 +109,15 @@ curl -fsSL https://github.com/get-aix/aix/releases/latest/download/install.sh | 
 irm https://github.com/get-aix/aix/releases/latest/download/install.ps1 | iex
 ```
 
-To upgrade later, run `aix upgrade`. It detects how aix was installed and
-upgrades it the same way (Nix installs get instructions instead, since Nix
-manages the version).
+Run `aix upgrade` to upgrade the way aix was installed. Standalone installs
+follow latest stable by default; use `aix upgrade set` to choose nightly or a
+specific stable release. Package managers keep their stable channel, and Nix
+follows the flake input; see [Nix and home-manager](docs/nix.md#stable-and-nightly-refs).
 
 The crate is called `aix-rs`, but every method installs a binary named `aix`.
 Prebuilt binaries cover Linux x86_64/aarch64 (static), macOS arm64/x86_64, and
 Windows x86_64. See [Installation](docs/installation.md) for checksums, manual
-downloads, custom install locations, and [nightly builds](https://github.com/get-aix/aix/releases/tag/nightly).
+downloads, custom install locations, and [nightly installer commands](docs/installation.md#nightly-builds).
 Release notes are in the [changelog](CHANGELOG.md).
 
 ## Quick start

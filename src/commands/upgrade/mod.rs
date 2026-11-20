@@ -2,22 +2,27 @@
 //!
 //! 1. [`detect`] works out the install method from the binary's location.
 //! 2. [`plan`] turns that into one action: run a package manager, install a
-//!    release `.deb`/`.rpm`, re-run the installer script, or print guidance
+//!    release `.deb`/`.rpm`, update a standalone binary to its saved target,
+//!    or print guidance
 //!    (Nix, source builds, and anything aix can't upgrade safely by itself).
 //! 3. [`execute`] carries it out, or `--check` only describes it.
 
 mod detect;
 mod nix;
 mod release;
+mod target;
 
 use color_eyre::eyre::{bail, WrapErr};
 use color_eyre::Result;
 use detect::{CargoSource, InstallMethod};
 use release::{needs_upgrade, Releases, Version, REPO_URL};
 use std::ffi::OsString;
+use std::fmt::Display;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+use target::{Installed, Target, UpgradeState};
 
 const CRATE_NAME: &str = "aix-rs";
 const HOMEBREW_FORMULA: &str = "get-aix/tap/aix";
@@ -25,7 +30,9 @@ const WINGET_ID: &str = "get-aix.aix";
 
 pub async fn run(check: bool, force: bool, timeout: Duration) -> Result<()> {
     let exe = current_exe()?;
-    remove_leftover_binary(&exe);
+    if !check {
+        remove_leftover_binary(&exe);
+    }
 
     let method = detect::detect(&exe, &detect::SystemProbe);
     let current = Version::current();
@@ -37,6 +44,146 @@ pub async fn run(check: bool, force: bool, timeout: Duration) -> Result<()> {
         return report(&plan, current, timeout).await;
     }
     execute(plan, &exe, current, force, timeout).await
+}
+
+pub async fn set_target(
+    channel: Option<crate::cli::UpgradeChannel>,
+    release_tag: Option<String>,
+    yes: bool,
+    non_interactive: bool,
+    timeout: Duration,
+) -> Result<()> {
+    let exe = current_exe()?;
+    let method = detect::detect(&exe, &detect::SystemProbe);
+    let (dir, writable) = match method {
+        InstallMethod::Standalone { dir, writable } => (dir, writable),
+        method => {
+            println!("{}", set_target_guidance(&method));
+            return Ok(());
+        }
+    };
+    if !writable {
+        let retry = if cfg!(windows) {
+            "run this command from a terminal opened with \"Run as administrator\""
+        } else {
+            "run this command with `sudo`"
+        };
+        println!(
+            "aix cannot save the update target in {}. To change it, {retry}.",
+            dir.display()
+        );
+        return Ok(());
+    }
+
+    let mut state = UpgradeState::read(&dir)?;
+    println!("Current update target: {}", state.target.label());
+    let proposed = match (channel, release_tag) {
+        (Some(crate::cli::UpgradeChannel::Stable), None) => Target::Stable,
+        (Some(crate::cli::UpgradeChannel::Nightly), None) => Target::Nightly,
+        (None, Some(tag)) => {
+            let version = Version::parse_stable_tag(&tag).ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "{tag:?} is not a stable release tag; use the form vMAJOR.MINOR.PATCH"
+                )
+            })?;
+            let versions = Releases::new(timeout)?.stable_versions().await?;
+            if !versions.contains(&version) {
+                bail!("stable release v{version} was not found in the release list");
+            }
+            Target::Release(version)
+        }
+        (None, None) => {
+            if non_interactive || !terminal_available() {
+                bail!(
+                    "`aix upgrade set` needs a terminal; use --channel stable, --channel nightly, or --release vMAJOR.MINOR.PATCH"
+                );
+            }
+            let releases = Releases::new(timeout)?;
+            let versions = releases.stable_versions().await?;
+            let mut choices = vec![
+                TargetChoice {
+                    target: Target::Stable,
+                    label: "Latest stable".to_owned(),
+                },
+                TargetChoice {
+                    target: Target::Nightly,
+                    label: "Nightly (rolling, unstable)".to_owned(),
+                },
+            ];
+            choices.extend(versions.into_iter().map(|version| TargetChoice {
+                target: Target::Release(version),
+                label: format!("Stable release v{version}"),
+            }));
+            inquire::Select::new("Choose the target for `aix upgrade`:", choices)
+                .prompt()
+                .wrap_err("could not select an update target")?
+                .target
+        }
+        (Some(_), Some(_)) => bail!("choose either --channel or --release, not both"),
+    };
+
+    if proposed == state.target && state.installed.is_some() {
+        println!("The update target is already set to {}.", proposed.label());
+        return Ok(());
+    }
+
+    println!(
+        "`aix upgrade` will follow {} on this standalone install. This changes the saved target; it does not install a release now.",
+        proposed.label()
+    );
+    if !yes {
+        if non_interactive || !terminal_available() {
+            bail!("confirm the target change with --yes in non-interactive mode");
+        }
+        let prompt = format!("Set the update target to {}?", proposed.label());
+        if !inquire::Confirm::new(&prompt)
+            .with_default(false)
+            .prompt()
+            .wrap_err("could not confirm the update target")?
+        {
+            println!("No changes made.");
+            return Ok(());
+        }
+    }
+
+    state.target = proposed;
+    if state.installed.is_none() {
+        state.installed = Some(Installed::Unknown);
+    }
+    state
+        .write(&dir)
+        .wrap_err("could not save the aix update target")?;
+    println!("Update target set to {}.", state.target.label());
+    Ok(())
+}
+
+#[derive(Clone)]
+struct TargetChoice {
+    target: Target,
+    label: String,
+}
+
+impl Display for TargetChoice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.label)
+    }
+}
+
+fn terminal_available() -> bool {
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+fn set_target_guidance(method: &InstallMethod) -> String {
+    if let InstallMethod::Nix { store_path } = method {
+        return format!(
+            "{}\n`aix upgrade set` applies only to standalone binaries; change the Nix flake input to select stable or nightly.",
+            nix::guidance(store_path, &nix::origin(store_path))
+        );
+    }
+    format!(
+        "`aix upgrade set` applies only to standalone binaries. This aix is managed by {} and was not changed. Use its installer or package manager for stable updates; use the nightly installer or Nix flake input for nightly builds.\n",
+        method.describe()
+    )
 }
 
 /// One external command. `elevate` prefixes sudo/doas when not root;
@@ -94,10 +241,54 @@ enum Plan {
     /// Download the release `.deb`/`.rpm` and install it with `installer`
     /// (the package path is appended to its arguments).
     ReleasePackage { kind: PackageKind, installer: Step },
-    /// Re-run the installer script into `dir`.
+    /// Replace a standalone script/manual install in `dir`.
     Script { dir: PathBuf },
     /// aix can't (or shouldn't) do it; tell the user how.
     Guidance(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AvailableBuild {
+    Stable(Version),
+    Nightly(String),
+    Release(Version),
+}
+
+impl AvailableBuild {
+    fn label(&self) -> String {
+        match self {
+            Self::Stable(version) => format!("stable v{version}"),
+            Self::Nightly(build_id) => format!("nightly ({})", short_build_id(build_id)),
+            Self::Release(version) => format!("stable release v{version}"),
+        }
+    }
+
+    fn tag(&self) -> String {
+        match self {
+            Self::Stable(version) | Self::Release(version) => format!("v{version}"),
+            Self::Nightly(_) => "nightly".to_owned(),
+        }
+    }
+
+    fn installed(&self) -> Installed {
+        match self {
+            Self::Stable(_) => Installed::Stable,
+            Self::Nightly(build_id) => Installed::Nightly(build_id.clone()),
+            Self::Release(version) => Installed::Release(*version),
+        }
+    }
+}
+
+async fn resolve_target(releases: &Releases, target: &Target) -> Result<AvailableBuild> {
+    match target {
+        Target::Stable => Ok(AvailableBuild::Stable(releases.latest_version().await?)),
+        Target::Nightly => Ok(AvailableBuild::Nightly(releases.nightly_build_id().await?)),
+        Target::Release(version) => Ok(AvailableBuild::Release(*version)),
+    }
+}
+
+fn short_build_id(build_id: &str) -> &str {
+    build_id.get(..7).unwrap_or(build_id)
 }
 
 /// What [`plan`] needs to know about the machine.
@@ -345,15 +536,11 @@ fn package_asset(kind: PackageKind, version: Version, arch: &str) -> Option<Stri
     })
 }
 
-fn script_name() -> &'static str {
-    if cfg!(windows) {
-        "install.ps1"
-    } else {
-        "install.sh"
-    }
-}
-
 async fn report(plan: &Plan, current: Version, timeout: Duration) -> Result<()> {
+    if let Plan::Script { dir } = plan {
+        return report_standalone(dir, current, timeout).await;
+    }
+
     let would = match plan {
         Plan::Guidance(text) => {
             println!();
@@ -365,11 +552,7 @@ async fn report(plan: &Plan, current: Version, timeout: Duration) -> Result<()> 
             "download the new release package and install it with `{}`",
             installer.display()
         ),
-        Plan::Script { dir } => format!(
-            "re-run {} with AIX_INSTALL_DIR={}",
-            script_name(),
-            dir.display()
-        ),
+        Plan::Script { .. } => unreachable!("standalone updates are reported separately"),
     };
     match Releases::new(timeout)?.latest_version().await {
         Ok(latest) if needs_upgrade(current, latest) => {
@@ -379,6 +562,23 @@ async fn report(plan: &Plan, current: Version, timeout: Duration) -> Result<()> 
         Err(error) => println!("Latest release: unknown ({error})"),
     }
     println!("`aix upgrade` would {would}.");
+    Ok(())
+}
+
+async fn report_standalone(dir: &Path, current: Version, timeout: Duration) -> Result<()> {
+    let state = UpgradeState::read(dir)?;
+    println!("Update target: {}", state.target.label());
+    let releases = Releases::new(timeout)?;
+    let build = resolve_target(&releases, &state.target).await?;
+    let needs_install = report_target_status(&build, &state, current, false);
+    if needs_install {
+        println!(
+            "`aix upgrade` would download {} and replace the standalone binary.",
+            build.label()
+        );
+    } else {
+        println!("`aix upgrade` would do nothing.");
+    }
     Ok(())
 }
 
@@ -426,40 +626,179 @@ async fn execute(
             print_done(current, latest);
             Ok(())
         }
-        Plan::Script { dir } => {
-            let releases = Releases::new(timeout)?;
-            let Some(latest) = check_latest(&releases, current, force).await? else {
-                return Ok(());
-            };
-            let url = format!("{REPO_URL}/releases/latest/download/{}", script_name());
-            println!("Re-running the installer from {url}");
-            let script = releases.download(&url).await?;
-            let file = tempfile::Builder::new()
-                .prefix("aix-install-")
-                .suffix(if cfg!(windows) { ".ps1" } else { ".sh" })
-                .tempfile()
-                .wrap_err("could not create a temporary file for the installer")?;
-            std::fs::write(file.path(), script).wrap_err("could not save the installer")?;
+        Plan::Script { dir } => execute_standalone(&dir, exe, current, force, timeout).await,
+    }
+}
 
-            let mut step = if cfg!(windows) {
-                Step::new(
-                    PathBuf::from("powershell"),
-                    &["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"],
+async fn execute_standalone(
+    dir: &Path,
+    exe: &Path,
+    current: Version,
+    force: bool,
+    timeout: Duration,
+) -> Result<()> {
+    let mut state = UpgradeState::read(dir)?;
+    println!("Update target: {}", state.target.label());
+    let releases = Releases::new(timeout)?;
+    let build = resolve_target(&releases, &state.target).await?;
+    if !report_target_status(&build, &state, current, force) {
+        return Ok(());
+    }
+
+    let asset = standalone_asset()?;
+    let tag = build.tag();
+    let url = format!(
+        "{}/releases/download/{tag}/{asset}",
+        REPO_URL.trim_end_matches('/')
+    );
+    println!("Downloading {asset} from {url}");
+    let bytes = releases.download_verified_tag(&tag, asset).await?;
+    replace_standalone_binary(exe, dir, &bytes, &mut state, build.installed())?;
+    println!("Installed {}.", build.label());
+    Ok(())
+}
+
+fn standalone_asset() -> Result<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Ok("aix-x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Ok("aix-aarch64-unknown-linux-musl"),
+        ("macos", "x86_64") => Ok("aix-x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aix-aarch64-apple-darwin"),
+        ("windows", "x86_64") => Ok("aix-x86_64-pc-windows-msvc.exe"),
+        (os, arch) => bail!("no standalone aix release binary is published for {os}/{arch}"),
+    }
+}
+
+fn replace_standalone_binary(
+    exe: &Path,
+    dir: &Path,
+    bytes: &[u8],
+    state: &mut UpgradeState,
+    installed: Installed,
+) -> Result<()> {
+    let mut file = tempfile::Builder::new()
+        .prefix(".aix-upgrade-")
+        .tempfile_in(dir)
+        .wrap_err_with(|| format!("could not create a temporary binary in {}", dir.display()))?;
+    file.write_all(bytes)
+        .wrap_err("could not write the new aix binary")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(exe)
+            .wrap_err_with(|| format!("could not inspect {}", exe.display()))?
+            .permissions()
+            .mode()
+            & 0o777;
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(mode))
+            .wrap_err("could not make the new aix binary executable")?;
+    }
+
+    let aside = MovedAside::new(exe)?;
+    file.persist(exe)
+        .map_err(|error| error.error)
+        .wrap_err_with(|| format!("could not replace {}", exe.display()))?;
+
+    state.installed = Some(installed);
+    state.write(dir).wrap_err(
+        "the binary was replaced, but its update state could not be saved; the next `aix upgrade` may repeat this build",
+    )?;
+    aside.commit();
+    Ok(())
+}
+
+fn report_target_status(
+    build: &AvailableBuild,
+    state: &UpgradeState,
+    current: Version,
+    force: bool,
+) -> bool {
+    let already_on_target = match build {
+        AvailableBuild::Stable(version) => {
+            if current > *version
+                && !matches!(
+                    state.installed.as_ref(),
+                    Some(Installed::Nightly(_) | Installed::Unknown)
                 )
+            {
+                true
             } else {
-                Step::new(PathBuf::from("sh"), &[])
-            };
-            step.args.push(file.path().as_os_str().to_owned());
+                match state.installed.as_ref() {
+                    Some(Installed::Stable) => current >= *version,
+                    Some(Installed::Release(installed)) if *installed == current => {
+                        current >= *version
+                    }
+                    _ => false,
+                }
+            }
+        }
+        AvailableBuild::Nightly(build_id) => matches!(
+            state.installed.as_ref(),
+            Some(Installed::Nightly(installed)) if installed == build_id
+        ),
+        AvailableBuild::Release(version) => {
+            current == *version
+                && match state.installed.as_ref() {
+                    Some(Installed::Stable) => true,
+                    Some(Installed::Release(installed)) => installed == version,
+                    _ => false,
+                }
+        }
+    };
 
-            let aside = MovedAside::new(exe)?;
-            run_step_with(&step, |command| {
-                command.env("AIX_INSTALL_DIR", &dir);
-            })?;
-            aside.commit();
-            print_done(current, latest);
-            Ok(())
+    if already_on_target && !force {
+        match build {
+            AvailableBuild::Stable(version) if current > *version => println!(
+                "aix {current} is newer than the latest stable release ({version}); nothing to do."
+            ),
+            AvailableBuild::Stable(version) => {
+                println!("aix {current} is already the latest stable release ({version}).")
+            }
+            AvailableBuild::Nightly(build_id) => println!(
+                "aix is already on nightly build {}.",
+                short_build_id(build_id)
+            ),
+            AvailableBuild::Release(version) => {
+                println!("aix {current} is already on the selected stable release v{version}.")
+            }
+        }
+        return false;
+    }
+
+    if force {
+        println!("Reinstalling {} (--force).", build.label());
+    } else {
+        match build {
+            AvailableBuild::Stable(version)
+                if matches!(state.installed.as_ref(), Some(Installed::Unknown)) =>
+            {
+                println!("Installing stable v{version} to replace an untracked build.");
+            }
+            AvailableBuild::Stable(version)
+                if matches!(state.installed.as_ref(), Some(Installed::Nightly(_))) =>
+            {
+                println!("Switching from nightly to stable v{version}.");
+            }
+            AvailableBuild::Stable(version) => {
+                println!("Upgrading aix {current} → stable v{version}.");
+            }
+            AvailableBuild::Nightly(build_id) => {
+                println!("Updating to nightly build {}.", short_build_id(build_id))
+            }
+            AvailableBuild::Release(version) if current > *version => {
+                println!("Downgrading aix {current} → stable v{version}.");
+            }
+            AvailableBuild::Release(version) if current == *version => println!(
+                "Installing stable release v{version} to replace an untracked or nightly build."
+            ),
+            AvailableBuild::Release(version) => {
+                println!("Upgrading aix {current} → stable v{version}.");
+            }
         }
     }
+    true
 }
 
 /// `Some(latest)` when there is something to install.

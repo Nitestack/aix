@@ -5,14 +5,35 @@ the deployment mechanism: the module generates the same config file the CLI
 reads on any platform, so everything in [Configuration](configuration.md)
 applies. For the overlay and `nix run`, see [Installation](installation.md#nix).
 
-## home-manager module
+## Stable and nightly refs
 
-Add the flake input, import the module, and declare your config declaratively. Nix installs the binary and generates `~/.config/aix/aix.toml` at activation time.
+The aix flake builds from source. Choose a Git ref in the input URL to select a
+stable release or the rolling `main` branch:
 
 ```nix
-# flake.nix
-inputs.aix.url = "github:get-aix/aix";
+# Stable: use the tag of the release you want (v1.0.1 is an example).
+inputs.aix.url = "github:get-aix/aix/v1.0.1";
+
+# Nightly: follow the tip of main.
+# inputs.aix.url = "github:get-aix/aix/main";
 ```
+
+The `flake.lock` file pins the exact commit, including for `main`; the input
+does not move until you update the lock. To advance a nightly input, run
+`nix flake update aix` and rebuild. To advance a stable input, first change the
+tag in `flake.nix` to the new release, then update the lock and rebuild.
+
+An unqualified URL such as `github:get-aix/aix` uses the repository's default
+branch (currently `main`), not the latest versioned release. Specify a release
+tag for stable installs and `/main` for nightly so the selected channel is
+clear. The nightly flake builds from source; it does not install the prebuilt
+binaries attached to the GitHub nightly release.
+
+## home-manager module
+
+Add the stable or nightly flake input shown above, import the module, and
+declare your config declaratively. Nix installs the binary and generates
+`~/.config/aix/aix.toml` at activation time.
 
 ```nix
 # home-manager config
@@ -46,10 +67,11 @@ home-manager switch --flake .#your-user
 ## Upgrading
 
 `aix upgrade` doesn't modify a Nix-installed aix. Your `flake.lock` pins the
-exact version, so Nix would undo any change at the next rebuild. Running it
-prints these steps instead.
+exact commit, so Nix would undo any change at the next rebuild. Running it
+prints these steps instead. `aix upgrade set` also leaves Nix inputs alone:
+select stable or nightly by changing the ref in `flake.nix`.
 
-To move to the latest aix, update the flake input and rebuild:
+To move a nightly input to the latest `main`, update the lock and rebuild:
 
 ```bash
 nix flake update aix    # the name of the aix input in your flake.nix
@@ -58,10 +80,14 @@ nixos-rebuild switch --flake .#your-host
 home-manager switch --flake .#your-user
 ```
 
-On Nix older than 2.19, the first command is `nix flake lock --update-input aix`.
+For stable, change the input URL to the desired release tag before running
+`nix flake update aix` and rebuilding. On Nix older than 2.19, use
+`nix flake lock --update-input aix` instead.
+
 For a `nix profile install`, run `nix profile upgrade aix` (`nix profile list`
-shows the entry's name). With `nix run`, add `--refresh` to fetch the newest
-version: `nix run --refresh github:get-aix/aix -- --help`.
+shows the entry's name) to refresh its configured ref. A `main` ref moves with
+nightly; a release-tag ref stays on that stable version. For a one-off run of
+the latest nightly source, use `nix run --refresh github:get-aix/aix/main -- --help`.
 
 ## Option mapping
 

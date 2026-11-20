@@ -252,9 +252,12 @@ effort and a no-op everywhere else.
 
 `aix upgrade` detects the install method from the running binary's path and the
 system package databases (`detect.rs`), then hands off to that method: a package
-manager, a verified `.deb`/`.rpm` from the GitHub release (`release.rs`), or the
-installer script. Nix installs and source builds only get printed guidance
-(`nix.rs`); aix never modifies a Nix-managed binary. It reads no aix config.
+manager, a verified `.deb`/`.rpm` from the GitHub release (`release.rs`), or a
+verified standalone binary matching the saved update target (`target.rs`). The
+target defaults to latest stable and can be set to nightly or a specific stable
+tag with `aix upgrade set`. Nix installs and source builds only get printed
+guidance (`nix.rs`); aix never modifies a Nix-managed binary. It reads no aix
+config.
 
 ### `src/error.rs` — Error types
 

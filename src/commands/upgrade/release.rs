@@ -26,6 +26,14 @@ impl Version {
         parts.next().is_none().then_some(version)
     }
 
+    /// Parse a release tag containing only a stable `vMAJOR.MINOR.PATCH`.
+    pub(crate) fn parse_stable_tag(text: &str) -> Option<Self> {
+        let text = text.strip_prefix('v')?;
+        let mut parts = text.split('.').map(|part| part.parse::<u64>().ok());
+        let version = Self(parts.next()??, parts.next()??, parts.next()??);
+        (parts.next().is_none() && text == version.to_string()).then_some(version)
+    }
+
     pub(crate) fn current() -> Self {
         Self::parse(env!("CARGO_PKG_VERSION")).expect("crate version is semver")
     }
@@ -69,7 +77,7 @@ impl Releases {
     /// redirect to `/releases/tag/vX.Y.Z`; reading the redirect avoids the
     /// rate-limited REST API.
     pub(crate) async fn latest_version(&self) -> Result<Version> {
-        let url = format!("{REPO_URL}/releases/latest");
+        let url = format!("{}/releases/latest", REPO_URL.trim_end_matches('/'));
         let response = self
             .no_redirect
             .get(&url)
@@ -88,7 +96,62 @@ impl Releases {
                 )
             })?;
         let tag = location.rsplit('/').next().unwrap_or_default();
-        Version::parse(tag).ok_or_else(|| eyre!("latest release tag {tag:?} is not a version"))
+        Version::parse_stable_tag(tag)
+            .ok_or_else(|| eyre!("latest release tag {tag:?} is not a stable version"))
+    }
+
+    /// Stable versions for the interactive release picker, newest first.
+    pub(crate) async fn stable_versions(&self) -> Result<Vec<Version>> {
+        let (owner, repository) = github_repository()?;
+        let mut versions = Vec::new();
+        let mut page = 1;
+
+        loop {
+            let url = format!(
+                "https://api.github.com/repos/{owner}/{repository}/releases?per_page=100&page={page}"
+            );
+            let response = self
+                .client
+                .get(&url)
+                .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+                .timeout(self.timeout)
+                .send()
+                .await
+                .wrap_err_with(|| format!("could not reach {url}"))?
+                .error_for_status()
+                .wrap_err_with(|| format!("could not list releases from {url}"))?;
+            let releases: Vec<GitHubRelease> = response
+                .json()
+                .await
+                .wrap_err("GitHub returned an invalid release list")?;
+            let count = releases.len();
+            versions.extend(releases.into_iter().filter_map(|release| {
+                (!release.draft && !release.prerelease)
+                    .then(|| Version::parse_stable_tag(&release.tag_name))
+                    .flatten()
+            }));
+            if count < 100 {
+                break;
+            }
+            page += 1;
+        }
+
+        versions.sort_unstable_by(|left, right| right.cmp(left));
+        versions.dedup();
+        Ok(versions)
+    }
+
+    /// The immutable commit ID attached to the rolling nightly release.
+    pub(crate) async fn nightly_build_id(&self) -> Result<String> {
+        let bytes = self
+            .download_verified_tag("nightly", "NIGHTLY_VERSION")
+            .await?;
+        let text = String::from_utf8(bytes).wrap_err("NIGHTLY_VERSION is not valid UTF-8")?;
+        let build_id = text.trim();
+        if !is_build_id(build_id) {
+            bail!("NIGHTLY_VERSION does not contain a 40-character commit ID");
+        }
+        Ok(build_id.to_owned())
     }
 
     pub(crate) async fn download(&self, url: &str) -> Result<Vec<u8>> {
@@ -112,11 +175,18 @@ impl Releases {
     /// Download `asset` from release `version` and check it against that
     /// release's `SHA256SUMS`.
     pub(crate) async fn download_verified(&self, version: Version, asset: &str) -> Result<Vec<u8>> {
-        let base = format!("{REPO_URL}/releases/download/v{version}");
+        self.download_verified_tag(&format!("v{version}"), asset)
+            .await
+    }
+
+    /// Download an asset from a release tag and check it against its
+    /// `SHA256SUMS` entry.
+    pub(crate) async fn download_verified_tag(&self, tag: &str, asset: &str) -> Result<Vec<u8>> {
+        let base = format!("{}/releases/download/{tag}", REPO_URL.trim_end_matches('/'));
         let sums = self.download(&format!("{base}/SHA256SUMS")).await?;
         let sums = String::from_utf8_lossy(&sums);
         let expected = checksum_for(&sums, asset)
-            .ok_or_else(|| eyre!("SHA256SUMS of v{version} has no entry for {asset}"))?;
+            .ok_or_else(|| eyre!("SHA256SUMS of {tag} has no entry for {asset}"))?;
         let bytes = self.download(&format!("{base}/{asset}")).await?;
         let actual = sha256_hex(&bytes);
         if !actual.eq_ignore_ascii_case(&expected) {
@@ -124,6 +194,39 @@ impl Releases {
         }
         Ok(bytes)
     }
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+}
+
+fn github_repository() -> Result<(String, String)> {
+    let url = url::Url::parse(REPO_URL).wrap_err("package repository URL is invalid")?;
+    if url.host_str() != Some("github.com") {
+        bail!("interactive release selection requires a GitHub repository URL");
+    }
+    let segments = url
+        .path_segments()
+        .ok_or_else(|| eyre!("package repository URL has no path"))?;
+    let mut segments = segments.filter(|segment| !segment.is_empty());
+    let owner = segments
+        .next()
+        .ok_or_else(|| eyre!("package repository URL has no owner"))?;
+    let repository = segments
+        .next()
+        .ok_or_else(|| eyre!("package repository URL has no repository"))?
+        .trim_end_matches(".git");
+    if segments.next().is_some() {
+        bail!("package repository URL has an unexpected path");
+    }
+    Ok((owner.to_owned(), repository.to_owned()))
+}
+
+fn is_build_id(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Find `asset` in a `sha256sum`-style listing (`<hash>  <name>` or
