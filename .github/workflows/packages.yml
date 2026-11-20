@@ -152,7 +152,26 @@ jobs:
     steps:
       - if: env.TOKEN == ''
         run: echo "::notice::WINGET_TOKEN not set; skipping winget"
-      - if: env.TOKEN != ''
+      - name: Check whether the package is in the winget catalog
+        id: catalog
+        if: env.TOKEN != ''
+        run: |
+          status=$(curl --silent --show-error --max-time 15 --output /dev/null --write-out '%{http_code}' \
+            https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/g/get-aix/aix)
+          case "$status" in
+            200)
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::get-aix.aix is not in microsoft/winget-pkgs yet; skipping winget until its initial package is merged"
+              ;;
+            *)
+              echo "Could not verify get-aix.aix in microsoft/winget-pkgs (HTTP $status)" >&2
+              exit 1
+              ;;
+          esac
+      - if: env.TOKEN != '' && steps.catalog.outputs.exists == 'true'
         uses: vedantmgoyal9/winget-releaser@v2
         with:
           identifier: get-aix.aix
